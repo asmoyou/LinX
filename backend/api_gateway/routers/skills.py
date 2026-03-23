@@ -11,7 +11,7 @@ import logging
 from typing import Any, Dict, List, Optional
 from uuid import UUID
 
-from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, Query, Response, UploadFile
 from pydantic import BaseModel, Field
 
 from access_control.permissions import CurrentUser, get_current_user
@@ -760,6 +760,7 @@ async def get_skill_share_targets(
 
 @router.get("", response_model=List[SkillResponse])
 async def list_skills(
+    response: Response,
     limit: int = Query(100, ge=1, le=1000),
     offset: int = Query(0, ge=0),
     include_code: bool = Query(False, description="Include code in response"),
@@ -779,11 +780,14 @@ async def list_skills(
     try:
         registry = get_skill_registry()
         access_context = build_skill_access_context(current_user)
+        total_count = registry.count_visible_skills(access_context=access_context)
         skills = registry.list_visible_skills(
             access_context=access_context,
             limit=limit,
             offset=offset,
         )
+        response.headers["X-Total-Count"] = str(total_count)
+        response.headers["X-Has-More"] = "true" if offset + len(skills) < total_count else "false"
         return [
             SkillResponse.from_skill_info(skill, current_user=current_user, include_code=include_code)
             for skill in skills
@@ -796,7 +800,11 @@ async def list_skills(
 
 @router.get("/search", response_model=List[SkillResponse])
 async def search_skills(
+    response: Response,
     query: str = Query(..., min_length=1),
+    limit: int = Query(100, ge=1, le=1000),
+    offset: int = Query(0, ge=0),
+    include_code: bool = Query(False, description="Include code in response"),
     current_user: CurrentUser = Depends(get_current_user),
 ):
     """Search skills by name or description.
@@ -811,11 +819,26 @@ async def search_skills(
     try:
         registry = get_skill_registry()
         access_context = build_skill_access_context(current_user)
-        skills = registry.search_visible_skills(
+        total_count = registry.count_search_visible_skills(
             query=query,
             access_context=access_context,
         )
-        return [SkillResponse.from_skill_info(skill, current_user=current_user) for skill in skills]
+        skills = registry.search_visible_skills(
+            query=query,
+            access_context=access_context,
+            limit=limit,
+            offset=offset,
+        )
+        response.headers["X-Total-Count"] = str(total_count)
+        response.headers["X-Has-More"] = "true" if offset + len(skills) < total_count else "false"
+        return [
+            SkillResponse.from_skill_info(
+                skill,
+                current_user=current_user,
+                include_code=include_code,
+            )
+            for skill in skills
+        ]
 
     except Exception as e:
         logger.error(f"Failed to search skills: {e}")

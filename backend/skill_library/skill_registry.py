@@ -239,6 +239,13 @@ class SkillRegistry:
             )
         ]
 
+    def count_visible_skills(
+        self,
+        *,
+        access_context: SkillAccessContext,
+    ) -> int:
+        return self.skill_model.count_visible_skills(access_context=access_context)
+
     def search_skills(self, query: str) -> List[SkillInfo]:
         return [self._to_skill_info(skill) for skill in self.skill_model.search_skills(query)]
 
@@ -259,6 +266,17 @@ class SkillRegistry:
                 offset=offset,
             )
         ]
+
+    def count_search_visible_skills(
+        self,
+        *,
+        query: str,
+        access_context: SkillAccessContext,
+    ) -> int:
+        return self.skill_model.count_search_visible_skills(
+            query=query,
+            access_context=access_context,
+        )
 
     def update_skill(
         self,

@@ -1,6 +1,7 @@
 import { X } from "lucide-react";
 import { useState, useEffect } from "react";
 import CodeEditor from "./CodeEditor";
+import DependencyTagsInput from "./DependencyTagsInput";
 import {
   skillsApi,
   type Skill,
@@ -14,7 +15,7 @@ interface EditSkillModalProps {
   isOpen: boolean;
   onClose: () => void;
   onSubmit: (skillId: string, data: any) => Promise<void>;
-  skill: Skill & { code?: string };
+  skill: Skill & { code?: string | null };
   mode?: "view" | "edit";
 }
 
@@ -43,7 +44,7 @@ export default function EditSkillModal({
       setFormData({
         display_name: skill.display_name,
         description: skill.description,
-        code: skill.code || "",
+        code: typeof skill.code === "string" ? skill.code : "",
         dependencies: skill.dependencies || [],
         access_level: skill.access_level,
         department_id: skill.department_id || "",
@@ -158,8 +159,8 @@ export default function EditSkillModal({
               />
             </div>
 
-            {/* Code Editor - Always show if code exists */}
-            {formData.code && (
+            {(skill.skill_type === "langchain_tool" ||
+              typeof skill.code === "string") && (
               <div>
                 <label className="block text-sm font-semibold text-zinc-700 dark:text-zinc-300 mb-2">
                   {t("skills.pythonCode")}{" "}
@@ -232,25 +233,15 @@ export default function EditSkillModal({
               <label className="block text-sm font-semibold text-zinc-700 dark:text-zinc-300 mb-2">
                 {t("skills.dependencies")}
               </label>
-              <input
-                type="text"
-                value={formData.dependencies.join(", ")}
-                onChange={(e) =>
-                  setFormData({
-                    ...formData,
-                    dependencies: e.target.value
-                      .split(",")
-                      .map((d) => d.trim())
-                      .filter(Boolean),
-                  })
+              <DependencyTagsInput
+                values={formData.dependencies}
+                onChange={(dependencies) =>
+                  setFormData({ ...formData, dependencies })
                 }
-                className="w-full px-4 py-3 rounded-xl glass text-zinc-800 dark:text-white placeholder:text-zinc-500 dark:placeholder:text-zinc-400 focus:outline-none focus:ring-2 focus:ring-emerald-500/50 transition-all font-mono text-sm disabled:opacity-70 disabled:cursor-not-allowed"
                 placeholder={t("skills.dependenciesPlaceholder")}
+                helperText={t("skills.dependenciesHint")}
                 disabled={isReadOnly || isSubmitting}
               />
-              <p className="mt-2 text-xs text-zinc-600 dark:text-zinc-400">
-                {t("skills.dependenciesNote")}
-              </p>
             </div>
           </div>
 

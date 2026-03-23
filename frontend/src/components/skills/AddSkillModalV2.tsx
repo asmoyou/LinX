@@ -1,6 +1,7 @@
 import { X, Upload, FileCode } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import CodeEditor from './CodeEditor';
+import DependencyTagsInput from './DependencyTagsInput';
 import SkillTypeSelector, { type SkillType } from './SkillTypeSelector';
 import TemplateSelector from './TemplateSelector';
 import { skillsApi, type SkillAccessLevel, type SkillShareTargetsResponse } from '@/api/skills';
@@ -383,54 +384,17 @@ def my_tool(param: str) -> str:
                       <label className="block text-sm font-medium text-gray-800 dark:text-white mb-2">
                         {t('skills.dependencies')}
                       </label>
-                      <div className="space-y-2">
-                        <input
-                          type="text"
-                          placeholder="e.g., requests, pandas, numpy"
-                          className="w-full px-4 py-2.5 rounded-xl glass text-gray-800 dark:text-white placeholder:text-gray-500 dark:placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-indigo-500/50"
-                          onKeyDown={(e) => {
-                            if (e.key === 'Enter') {
-                              e.preventDefault();
-                              const input = e.currentTarget;
-                              const value = input.value.trim();
-                              if (value && !formData.dependencies.includes(value)) {
-                                setFormData({
-                                  ...formData,
-                                  dependencies: [...formData.dependencies, value]
-                                });
-                                input.value = '';
-                              }
-                            }
-                          }}
-                        />
-                        {formData.dependencies.length > 0 && (
-                          <div className="flex flex-wrap gap-2">
-                            {formData.dependencies.map((dep, index) => (
-                              <span
-                                key={index}
-                                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 text-sm"
-                              >
-                                {dep}
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    setFormData({
-                                      ...formData,
-                                      dependencies: formData.dependencies.filter((_, i) => i !== index)
-                                    });
-                                  }}
-                                  className="hover:text-indigo-700 dark:hover:text-indigo-300"
-                                >
-                                  <X className="w-3.5 h-3.5" />
-                                </button>
-                              </span>
-                            ))}
-                          </div>
-                        )}
-                        <p className="text-xs text-gray-600 dark:text-gray-400">
-                          {t('skills.dependenciesHint')}
-                        </p>
-                      </div>
+                      <DependencyTagsInput
+                        values={formData.dependencies}
+                        onChange={(dependencies) =>
+                          setFormData({
+                            ...formData,
+                            dependencies,
+                          })
+                        }
+                        placeholder={t('skills.dependenciesPlaceholder')}
+                        helperText={t('skills.dependenciesHint')}
+                      />
                     </div>
                   </>
                 )}

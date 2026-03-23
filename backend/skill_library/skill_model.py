@@ -167,6 +167,15 @@ class SkillModel:
                 .all()
             )
 
+    def count_visible_skills(
+        self,
+        *,
+        access_context: SkillAccessContext,
+    ) -> int:
+        with get_db_session() as session:
+            query = self._apply_visibility_filter(self._base_query(session), access_context)
+            return query.count()
+
     def get_overview_stats(self, *, access_context: Optional[SkillAccessContext] = None) -> Dict[str, Any]:
         """Get aggregated overview statistics for the skills library."""
         skills: List[Skill]
@@ -331,6 +340,25 @@ class SkillModel:
                 .limit(limit)
                 .offset(offset)
                 .all()
+            )
+
+    def count_search_visible_skills(
+        self,
+        *,
+        query: str,
+        access_context: SkillAccessContext,
+    ) -> int:
+        with get_db_session() as session:
+            search_pattern = f"%{query}%"
+            filtered = self._apply_visibility_filter(self._base_query(session), access_context)
+            return (
+                filtered.filter(
+                    or_(
+                        Skill.display_name.ilike(search_pattern),
+                        Skill.skill_slug.ilike(search_pattern),
+                        Skill.description.ilike(search_pattern),
+                    )
+                ).count()
             )
 
 

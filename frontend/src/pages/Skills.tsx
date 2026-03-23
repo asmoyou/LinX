@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { startTransition, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import {
   CheckCircle2,
@@ -37,6 +37,7 @@ import {
 type SkillsSection = "inbox" | "library" | "bindings" | "mcp_servers";
 
 const SECTION_PARAM = "section";
+const LIBRARY_PAGE_SIZE = 24;
 
 const getSectionFromSearchParam = (value: string | null): SkillsSection => {
   if (value === "inbox" || value === "bindings" || value === "mcp_servers") {
@@ -241,6 +242,8 @@ export default function Skills() {
   );
 
   const [skills, setSkills] = useState<Skill[]>([]);
+  const [libraryTotal, setLibraryTotal] = useState(0);
+  const [libraryPage, setLibraryPage] = useState(1);
   const [overviewStats, setOverviewStats] = useState<SkillOverviewStats | null>(
     null,
   );
@@ -273,10 +276,25 @@ export default function Skills() {
   const [isMcpLoading, setIsMcpLoading] = useState(true);
   const [isAddMcpModalOpen, setIsAddMcpModalOpen] = useState(false);
   const [editingMcpServer, setEditingMcpServer] = useState<McpServer | null>(null);
+  const libraryRequestSequence = useRef(0);
+  const trimmedLibrarySearchQuery = librarySearchQuery.trim();
+  const deferredLibrarySearchQuery = useDeferredValue(trimmedLibrarySearchQuery);
+  const isLibrarySearchPending =
+    trimmedLibrarySearchQuery !== deferredLibrarySearchQuery;
 
   useEffect(() => {
-    void loadPageData();
+    void loadAuxiliaryData();
   }, []);
+
+  useEffect(() => {
+    if (isLibrarySearchPending) {
+      return;
+    }
+    void loadLibraryPage({
+      page: libraryPage,
+      query: deferredLibrarySearchQuery,
+    });
+  }, [deferredLibrarySearchQuery, isLibrarySearchPending, libraryPage]);
 
   const setSection = (section: SkillsSection) => {
     const nextSearchParams = new URLSearchParams(searchParams);
@@ -284,40 +302,70 @@ export default function Skills() {
     setSearchParams(nextSearchParams);
   };
 
-  const loadPageData = async () => {
-    setIsRefreshing(true);
+  const loadLibraryPage = async ({
+    page,
+    query,
+  }: {
+    page: number;
+    query: string;
+  }) => {
+    const requestId = ++libraryRequestSequence.current;
+
     setIsLibraryLoading(true);
+    setLibraryError(null);
+
+    try {
+      const result = await skillsApi.listPage({
+        limit: LIBRARY_PAGE_SIZE,
+        offset: (page - 1) * LIBRARY_PAGE_SIZE,
+        includeCode: false,
+        query: query || undefined,
+      });
+
+      if (requestId !== libraryRequestSequence.current) {
+        return;
+      }
+
+      setSkills(result.items);
+      setLibraryTotal(result.total);
+    } catch (error) {
+      if (requestId !== libraryRequestSequence.current) {
+        return;
+      }
+
+      console.error("Failed to load skills library:", error);
+      setSkills([]);
+      setLibraryTotal(0);
+      setLibraryError(
+        t("skills.loadError", {
+          defaultValue: "Failed to load skills library.",
+        }),
+      );
+    } finally {
+      if (requestId === libraryRequestSequence.current) {
+        setIsLibraryLoading(false);
+      }
+    }
+  };
+
+  const loadAuxiliaryData = async () => {
     setIsCandidatesLoading(true);
     setIsBindingsLoading(true);
     setIsMcpLoading(true);
-    setLibraryError(null);
     setCandidatesError(null);
     setBindingsError(null);
 
-    const [skillsResult, candidatesResult, bindingsResult, overviewResult, mcpResult] =
+    const [candidatesResult, bindingsResult, overviewResult, mcpResult] =
       await Promise.allSettled([
-        skillsApi.getAll(),
         skillsApi.getCandidates({ status: "all", limit: 100 }),
         skillsApi.getBindings({ limit: 200 }),
         skillsApi.getOverviewStats(),
         mcpServersApi.getAll(false),
       ]);
 
-    if (skillsResult.status === "fulfilled") {
-      setSkills(skillsResult.value);
-      setOverviewStats(
-        overviewResult.status === "fulfilled"
-          ? overviewResult.value
-          : buildOverviewStatsFromSkills(skillsResult.value),
-      );
-    } else {
-      setLibraryError(
-        t("skills.loadError", {
-          defaultValue: "Failed to load skills library.",
-        }),
-      );
+    if (overviewResult.status === "fulfilled") {
+      setOverviewStats(overviewResult.value);
     }
-    setIsLibraryLoading(false);
 
     if (candidatesResult.status === "fulfilled") {
       setCandidates(candidatesResult.value);
@@ -345,22 +393,53 @@ export default function Skills() {
       setMcpServers(mcpResult.value);
     }
     setIsMcpLoading(false);
+  };
 
-    setIsRefreshing(false);
+  const loadPageData = async ({
+    page = libraryPage,
+    query = trimmedLibrarySearchQuery,
+  }: {
+    page?: number;
+    query?: string;
+  } = {}) => {
+    setIsRefreshing(true);
+    try {
+      await Promise.all([
+        loadAuxiliaryData(),
+        loadLibraryPage({
+          page,
+          query: query ?? "",
+        }),
+      ]);
+    } finally {
+      setIsRefreshing(false);
+    }
   };
 
   const handleCreateSkill = async (data: CreateSkillRequest) => {
     await skillsApi.create(data);
-    await loadPageData();
+    startTransition(() => {
+      setLibraryPage(1);
+    });
+    await loadPageData({ page: 1 });
   };
 
-  const handleEditSkill = (skill: Skill) => {
-    setSelectedSkill(skill);
-    setSelectedSkillMode(skill.can_edit ? "edit" : "view");
-    if (skill.skill_type === "agent_skill") {
-      setIsAgentSkillViewerOpen(true);
-    } else {
-      setIsEditModalOpen(true);
+  const handleEditSkill = async (skill: Skill) => {
+    try {
+      const resolvedSkill =
+        skill.skill_type === "agent_skill" || typeof skill.code === "string"
+          ? skill
+          : await skillsApi.getById(skill.skill_id);
+
+      setSelectedSkill(resolvedSkill);
+      setSelectedSkillMode(skill.can_edit ? "edit" : "view");
+      if (resolvedSkill.skill_type === "agent_skill") {
+        setIsAgentSkillViewerOpen(true);
+      } else {
+        setIsEditModalOpen(true);
+      }
+    } catch (error) {
+      console.error("Failed to load skill details:", error);
     }
   };
 
@@ -413,23 +492,21 @@ export default function Skills() {
     }
   };
 
-  const resolvedOverviewStats =
-    overviewStats ?? buildOverviewStatsFromSkills(skills);
-  const libraryQuery = normalizeSearchValue(librarySearchQuery);
+  const resolvedOverviewStats = overviewStats
+    ? overviewStats
+    : {
+        ...buildOverviewStatsFromSkills(skills),
+        total_skills: Math.max(libraryTotal, skills.length),
+      };
   const candidateQuery = normalizeSearchValue(candidateSearchQuery);
   const bindingQuery = normalizeSearchValue(bindingSearchQuery);
-
-  const filteredSkills = useMemo(() => {
-    if (!libraryQuery) {
-      return skills;
-    }
-    return skills.filter((skill) => {
-      return [skill.display_name, skill.skill_slug, skill.description]
-        .join("\n")
-        .toLowerCase()
-        .includes(libraryQuery);
-    });
-  }, [libraryQuery, skills]);
+  const libraryTotalPages = Math.max(1, Math.ceil(libraryTotal / LIBRARY_PAGE_SIZE));
+  const libraryDisplayStart =
+    libraryTotal === 0 ? 0 : (libraryPage - 1) * LIBRARY_PAGE_SIZE + 1;
+  const libraryDisplayEnd =
+    libraryTotal === 0
+      ? 0
+      : Math.min(libraryTotal, libraryPage * LIBRARY_PAGE_SIZE);
 
   const filteredCandidates = useMemo(() => {
     return candidates.filter((candidate) =>
@@ -460,6 +537,14 @@ export default function Skills() {
       ).size,
     [bindings],
   );
+
+  useEffect(() => {
+    if (libraryPage > libraryTotalPages) {
+      startTransition(() => {
+        setLibraryPage(libraryTotalPages);
+      });
+    }
+  }, [libraryPage, libraryTotalPages]);
 
   const sectionTabs: Array<{
     id: SkillsSection;
@@ -785,15 +870,72 @@ export default function Skills() {
                 </div>
                 <div className="relative w-full lg:max-w-md">
                   <Search className="absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                  {isLibrarySearchPending && (
+                    <Loader2 className="absolute right-4 top-1/2 h-4 w-4 -translate-y-1/2 animate-spin text-muted-foreground" />
+                  )}
                   <input
                     type="text"
                     value={librarySearchQuery}
-                    onChange={(event) =>
-                      setLibrarySearchQuery(event.target.value)
-                    }
+                    onChange={(event) => {
+                      const nextValue = event.target.value;
+                      startTransition(() => {
+                        setLibrarySearchQuery(nextValue);
+                        setLibraryPage(1);
+                      });
+                    }}
                     placeholder={t("skills.searchPlaceholder")}
-                    className="w-full rounded-xl border border-border/50 bg-muted/30 py-3 pl-11 pr-4 text-sm text-foreground outline-none transition-colors focus:border-emerald-500"
+                    className="w-full rounded-xl border border-border/50 bg-muted/30 py-3 pl-11 pr-11 text-sm text-foreground outline-none transition-colors focus:border-emerald-500"
                   />
+                </div>
+              </div>
+
+              <div className="mt-4 flex flex-col gap-3 border-t border-border/40 pt-4 sm:flex-row sm:items-center sm:justify-between">
+                <p className="text-sm text-muted-foreground">
+                  {t("skills.libraryPaginationSummary", {
+                    start: libraryDisplayStart,
+                    end: libraryDisplayEnd,
+                    total: libraryTotal,
+                    defaultValue: "Showing {{start}}-{{end}} of {{total}} skills",
+                  })}
+                </p>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() =>
+                      startTransition(() => {
+                        setLibraryPage((currentPage) => Math.max(1, currentPage - 1));
+                      })
+                    }
+                    disabled={isLibraryLoading || libraryPage <= 1}
+                    className="rounded-lg border border-border/50 px-3 py-2 text-sm text-foreground transition-colors hover:bg-muted/40 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    {t("skills.libraryPrevPage", { defaultValue: "Previous" })}
+                  </button>
+                  <span className="min-w-32 text-center text-sm text-muted-foreground">
+                    {t("skills.libraryPageIndicator", {
+                      page: libraryPage,
+                      totalPages: libraryTotalPages,
+                      defaultValue: "Page {{page}} / {{totalPages}}",
+                    })}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      startTransition(() => {
+                        setLibraryPage((currentPage) =>
+                          Math.min(libraryTotalPages, currentPage + 1),
+                        );
+                      })
+                    }
+                    disabled={
+                      isLibraryLoading ||
+                      libraryTotal === 0 ||
+                      libraryPage >= libraryTotalPages
+                    }
+                    className="rounded-lg border border-border/50 px-3 py-2 text-sm text-foreground transition-colors hover:bg-muted/40 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    {t("skills.libraryNextPage", { defaultValue: "Next" })}
+                  </button>
                 </div>
               </div>
             </div>
@@ -806,7 +948,7 @@ export default function Skills() {
               <div className="flex items-center justify-center py-20">
                 <Loader2 className="h-8 w-8 animate-spin text-emerald-500" />
               </div>
-            ) : filteredSkills.length === 0 ? (
+            ) : skills.length === 0 ? (
               <div className="glass-panel rounded-2xl p-16 text-center shadow-xl">
                 <Package className="mx-auto h-10 w-10 text-muted-foreground" />
                 <p className="mt-4 text-sm text-muted-foreground">
@@ -817,11 +959,13 @@ export default function Skills() {
               </div>
             ) : (
               <div className="grid grid-cols-1 gap-6 md:grid-cols-2 lg:grid-cols-3">
-                {filteredSkills.map((skill) => (
+                {skills.map((skill) => (
                   <SkillCardV2
                     key={skill.skill_id}
                     skill={skill}
-                    onEdit={handleEditSkill}
+                    onEdit={(selected) => {
+                      void handleEditSkill(selected);
+                    }}
                     onDelete={handleDeleteSkill}
                     onToggleActive={handleToggleActive}
                     onTest={handleTestSkill}
@@ -988,11 +1132,13 @@ export default function Skills() {
                     }}
                     onEdit={(srv) => setEditingMcpServer(srv)}
                     onTestTool={(skillId) => {
-                      const skill = skills.find((s) => s.skill_id === skillId);
-                      if (skill) {
-                        setSelectedSkill(skill);
+                      void (async () => {
+                        const cachedSkill = skills.find((s) => s.skill_id === skillId);
+                        const resolvedSkill =
+                          cachedSkill ?? (await skillsApi.getById(skillId));
+                        setSelectedSkill(resolvedSkill);
                         setIsTesterModalOpen(true);
-                      }
+                      })();
                     }}
                   />
                 ))}

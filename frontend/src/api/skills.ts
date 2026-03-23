@@ -45,7 +45,7 @@ export interface Skill {
   skill_type?: string;
   storage_type?: string;
   storage_path?: string;
-  code?: string;
+  code?: string | null;
   config?: Record<string, any>;
   manifest?: Record<string, any>;
   is_active?: boolean;
@@ -138,6 +138,21 @@ export interface SkillOverviewStats {
   total_execution_count: number;
   average_execution_time: number;
   last_executed_at?: string | null;
+}
+
+export interface ListSkillsRequest {
+  limit?: number;
+  offset?: number;
+  includeCode?: boolean;
+  query?: string;
+}
+
+export interface PaginatedSkillsResponse {
+  items: Skill[];
+  total: number;
+  limit: number;
+  offset: number;
+  hasMore: boolean;
 }
 
 export type SkillCandidateStatus =
@@ -470,10 +485,52 @@ export const skillsApi = {
     });
   },
 
+  async listPage({
+    limit = 24,
+    offset = 0,
+    includeCode = false,
+    query,
+  }: ListSkillsRequest = {}): Promise<PaginatedSkillsResponse> {
+    const normalizedQuery = query?.trim();
+    const response = await apiClient.get<Skill[]>(
+      normalizedQuery ? "/skills/search" : "/skills",
+      {
+        params: normalizedQuery
+          ? {
+              query: normalizedQuery,
+              limit,
+              offset,
+              include_code: includeCode,
+            }
+          : {
+              limit,
+              offset,
+              include_code: includeCode,
+            },
+      },
+    );
+
+    const totalHeader = Number(response.headers["x-total-count"]);
+    const hasMoreHeader = response.headers["x-has-more"];
+    const total = Number.isFinite(totalHeader) ? totalHeader : response.data.length;
+    const hasMore =
+      typeof hasMoreHeader === "string"
+        ? hasMoreHeader === "true"
+        : offset + response.data.length < total;
+
+    return {
+      items: response.data,
+      total,
+      limit,
+      offset,
+      hasMore,
+    };
+  },
+
   /**
    * Get all skills
    */
-  async getAll(limit = 100, offset = 0, includeCode = true): Promise<Skill[]> {
+  async getAll(limit = 100, offset = 0, includeCode = false): Promise<Skill[]> {
     const response = await apiClient.get<Skill[]>("/skills", {
       params: { limit, offset, include_code: includeCode },
     });
@@ -483,17 +540,24 @@ export const skillsApi = {
   /**
    * Get skill by ID
    */
-  async getById(skillId: string): Promise<Skill> {
-    const response = await apiClient.get<Skill>(`/skills/${skillId}`);
+  async getById(skillId: string, includeCode = true): Promise<Skill> {
+    const response = await apiClient.get<Skill>(`/skills/${skillId}`, {
+      params: { include_code: includeCode },
+    });
     return response.data;
   },
 
   /**
    * Search skills
    */
-  async search(query: string): Promise<Skill[]> {
+  async search(
+    query: string,
+    limit = 100,
+    offset = 0,
+    includeCode = false,
+  ): Promise<Skill[]> {
     const response = await apiClient.get<Skill[]>("/skills/search", {
-      params: { query },
+      params: { query, limit, offset, include_code: includeCode },
     });
     return response.data;
   },
