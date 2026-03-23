@@ -624,6 +624,27 @@ class BaseAgent:
                                 "skill_id": str(skill_info.skill_id),
                             },
                         )
+                elif skill_info.skill_type == "mcp_tool":
+                    tool = await self.skill_manager.load_langchain_tool(skill_info)
+                    if tool:
+                        self.tools.append(tool)
+                        langchain_tool_count += 1
+                        langchain_tool_names.add(skill_info.skill_slug)
+                        logger.info(
+                            f"✓ Loaded MCP tool: {skill_info.skill_slug}",
+                            extra={
+                                "agent_id": str(self.config.agent_id),
+                                "skill_id": str(skill_info.skill_id),
+                            },
+                        )
+                    else:
+                        logger.error(
+                            f"✗ Failed to load MCP tool: {skill_info.skill_slug}",
+                            extra={
+                                "agent_id": str(self.config.agent_id),
+                                "skill_id": str(skill_info.skill_id),
+                            },
+                        )
                 elif skill_info.skill_type == "agent_skill":
                     # Agent skills are loaded as documentation, not tools
                     skill_ref = await self.skill_manager.load_agent_skill_doc(skill_info)

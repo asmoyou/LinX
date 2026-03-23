@@ -6,6 +6,7 @@ import {
   Link2,
   Loader2,
   Package,
+  Plug,
   Plus,
   RefreshCw,
   Search,
@@ -17,6 +18,13 @@ import AddSkillModalV2 from "@/components/skills/AddSkillModalV2";
 import EditSkillModal from "@/components/skills/EditSkillModal";
 import AgentSkillViewer from "@/components/skills/AgentSkillViewer";
 import SkillTesterModal from "@/components/skills/SkillTesterModal";
+import McpServerCard from "@/components/skills/McpServerCard";
+import AddMcpServerModal from "@/components/skills/AddMcpServerModal";
+import EditMcpServerModal from "@/components/skills/EditMcpServerModal";
+import {
+  mcpServersApi,
+  type McpServer,
+} from "@/api/mcpServers";
 import {
   skillsApi,
   type CreateSkillRequest,
@@ -26,12 +34,12 @@ import {
   type SkillOverviewStats,
 } from "@/api/skills";
 
-type SkillsSection = "inbox" | "library" | "bindings";
+type SkillsSection = "inbox" | "library" | "bindings" | "mcp_servers";
 
 const SECTION_PARAM = "section";
 
 const getSectionFromSearchParam = (value: string | null): SkillsSection => {
-  if (value === "inbox" || value === "bindings") {
+  if (value === "inbox" || value === "bindings" || value === "mcp_servers") {
     return value;
   }
   return "library";
@@ -128,6 +136,8 @@ const getSkillTypeLabel = (
       return t("skills.langchainTool");
     case "agent_skill":
       return t("skills.agentSkill");
+    case "mcp_tool":
+      return t("skills.mcpTool", "MCP Tool");
     default:
       return skillType || null;
   }
@@ -258,6 +268,12 @@ export default function Skills() {
     "edit",
   );
 
+  // MCP servers state
+  const [mcpServers, setMcpServers] = useState<McpServer[]>([]);
+  const [isMcpLoading, setIsMcpLoading] = useState(true);
+  const [isAddMcpModalOpen, setIsAddMcpModalOpen] = useState(false);
+  const [editingMcpServer, setEditingMcpServer] = useState<McpServer | null>(null);
+
   useEffect(() => {
     void loadPageData();
   }, []);
@@ -273,16 +289,18 @@ export default function Skills() {
     setIsLibraryLoading(true);
     setIsCandidatesLoading(true);
     setIsBindingsLoading(true);
+    setIsMcpLoading(true);
     setLibraryError(null);
     setCandidatesError(null);
     setBindingsError(null);
 
-    const [skillsResult, candidatesResult, bindingsResult, overviewResult] =
+    const [skillsResult, candidatesResult, bindingsResult, overviewResult, mcpResult] =
       await Promise.allSettled([
         skillsApi.getAll(),
         skillsApi.getCandidates({ status: "all", limit: 100 }),
         skillsApi.getBindings({ limit: 200 }),
         skillsApi.getOverviewStats(),
+        mcpServersApi.getAll(false),
       ]);
 
     if (skillsResult.status === "fulfilled") {
@@ -322,6 +340,11 @@ export default function Skills() {
       );
     }
     setIsBindingsLoading(false);
+
+    if (mcpResult.status === "fulfilled") {
+      setMcpServers(mcpResult.value);
+    }
+    setIsMcpLoading(false);
 
     setIsRefreshing(false);
   };
@@ -462,6 +485,12 @@ export default function Skills() {
       icon: Link2,
       count: totalBindingsCount,
     },
+    {
+      id: "mcp_servers",
+      label: t("skills.sectionMcpServers", "MCP Servers"),
+      icon: Plug,
+      count: mcpServers.length,
+    },
   ];
 
   return (
@@ -501,6 +530,15 @@ export default function Skills() {
               >
                 <Plus className="h-4 w-4" />
                 {t("skills.addSkill")}
+              </button>
+            )}
+            {activeSection === "mcp_servers" && (
+              <button
+                onClick={() => setIsAddMcpModalOpen(true)}
+                className="inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-emerald-500 to-cyan-500 px-5 py-2.5 text-sm font-medium text-white shadow-lg transition-transform hover:-translate-y-0.5"
+              >
+                <Plus className="h-4 w-4" />
+                {t("skills.mcpAddServer", "Add MCP Server")}
               </button>
             )}
           </div>
@@ -894,6 +932,86 @@ export default function Skills() {
             )}
           </section>
         )}
+
+        {activeSection === "mcp_servers" && (
+          <section className="space-y-4">
+            <div className="glass-panel rounded-2xl p-6 shadow-xl">
+              <div>
+                <h2 className="text-xl font-semibold text-foreground">
+                  {t("skills.mcpServersTitle", "MCP Servers")}
+                </h2>
+                <p className="mt-1 text-sm text-muted-foreground">
+                  {t(
+                    "skills.mcpServersDescription",
+                    "Connect external MCP servers and use their tools as skills.",
+                  )}
+                </p>
+              </div>
+            </div>
+
+            {isMcpLoading ? (
+              <div className="flex items-center justify-center py-20">
+                <Loader2 className="h-8 w-8 animate-spin text-emerald-500" />
+              </div>
+            ) : mcpServers.length === 0 ? (
+              <div className="flex flex-col items-center justify-center py-20 text-center">
+                <Plug className="mb-4 h-12 w-12 text-muted-foreground/40" />
+                <p className="text-sm text-muted-foreground">
+                  {t(
+                    "skills.mcpNoServers",
+                    "No MCP servers configured yet. Click \"Add MCP Server\" to get started.",
+                  )}
+                </p>
+              </div>
+            ) : (
+              <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+                {mcpServers.map((server) => (
+                  <McpServerCard
+                    key={server.server_id}
+                    server={server}
+                    onSync={async (id) => {
+                      await mcpServersApi.syncTools(id);
+                      await loadPageData();
+                    }}
+                    onConnect={async (id) => {
+                      await mcpServersApi.testConnection(id);
+                      await loadPageData();
+                    }}
+                    onDisconnect={async (id) => {
+                      await mcpServersApi.disconnect(id);
+                      await loadPageData();
+                    }}
+                    onDelete={async (id) => {
+                      if (!confirm(t("skills.mcpDeleteConfirm", "Delete this MCP server and all its synced tools?"))) return;
+                      await mcpServersApi.delete(id);
+                      await loadPageData();
+                    }}
+                    onEdit={(srv) => setEditingMcpServer(srv)}
+                    onTestTool={(skillId) => {
+                      const skill = skills.find((s) => s.skill_id === skillId);
+                      if (skill) {
+                        setSelectedSkill(skill);
+                        setIsTesterModalOpen(true);
+                      }
+                    }}
+                  />
+                ))}
+              </div>
+            )}
+          </section>
+        )}
+
+        <AddMcpServerModal
+          isOpen={isAddMcpModalOpen}
+          onClose={() => setIsAddMcpModalOpen(false)}
+          onCreated={() => void loadPageData()}
+        />
+
+        <EditMcpServerModal
+          server={editingMcpServer}
+          onClose={() => setEditingMcpServer(null)}
+          onSaved={() => void loadPageData()}
+        />
 
         <AddSkillModalV2
           isOpen={isAddModalOpen}

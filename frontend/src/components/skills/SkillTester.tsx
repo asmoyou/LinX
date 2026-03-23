@@ -633,7 +633,7 @@ const SkillTester: React.FC<SkillTesterProps> = ({
                   </div>
                 )
               ) : (
-                <div className="text-sm text-red-300">{result.error}</div>
+                <div className="text-sm text-red-300 whitespace-pre-wrap">{result.error || result.output || t('skills.testFailed', '测试失败')}</div>
               )}
 
               {isAgentSkill &&

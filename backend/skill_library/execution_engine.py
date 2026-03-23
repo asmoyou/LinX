@@ -184,8 +184,10 @@ class SkillExecutionEngine:
                     execution_time=time.time() - start_time,
                 )
 
-            # Route to appropriate executor based on storage type
-            if skill.storage_type == StorageType.INLINE.value:
+            # Route to appropriate executor based on skill type / storage
+            if skill.skill_type == "mcp_tool":
+                result = await self._execute_mcp_tool(skill, inputs)
+            elif skill.storage_type == StorageType.INLINE.value:
                 result = await self._execute_inline_skill(skill, inputs, context, user_id)
             elif skill.storage_type == StorageType.MINIO.value:
                 result = await self._execute_package_skill(skill, inputs, context, user_id)
@@ -208,6 +210,76 @@ class SkillExecutionEngine:
                 success=False,
                 error=f"Execution error: {str(e)}",
                 execution_time=time.time() - start_time,
+            )
+
+    async def _execute_mcp_tool(
+        self,
+        skill: Skill,
+        inputs: Dict[str, Any],
+    ) -> ExecutionResult:
+        """Execute a tool on an external MCP server.
+
+        Args:
+            skill: Skill model instance (skill_type == mcp_tool)
+            inputs: Input parameters to pass to the MCP tool
+
+        Returns:
+            ExecutionResult with the tool output
+        """
+        start_time = time.time()
+        metadata = skill.skill_metadata or {}
+        tool_name = metadata.get("mcp_tool_name", skill.skill_slug)
+        server_id = skill.mcp_server_id
+
+        if not server_id:
+            return ExecutionResult(
+                success=False,
+                error="MCP tool has no associated server",
+                execution_time=time.time() - start_time,
+            )
+
+        try:
+            from mcp_module.mcp_client import get_mcp_connection_manager
+
+            manager = get_mcp_connection_manager()
+            await manager.get_or_connect(server_id)
+            result = await manager.call_tool(server_id, tool_name, inputs)
+
+            # result may be a dict (HTTP client) or CallToolResult (SDK).
+            if isinstance(result, dict):
+                # HTTP client returns {"content": [{"type":"text","text":"..."}], ...}
+                content_items = result.get("content", [])
+                content_parts = [
+                    item.get("text", "") for item in content_items
+                    if isinstance(item, dict) and item.get("text")
+                ]
+                is_error = result.get("isError", False)
+            else:
+                # SDK CallToolResult object
+                content_parts = [
+                    item.text for item in getattr(result, "content", [])
+                    if hasattr(item, "text")
+                ]
+                is_error = getattr(result, "isError", False)
+
+            output = "\n".join(content_parts) if content_parts else "Tool returned no content"
+
+            return ExecutionResult(
+                success=not is_error,
+                output=output,
+                execution_time=time.time() - start_time,
+                metadata={
+                    "mcp_server_id": str(server_id),
+                    "mcp_tool_name": tool_name,
+                },
+            )
+        except Exception as e:
+            logger.error("MCP tool execution failed: %s: %s", tool_name, e, exc_info=True)
+            return ExecutionResult(
+                success=False,
+                error=f"MCP tool execution failed: {e}",
+                execution_time=time.time() - start_time,
+                metadata={"mcp_tool_name": tool_name},
             )
 
     async def _execute_inline_skill(

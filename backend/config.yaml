@@ -776,3 +776,10 @@ development:
   sample_users: 5
   sample_agents: 10
   sample_tasks: 20
+
+# MCP (Model Context Protocol) server integration
+mcp:
+  enabled: true
+  connection_timeout: 30
+  tool_call_timeout: 60
+  max_retries: 3

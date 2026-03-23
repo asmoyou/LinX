@@ -34,6 +34,7 @@ from api_gateway.routers import (
     integrations,
     knowledge,
     llm,
+    mcp_servers,
     missions,
     monitoring,
     notifications,
@@ -368,10 +369,31 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
     except Exception as e:
         logger.error(f"Failed to recover stale missions after startup: {e}")
 
+    # Initialize MCP connection manager if enabled
+    try:
+        mcp_config = config.get_section("mcp") or {}
+        if mcp_config.get("enabled", False):
+            from mcp_module.mcp_client import get_mcp_connection_manager
+
+            get_mcp_connection_manager()
+            logger.info("MCP connection manager initialized")
+    except Exception as e:
+        logger.warning(f"Failed to initialize MCP connection manager: {e}")
+
     yield
 
     # Shutdown
     logger.info("Shutting down API Gateway")
+
+    # Disconnect all MCP servers
+    try:
+        from mcp_module.mcp_client import get_mcp_connection_manager
+
+        manager = get_mcp_connection_manager()
+        await manager.disconnect_all()
+        logger.info("MCP connections cleaned up")
+    except Exception as e:
+        logger.warning(f"Failed to clean up MCP connections: {e}")
 
     # Cancel active missions first so runtime state is persisted before
     # SessionManager/DB teardown during hot reload or shutdown.
@@ -637,6 +659,9 @@ def create_app() -> FastAPI:
     app.include_router(schedules.router, prefix="/api/v1/schedules", tags=["Schedules"])
     app.include_router(notifications.router, prefix="/api/v1/notifications", tags=["Notifications"])
     app.include_router(skills.router, prefix="/api/v1/skills", tags=["Skills"])
+    app.include_router(
+        mcp_servers.router, prefix="/api/v1/mcp-servers", tags=["MCP Servers"]
+    )
     app.include_router(llm.router, prefix="/api/v1/llm", tags=["LLM Providers"])
     app.include_router(
         integrations.router,

@@ -2,6 +2,7 @@ import {
   Code2,
   Package,
   Layers,
+  Plug,
   Trash2,
   Edit,
   Play,
@@ -80,6 +81,14 @@ const getSkillTypeInfo = (type: string, t: any) => {
         color: "text-orange-600 dark:text-orange-400",
         bgColor: "bg-orange-100 dark:bg-orange-500/20",
         badge: "Package",
+      };
+    case "mcp_tool":
+      return {
+        icon: Plug,
+        label: t("skills.mcpTool", "MCP Tool"),
+        color: "text-emerald-600 dark:text-emerald-400",
+        bgColor: "bg-emerald-100 dark:bg-emerald-500/20",
+        badge: "MCP",
       };
     default:
       return {

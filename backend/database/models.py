@@ -1015,6 +1015,14 @@ class Skill(Base):
     last_executed_at = Column(DateTime(timezone=True), nullable=True)
     average_execution_time = Column(Float, nullable=True)
 
+    # MCP server link (for mcp_tool skills)
+    mcp_server_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("mcp_servers.server_id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
+    )
+
     # Timestamps
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), onupdate=func.now(), nullable=True)
@@ -1040,6 +1048,7 @@ class Skill(Base):
     )
 
     department = relationship("Department")
+    mcp_server = relationship("McpServer", back_populates="skills")
     revisions = relationship(
         "SkillRevision",
         back_populates="skill",
@@ -2223,3 +2232,59 @@ class LLMProvider(Base):
 
     def __repr__(self):
         return f"<LLMProvider(provider_id={self.provider_id}, name={self.name}, protocol={self.protocol}, enabled={self.enabled})>"
+
+
+class McpServer(Base):
+    """MCP (Model Context Protocol) server configurations.
+
+    Stores connection details for external MCP servers whose tools
+    are synced into the skill library as MCP_TOOL skills.
+    """
+
+    __tablename__ = "mcp_servers"
+
+    server_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    name = Column(String(255), unique=True, nullable=False, index=True)
+    description = Column(Text, nullable=True)
+
+    # Transport configuration
+    transport_type = Column(String(32), nullable=False)  # stdio | sse | streamable_http
+    command = Column(String(500), nullable=True)  # stdio: executable name
+    args = Column(JSONB, nullable=True)  # stdio: command arguments list
+    url = Column(String(500), nullable=True)  # sse / streamable_http: server URL
+    headers = Column(JSONB, nullable=True)  # HTTP headers for SSE/streamable
+    env_vars = Column(JSONB, nullable=True)  # Environment variables for subprocess
+
+    # Connection state
+    status = Column(String(32), nullable=False, default="disconnected", index=True)
+    last_connected_at = Column(DateTime(timezone=True), nullable=True)
+    last_sync_at = Column(DateTime(timezone=True), nullable=True)
+    tool_count = Column(Integer, nullable=False, default=0)
+    error_message = Column(Text, nullable=True)
+    is_active = Column(Boolean, nullable=False, default=True, index=True)
+
+    # Ownership
+    created_by = Column(
+        UUID(as_uuid=True),
+        ForeignKey("users.user_id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+    # Relationships
+    skills = relationship("Skill", back_populates="mcp_server", cascade="all, delete-orphan")
+
+    __table_args__ = (
+        Index("idx_mcp_server_status", "status"),
+        Index("idx_mcp_server_active", "is_active"),
+    )
+
+    def __repr__(self):
+        return (
+            f"<McpServer(server_id={self.server_id}, name={self.name}, "
+            f"transport={self.transport_type}, status={self.status})>"
+        )

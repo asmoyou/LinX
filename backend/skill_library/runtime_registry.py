@@ -146,7 +146,7 @@ class SkillRuntimeRegistry:
             item
             for item in self._list_bound_descriptors(agent_id=agent_id, user_id=user_id)
             if item.binding_mode in {"tool", "hybrid"} and item.runtime_mode in {"tool", "hybrid"}
-            and item.tool_code
+            and (item.tool_code or item.skill_source_kind == "mcp")
         ]
 
     @staticmethod

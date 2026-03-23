@@ -43,7 +43,7 @@ const resolveDefaultBindingMode = (
   ) {
     return runtimeMode as AgentSkillBindingMode;
   }
-  return skill.skill_type === "langchain_tool" ? "tool" : "doc";
+  return skill.skill_type === "langchain_tool" || skill.skill_type === "mcp_tool" ? "tool" : "doc";
 };
 
 const buildDefaultBinding = (
@@ -1053,6 +1053,8 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
                           const isSelected = Boolean(selectedBinding);
                           const isLangChainTool =
                             skill.skill_type === "langchain_tool";
+                          const isMcpTool =
+                            skill.skill_type === "mcp_tool";
 
                           return (
                             <div
@@ -1113,13 +1115,17 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
                                       className={`
                                       px-2 py-0.5 text-xs font-medium rounded
                                       ${
-                                        isLangChainTool
+                                        isMcpTool
+                                          ? "bg-emerald-500/10 text-emerald-700 dark:text-emerald-400"
+                                          : isLangChainTool
                                           ? "bg-blue-500/10 text-blue-700 dark:text-blue-400"
                                           : "bg-purple-500/10 text-purple-700 dark:text-purple-400"
                                       }
                                     `}
                                     >
-                                      {isLangChainTool
+                                      {isMcpTool
+                                        ? t("skills.mcpTool", "MCP")
+                                        : isLangChainTool
                                         ? t("skills.langchainTool")
                                         : t("skills.agentSkill")}
                                     </span>

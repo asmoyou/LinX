@@ -1,8 +1,9 @@
 """Skill types and enums.
 
-Simplified two-tier classification system:
+Simplified classification system:
 1. LangChain Tool - Simple standardized functions
 2. Agent Skill - Flexible skills (auto-detects storage based on complexity)
+3. MCP Tool - Tools from external MCP servers
 
 References:
 - docs/backend/skill-type-classification.md
@@ -13,17 +14,21 @@ from enum import Enum
 
 class SkillType(str, Enum):
     """Skill type classification.
-    
-    Simplified system with only two types:
+
     - LANGCHAIN_TOOL: Simple, standardized single-function tools
     - AGENT_SKILL: Flexible skills (storage auto-detected)
+    - MCP_TOOL: Tools discovered from external MCP servers
     """
     # LangChain Tool - Simple standardized tool with @tool decorator
     LANGCHAIN_TOOL = "langchain_tool"
-    
+
     # Agent Skill - Flexible skill (can be single or multi-file)
     # Storage is automatically determined based on size/complexity
     AGENT_SKILL = "agent_skill"
+
+    # MCP Tool - Tool from an external MCP server
+    # No local code; execution routed through MCP client
+    MCP_TOOL = "mcp_tool"
 
 
 class StorageType(str, Enum):

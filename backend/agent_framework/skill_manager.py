@@ -118,7 +118,8 @@ class SkillManager:
         self.skill_env_user_id = skill_env_user_id or user_id
         self.loaded_langchain_tools: Dict[UUID, BaseTool] = {}
         self.loaded_agent_skills: Dict[UUID, AgentSkillReference] = {}
-        
+        self.loaded_mcp_tools: Dict[UUID, BaseTool] = {}
+
         logger.info(
             f"SkillManager initialized for agent {agent_id}",
             extra={"agent_id": str(agent_id), "user_id": str(user_id)}
@@ -157,7 +158,13 @@ class SkillManager:
             agent_id=self.agent_id,
             user_id=self.user_id,
         ):
-            key = (descriptor.skill_id, "langchain_tool")
+            # Determine skill_type from source_kind
+            if descriptor.skill_source_kind == "mcp":
+                s_type = "mcp_tool"
+            else:
+                s_type = "langchain_tool"
+
+            key = (descriptor.skill_id, s_type)
             if key in seen:
                 continue
             seen.add(key)
@@ -167,7 +174,7 @@ class SkillManager:
                     skill_slug=descriptor.slug,
                     display_name=descriptor.display_name,
                     description=descriptor.description,
-                    skill_type="langchain_tool",
+                    skill_type=s_type,
                     storage_type=descriptor.artifact_storage_kind,
                     storage_path=descriptor.artifact_ref,
                     skill_md_content=descriptor.instruction_md,
@@ -213,16 +220,21 @@ class SkillManager:
     
     async def load_langchain_tool(self, skill_info: SkillInfo) -> Optional[BaseTool]:
         """Load a LangChain tool from skill.
-        
+
+        Supports both native langchain_tool and mcp_tool types.
+
         Args:
             skill_info: Skill information
-        
+
         Returns:
             LangChain BaseTool instance or None if loading fails
         """
+        if skill_info.skill_type == "mcp_tool":
+            return await self._load_mcp_tool(skill_info)
+
         if skill_info.skill_type != "langchain_tool":
             logger.warning(
-                f"Skill {skill_info.skill_slug} is not a langchain_tool",
+                f"Skill {skill_info.skill_slug} is not a langchain_tool or mcp_tool",
                 extra={"skill_id": str(skill_info.skill_id)}
             )
             return None
@@ -260,7 +272,77 @@ class SkillManager:
                 exc_info=True
             )
             return None
-    
+
+    async def _load_mcp_tool(self, skill_info: SkillInfo) -> Optional[BaseTool]:
+        """Load an MCP tool as a LangChain BaseTool wrapper.
+
+        Args:
+            skill_info: Skill information (must be mcp_tool type)
+
+        Returns:
+            MCPToolWrapper instance or None if loading fails
+        """
+        if skill_info.skill_id in self.loaded_mcp_tools:
+            return self.loaded_mcp_tools[skill_info.skill_id]
+
+        try:
+            from mcp_module.mcp_tool_wrapper import MCPToolWrapper, create_args_schema_from_mcp
+
+            interface = skill_info.interface_definition or {}
+            mcp_input_schema = interface.get("mcp_input_schema", {})
+            mcp_tool_name = interface.get("mcp_tool_name", skill_info.skill_slug)
+            mcp_server_id = interface.get("mcp_server_id")
+
+            # Fallback: get server_id from DB if not in interface
+            if not mcp_server_id:
+                from database.connection import get_db_session
+                from database.models import Skill as SkillModel
+
+                with get_db_session() as session:
+                    db_skill = (
+                        session.query(SkillModel)
+                        .filter(SkillModel.skill_id == skill_info.skill_id)
+                        .one_or_none()
+                    )
+                    if db_skill and db_skill.mcp_server_id:
+                        mcp_server_id = str(db_skill.mcp_server_id)
+
+            if not mcp_server_id:
+                logger.error(
+                    "MCP tool %s has no server_id", skill_info.skill_slug,
+                    extra={"skill_id": str(skill_info.skill_id)},
+                )
+                return None
+
+            args_schema = create_args_schema_from_mcp(mcp_tool_name, mcp_input_schema)
+
+            tool = MCPToolWrapper(
+                name=skill_info.skill_slug,
+                description=skill_info.description or f"MCP tool: {mcp_tool_name}",
+                args_schema=args_schema,
+                mcp_server_id=mcp_server_id,
+                mcp_tool_name=mcp_tool_name,
+            )
+
+            self.loaded_mcp_tools[skill_info.skill_id] = tool
+            logger.info(
+                "Loaded MCP tool: %s (server=%s)",
+                skill_info.skill_slug,
+                mcp_server_id,
+                extra={"skill_id": str(skill_info.skill_id)},
+            )
+            return tool
+
+        except Exception as e:
+            logger.error(
+                "Failed to load MCP tool %s: %s",
+                skill_info.skill_slug,
+                e,
+                extra={"skill_id": str(skill_info.skill_id)},
+                exc_info=True,
+            )
+            return None
+
     async def _load_skill_package_files(self, skill_info: SkillInfo) -> Dict[str, str]:
         """Load files from skill package stored in MinIO.
         
@@ -542,18 +624,22 @@ Available skills:
         # Clear loaded skills
         self.loaded_langchain_tools.clear()
         self.loaded_agent_skills.clear()
-        
+        self.loaded_mcp_tools.clear()
+
         # Discover and load skills again
         skills = await self.discover_skills(agent_capabilities)
-        
+
         for skill_info in skills:
             if skill_info.skill_type == "langchain_tool":
                 await self.load_langchain_tool(skill_info)
+            elif skill_info.skill_type == "mcp_tool":
+                await self.load_langchain_tool(skill_info)
             elif skill_info.skill_type == "agent_skill":
                 await self.load_agent_skill_doc(skill_info)
-        
+
         logger.info(
-            f"Reloaded {len(self.loaded_langchain_tools)} LangChain tools and "
+            f"Reloaded {len(self.loaded_langchain_tools)} LangChain tools, "
+            f"{len(self.loaded_mcp_tools)} MCP tools, and "
             f"{len(self.loaded_agent_skills)} Agent Skills",
             extra={"agent_id": str(self.agent_id)}
         )

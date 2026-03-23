@@ -2143,10 +2143,10 @@ Requirements:
                             },
                         )
 
-        # Handle langchain_tool with structured testing
-        elif skill.skill_type == "langchain_tool":
+        # Handle langchain_tool / mcp_tool with structured testing
+        elif skill.skill_type in ("langchain_tool", "mcp_tool"):
             if inputs is None:
-                raise HTTPException(status_code=400, detail="inputs required for langchain_tool")
+                raise HTTPException(status_code=400, detail="inputs required for tool testing")
 
             # Execute skill
             engine = get_execution_engine()
@@ -2155,9 +2155,10 @@ Requirements:
             )
 
             logger.info(
-                f"LangChain tool tested by user {current_user.user_id}",
+                f"Skill tested by user {current_user.user_id}",
                 extra={
                     "skill_id": skill_id,
+                    "skill_type": skill.skill_type,
                     "success": result.success,
                     "execution_time": result.execution_time,
                 },
