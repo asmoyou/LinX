@@ -21,8 +21,11 @@ from alembic.config import Config as AlembicConfig
 from alembic.runtime.migration import MigrationContext
 from alembic.script import ScriptDirectory
 from shared.config import get_config
+from shared.runtime_env import bootstrap_runtime_env
 
 logger = logging.getLogger(__name__)
+
+bootstrap_runtime_env()
 
 
 class MigrationRunner:

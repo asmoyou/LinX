@@ -571,11 +571,10 @@ export const agentsApi = {
     conversationId: string,
   ): Promise<void> => {
     try {
+      const requestConfig: RequestConfigWithMeta = { suppressErrorToast: true };
       await apiClient.delete(
         `/agents/${agentId}/conversations/${conversationId}`,
-        {
-          suppressErrorToast: true,
-        },
+        requestConfig,
       );
     } catch (error: any) {
       if (error?.response?.status === 404) {
@@ -711,10 +710,11 @@ export const agentsApi = {
     conversationId: string,
   ): Promise<{ success: boolean }> => {
     try {
+      const requestConfig: RequestConfigWithMeta = { suppressErrorToast: true };
       const response = await apiClient.post<{ success: boolean }>(
         `/agents/${agentId}/conversations/${conversationId}/runtime/release`,
         undefined,
-        { suppressErrorToast: true },
+        requestConfig,
       );
       return response.data;
     } catch (error: any) {

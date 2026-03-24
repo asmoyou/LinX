@@ -63,7 +63,7 @@ const safeParseUsage = (value: string | null): Record<string, number> => {
         ([key, count]) =>
           typeof key === 'string' && typeof count === 'number' && Number.isFinite(count) && count > 0
       )
-    );
+    ) as Record<string, number>;
   } catch {
     return {};
   }
@@ -517,7 +517,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ isCollapsed }) => {
                           className={`w-5 h-5 transition-transform duration-300 ${
                             isActive ? 'scale-110' : ''
                           }`}
-                          aria-hidden="true"
+                          aria-hidden={true}
                         />
                         {!isCollapsed && (
                           <span
@@ -587,7 +587,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ isCollapsed }) => {
                               className={`w-5 h-5 transition-transform duration-300 ${
                                 showActive ? 'scale-110' : ''
                               }`}
-                              aria-hidden="true"
+                              aria-hidden={true}
                             />
                             {!isCollapsed && (
                               <span className={`font-medium ${isCompactHeight ? 'text-[13px]' : 'text-sm'}`}>

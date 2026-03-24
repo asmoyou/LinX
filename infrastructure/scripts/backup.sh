@@ -1,9 +1,11 @@
 #!/bin/bash
 
 # LinX (灵枢) - Backup Script
-# This script creates backups of all data volumes
+# This script creates backups of the project-local data directories
 
-set -e
+set -euo pipefail
+
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/common.sh"
 
 # Colors for output
 RED='\033[0;31m'
@@ -24,8 +26,13 @@ print_error() {
     echo -e "${RED}[ERROR]${NC} $1"
 }
 
+print_warning() {
+    echo -e "${YELLOW}[WARNING]${NC} $1"
+}
+
 # Configuration
-BACKUP_DIR=${BACKUP_DIR:-./backups}
+BACKUP_DIR=${BACKUP_DIR:-"${PROJECT_ROOT}/backups"}
+DATA_ROOT="${PROJECT_ROOT}/data"
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 BACKUP_NAME="dwp_backup_${TIMESTAMP}"
 
@@ -34,31 +41,43 @@ mkdir -p "$BACKUP_DIR/$BACKUP_NAME"
 
 print_info "Starting backup: $BACKUP_NAME"
 
+if ! resolve_compose_cmd; then
+    print_error "Docker Compose is not installed. Please install docker compose or docker-compose first."
+    exit 1
+fi
+
 # Backup PostgreSQL
 print_info "Backing up PostgreSQL..."
-docker-compose exec -T postgres pg_dumpall -U dwp_user > "$BACKUP_DIR/$BACKUP_NAME/postgres.sql"
+run_compose exec -T postgres pg_dumpall -U "${POSTGRES_USER:-dwp_user}" > "$BACKUP_DIR/$BACKUP_NAME/postgres.sql"
 print_success "PostgreSQL backup completed"
 
 # Backup Redis
 print_info "Backing up Redis..."
-docker-compose exec -T redis redis-cli --rdb /data/dump.rdb SAVE
-docker cp dwp-redis:/data/dump.rdb "$BACKUP_DIR/$BACKUP_NAME/redis.rdb"
+run_compose exec -T redis redis-cli --no-auth-warning -a "${REDIS_PASSWORD:-redis_password_change_me}" SAVE >/dev/null
+cp "${DATA_ROOT}/redis/dump.rdb" "$BACKUP_DIR/$BACKUP_NAME/redis.rdb"
 print_success "Redis backup completed"
 
-# Backup MinIO
-print_info "Backing up MinIO..."
-docker run --rm \
-  --network dwp_dwp-data \
-  -v "$BACKUP_DIR/$BACKUP_NAME:/backup" \
-  -e MC_HOST_minio=http://minioadmin:minioadmin_change_me@minio:9000 \
-  minio/mc \
-  mirror minio /backup/minio
-print_success "MinIO backup completed"
+copy_data_dir() {
+    local source_name="$1"
+    local destination_dir="$BACKUP_DIR/$BACKUP_NAME/$source_name"
+    local source_dir="${DATA_ROOT}/$source_name"
 
-# Backup Milvus
-print_info "Backing up Milvus..."
-docker cp dwp-milvus:/var/lib/milvus "$BACKUP_DIR/$BACKUP_NAME/milvus"
-print_success "Milvus backup completed"
+    if [ ! -d "$source_dir" ]; then
+        print_warning "Skipping missing data directory: ${source_dir}"
+        return 0
+    fi
+
+    mkdir -p "$destination_dir"
+    cp -a "${source_dir}/." "$destination_dir/"
+}
+
+print_info "Backing up object storage and vector data directories..."
+copy_data_dir "minio"
+copy_data_dir "etcd"
+copy_data_dir "minio-milvus"
+copy_data_dir "milvus"
+copy_data_dir "funasr-model-cache"
+print_success "Project data directory backup completed"
 
 # Create archive
 print_info "Creating backup archive..."

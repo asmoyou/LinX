@@ -117,7 +117,7 @@ export const useStoreSync = (
             const userMemory = await memoryWorkbenchApi.listUserMemory({
               limit: 100,
             });
-            memoryWorkbenchStore.setRecords(userMemory);
+            memoryWorkbenchStore.setRecords(userMemory.items);
           } catch (error) {
             console.error("Failed to fetch memories:", error);
             memoryWorkbenchStore.setError("Failed to load memories");
@@ -215,7 +215,7 @@ export const useRefreshStore = () => {
       const userMemory = await memoryWorkbenchApi.listUserMemory({
         limit: 100,
       });
-      memoryWorkbenchStore.setRecords(userMemory);
+      memoryWorkbenchStore.setRecords(userMemory.items);
     } catch (error) {
       console.error("Failed to refresh memories:", error);
       memoryWorkbenchStore.setError("Failed to refresh memories");

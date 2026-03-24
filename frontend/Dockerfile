@@ -1,13 +1,13 @@
 # Multi-stage build for production frontend
-FROM node:20-alpine AS builder
+FROM node:20-bookworm-slim AS builder
 
 WORKDIR /app
 
 # Copy package files
 COPY package*.json ./
 
-# Install dependencies
-RUN npm ci --only=production
+# Install all build dependencies, including devDependencies required by Vite/TypeScript.
+RUN npm ci
 
 # Copy source code
 COPY . .

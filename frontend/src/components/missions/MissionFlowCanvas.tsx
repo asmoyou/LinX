@@ -1151,7 +1151,7 @@ export const MissionFlowCanvas: React.FC<MissionFlowCanvasProps> = ({ missionId 
     );
   }, [activeDetailTask]);
   const canRetryThisTask =
-    selectedMission.status === 'failed' || selectedMission.status === 'cancelled';
+    selectedMission?.status === 'failed' || selectedMission?.status === 'cancelled';
 
   const handleRetryThisTaskFromNode = useCallback(async () => {
     if (isRetryingFailedParts || !canRetryThisTask) return;
@@ -1545,7 +1545,7 @@ export const MissionFlowCanvas: React.FC<MissionFlowCanvasProps> = ({ missionId 
                           {attempt.max_attempts ? `/${String(attempt.max_attempts)}` : ''}
                           {attempt.error_type ? ` • ${String(attempt.error_type)}` : ''}
                         </div>
-                        {attempt.error && (
+                        {Boolean(attempt.error) && (
                           <pre className="mt-1 whitespace-pre-wrap break-words text-red-700 dark:text-red-200">
                             {String(attempt.error)}
                           </pre>

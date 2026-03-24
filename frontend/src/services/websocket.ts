@@ -60,9 +60,13 @@ export interface WebSocketConfig {
   debug?: boolean;
 }
 
+type ResolvedWebSocketConfig = Omit<Required<WebSocketConfig>, "token"> & {
+  token?: string;
+};
+
 export class WebSocketManager {
   private ws: WebSocket | null = null;
-  private config: Required<WebSocketConfig>;
+  private config: ResolvedWebSocketConfig;
   private status: WebSocketStatus = 'disconnected';
   private reconnectAttempts = 0;
   private reconnectTimeoutId: ReturnType<typeof setTimeout> | null = null;

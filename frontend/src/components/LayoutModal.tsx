@@ -1,6 +1,7 @@
 import React, { useEffect } from 'react';
 import { createPortal } from 'react-dom';
 import { AnimatePresence, motion } from 'framer-motion';
+import type { Variants } from 'framer-motion';
 import { X } from 'lucide-react';
 
 type ModalSize = 'xs' | 'sm' | 'md' | 'lg' | 'xl' | '2xl' | '3xl' | '4xl' | '5xl' | '6xl' | '7xl' | 'full';
@@ -139,7 +140,7 @@ export const LayoutModal: React.FC<LayoutModalProps> & {
 
   const useRawLayout = isRaw !== undefined ? isRaw : (!title && !footer && !hasCompoundComponents);
 
-  const modalVariants = {
+  const modalVariants: Variants = {
     hidden: { opacity: 0, scale: 0.96, y: 8 },
     visible: { 
       opacity: 1, 

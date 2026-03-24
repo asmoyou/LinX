@@ -182,11 +182,13 @@ const DepartmentForm: React.FC<DepartmentFormProps> = ({ department, onClose, on
               <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-300 mb-1">
                 {t('departments.status')}
               </label>
-              <select
-                value={status}
-                onChange={(e) => setStatus(e.target.value)}
-                className="w-full px-3 py-2 bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/50"
-              >
+	              <select
+	                value={status}
+	                onChange={(e) =>
+	                  setStatus(e.target.value as "active" | "archived")
+	                }
+	                className="w-full px-3 py-2 bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/50"
+	              >
                 <option value="active">{t('departments.active')}</option>
                 <option value="archived">{t('departments.archived')}</option>
               </select>

@@ -1,17 +1,28 @@
 # Dockerfile for Document Processor Service
 # Multi-stage build for optimized image size
 
-FROM python:3.11-slim as builder
+FROM python:3.11-slim-bookworm AS builder
 
 # Set working directory
 WORKDIR /app
 
 # Install system dependencies
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    gcc \
-    g++ \
-    libpq-dev \
-    && rm -rf /var/lib/apt/lists/*
+RUN set -eux; \
+    for attempt in 1 2 3 4 5; do \
+        if apt-get -o Acquire::Retries=6 -o Acquire::http::Timeout=30 update && \
+           apt-get -o Acquire::Retries=6 -o Acquire::http::Timeout=30 install -y --no-install-recommends --fix-missing \
+           gcc \
+           g++ \
+           libpq-dev; then \
+            rm -rf /var/lib/apt/lists/*; \
+            break; \
+        fi; \
+        if [ "${attempt}" -eq 5 ]; then \
+            exit 1; \
+        fi; \
+        rm -rf /var/lib/apt/lists/*; \
+        sleep 5; \
+    done
 
 # Copy requirements
 COPY backend/requirements.txt .
@@ -20,21 +31,32 @@ COPY backend/requirements.txt .
 RUN pip install --no-cache-dir --user -r requirements.txt
 
 # Final stage
-FROM python:3.11-slim
+FROM python:3.11-slim-bookworm
 
 # Set working directory
 WORKDIR /app
 
 # Install runtime dependencies for document processing
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    libpq5 \
-    curl \
-    tesseract-ocr \
-    tesseract-ocr-eng \
-    tesseract-ocr-chi-sim \
-    ffmpeg \
-    poppler-utils \
-    && rm -rf /var/lib/apt/lists/*
+RUN set -eux; \
+    for attempt in 1 2 3 4 5; do \
+        if apt-get -o Acquire::Retries=6 -o Acquire::http::Timeout=30 update && \
+           apt-get -o Acquire::Retries=6 -o Acquire::http::Timeout=30 install -y --no-install-recommends --fix-missing \
+           libpq5 \
+           curl \
+           tesseract-ocr \
+           tesseract-ocr-eng \
+           tesseract-ocr-chi-sim \
+           ffmpeg \
+           poppler-utils; then \
+            rm -rf /var/lib/apt/lists/*; \
+            break; \
+        fi; \
+        if [ "${attempt}" -eq 5 ]; then \
+            exit 1; \
+        fi; \
+        rm -rf /var/lib/apt/lists/*; \
+        sleep 5; \
+    done
 
 # Copy Python dependencies from builder
 COPY --from=builder /root/.local /root/.local

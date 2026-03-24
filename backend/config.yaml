@@ -28,7 +28,7 @@ api:
     requests_per_hour: 1000
     burst: 10
   jwt:
-    secret_key: dev-secret-key-change-in-production
+    secret_key: ${JWT_SECRET}
     algorithm: HS256
     expiration_hours: 24
     refresh_expiration_days: 7
@@ -36,11 +36,11 @@ api:
   timeout_seconds: 300
 database:
   postgres:
-    host: localhost
+    host: ${POSTGRES_HOST}
     port: 5432
-    database: digital_workforce
-    username: dwp_user
-    password: dwp_password_change_me
+    database: ${POSTGRES_DB}
+    username: ${POSTGRES_USER}
+    password: ${POSTGRES_PASSWORD}
     pool_size: 20
     max_overflow: 10
     pool_timeout: 30
@@ -52,7 +52,7 @@ database:
     ssl_key: null
     ssl_root_cert: null
   milvus:
-    host: localhost
+    host: ${MILVUS_HOST}
     port: 19530
     user: ''
     password: ''
@@ -68,9 +68,9 @@ database:
     enable_partitioning: true
     partition_by: user_id
   redis:
-    host: localhost
+    host: ${REDIS_HOST}
     port: 6379
-    password: redis_password_change_me
+    password: ${REDIS_PASSWORD}
     db: 0
     max_connections: 50
     socket_timeout: 5
@@ -82,9 +82,9 @@ database:
     ssl_ca_certs: null
 storage:
   minio:
-    endpoint: localhost:9000
-    access_key: minioadmin
-    secret_key: minioadmin_change_me
+    endpoint: ${MINIO_ENDPOINT}
+    access_key: ${MINIO_ACCESS_KEY}
+    secret_key: ${MINIO_SECRET_KEY}
     secure: false
     region: us-east-1
     buckets:
@@ -776,8 +776,6 @@ development:
   sample_users: 5
   sample_agents: 10
   sample_tasks: 20
-
-# MCP (Model Context Protocol) server integration
 mcp:
   enabled: true
   connection_timeout: 30

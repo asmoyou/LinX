@@ -3,7 +3,11 @@
 # LinX (灵枢) - Stop Script
 # This script helps stop the platform gracefully
 
-set -e
+set -euo pipefail
+
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/common.sh"
+
+DATA_ROOT="${PROJECT_ROOT}/data"
 
 # Colors for output
 RED='\033[0;31m'
@@ -34,16 +38,21 @@ MODE=${1:-graceful}
 
 print_info "Stopping LinX (灵枢)..."
 
+if ! resolve_compose_cmd; then
+    print_error "Docker Compose is not installed. Please install docker compose or docker-compose first."
+    exit 1
+fi
+
 case $MODE in
     graceful)
         print_info "Stopping services gracefully (data will be preserved)..."
-        docker-compose stop
+        run_compose stop
         print_success "All services stopped"
         ;;
     
     down)
         print_info "Stopping and removing containers (data will be preserved)..."
-        docker-compose down
+        run_compose down
         print_success "All containers removed"
         ;;
     
@@ -52,7 +61,16 @@ case $MODE in
         read -p "Are you sure? (yes/no): " confirm
         if [ "$confirm" = "yes" ]; then
             print_info "Stopping services and removing all data..."
-            docker-compose down -v
+            run_compose down --remove-orphans
+            rm -rf \
+                "${DATA_ROOT}/postgres" \
+                "${DATA_ROOT}/redis" \
+                "${DATA_ROOT}/minio" \
+                "${DATA_ROOT}/etcd" \
+                "${DATA_ROOT}/minio-milvus" \
+                "${DATA_ROOT}/milvus" \
+                "${DATA_ROOT}/funasr-model-cache"
+            "${SCRIPT_DIR}/prepare-data-dirs.sh"
             print_success "All services stopped and data removed"
         else
             print_info "Operation cancelled"

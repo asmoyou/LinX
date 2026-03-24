@@ -2,18 +2,29 @@
 # References: Requirements 8, Design Section 10
 
 # Stage 1: Builder
-FROM python:3.11-slim as builder
+FROM python:3.11-slim-bookworm AS builder
 
 # Set working directory
 WORKDIR /build
 
 # Install build dependencies
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    gcc \
-    g++ \
-    make \
-    libpq-dev \
-    && rm -rf /var/lib/apt/lists/*
+RUN set -eux; \
+    for attempt in 1 2 3 4 5; do \
+        if apt-get -o Acquire::Retries=6 -o Acquire::http::Timeout=30 update && \
+           apt-get -o Acquire::Retries=6 -o Acquire::http::Timeout=30 install -y --no-install-recommends --fix-missing \
+           gcc \
+           g++ \
+           make \
+           libpq-dev; then \
+            rm -rf /var/lib/apt/lists/*; \
+            break; \
+        fi; \
+        if [ "${attempt}" -eq 5 ]; then \
+            exit 1; \
+        fi; \
+        rm -rf /var/lib/apt/lists/*; \
+        sleep 5; \
+    done
 
 # Copy requirements
 COPY requirements.txt requirements-dev.txt ./
@@ -25,17 +36,28 @@ RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir -r requirements.txt
 
 # Stage 2: Runtime
-FROM python:3.11-slim
+FROM python:3.11-slim-bookworm
 
 # Set working directory
 WORKDIR /app
 
 # Install runtime dependencies only
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    libpq5 \
-    tesseract-ocr \
-    ffmpeg \
-    && rm -rf /var/lib/apt/lists/*
+RUN set -eux; \
+    for attempt in 1 2 3 4 5; do \
+        if apt-get -o Acquire::Retries=6 -o Acquire::http::Timeout=30 update && \
+           apt-get -o Acquire::Retries=6 -o Acquire::http::Timeout=30 install -y --no-install-recommends --fix-missing \
+           libpq5 \
+           tesseract-ocr \
+           ffmpeg; then \
+            rm -rf /var/lib/apt/lists/*; \
+            break; \
+        fi; \
+        if [ "${attempt}" -eq 5 ]; then \
+            exit 1; \
+        fi; \
+        rm -rf /var/lib/apt/lists/*; \
+        sleep 5; \
+    done
 
 # Copy virtual environment from builder
 COPY --from=builder /opt/venv /opt/venv

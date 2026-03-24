@@ -3,6 +3,7 @@ import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useTranslation } from "react-i18next";
 import { Upload, File, X, AlertCircle } from "lucide-react";
+import { z } from "zod";
 import { SubmitButton } from "@/components/forms/SubmitButton";
 import {
   uploadDocumentSchema,
@@ -22,6 +23,7 @@ interface UploadDocumentFormProps {
 
 const MAX_FILE_SIZE = 200 * 1024 * 1024; // 200MB for regular files
 const MAX_ZIP_SIZE = 3 * 1024 * 1024 * 1024; // 3GB for ZIP archives
+type UploadDocumentFormInput = z.input<typeof uploadDocumentSchema>;
 const SUPPORTED_FORMATS = [
   ".pdf",
   ".doc",
@@ -65,7 +67,7 @@ export const UploadDocumentForm: React.FC<UploadDocumentFormProps> = ({
     watch,
     setValue,
     getValues,
-  } = useForm<UploadDocumentFormData>({
+  } = useForm<UploadDocumentFormInput, unknown, UploadDocumentFormData>({
     resolver: zodResolver(uploadDocumentSchema),
     mode: "onBlur",
     defaultValues: {

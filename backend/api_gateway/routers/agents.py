@@ -3820,11 +3820,17 @@ async def test_agent(
                     # Cache the initialized agent with 30 minute TTL.
                     cache_agent(cache_key, agent, llm, ttl_minutes=30)
 
-                model_info = f"{agent_info.llm_model or 'llama3.2:latest'} via {agent_info.llm_provider or 'ollama'}"
-                yield f"data: {json.dumps({'type': 'info', 'content': f'Using model: {model_info}'})}\n\n"
+                    model_info = (
+                        f"{agent_info.llm_model or 'llama3.2:latest'} "
+                        f"via {agent_info.llm_provider or 'ollama'}"
+                    )
+                    yield f"data: {json.dumps({'type': 'info', 'content': f'Using model: {model_info}'})}\n\n"
 
-                if agent.config.capabilities:
-                    yield f"data: {json.dumps({'type': 'info', 'content': f'Available skills: {', '.join(agent.config.capabilities)}'})}\n\n"
+                    if agent.config.capabilities:
+                        capabilities_text = ", ".join(agent.config.capabilities)
+                        yield (
+                            f"data: {json.dumps({'type': 'info', 'content': f'Available skills: {capabilities_text}'})}\n\n"
+                        )
 
                 yield f"data: {json.dumps({'type': 'info', 'content': 'Retrieving relevant memories and processing...'})}\n\n"
                 logger.debug(

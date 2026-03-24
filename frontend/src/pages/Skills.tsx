@@ -13,6 +13,7 @@ import {
   XCircle,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
+import type { TFunction } from "i18next";
 import SkillCardV2 from "@/components/skills/SkillCardV2";
 import AddSkillModalV2 from "@/components/skills/AddSkillModalV2";
 import EditSkillModal from "@/components/skills/EditSkillModal";
@@ -129,7 +130,7 @@ const matchesCandidateSearch = (
 };
 
 const getSkillTypeLabel = (
-  t: (key: string, options?: Record<string, unknown> | string) => string,
+  t: TFunction,
   skillType?: string | null,
 ): string | null => {
   switch (skillType) {
@@ -145,7 +146,7 @@ const getSkillTypeLabel = (
 };
 
 const getCandidateStatusLabel = (
-  t: (key: string, options?: Record<string, unknown> | string) => string,
+  t: TFunction,
   status: string,
 ): string => {
   switch (status) {
@@ -161,7 +162,7 @@ const getCandidateStatusLabel = (
 };
 
 const getBindingSourceLabel = (
-  t: (key: string, options?: Record<string, unknown> | string) => string,
+  t: TFunction,
   source?: string | null,
 ): string => {
   switch (source) {
@@ -175,7 +176,7 @@ const getBindingSourceLabel = (
 };
 
 const getOwnerTypeLabel = (
-  t: (key: string, options?: Record<string, unknown> | string) => string,
+  t: TFunction,
   ownerType: string,
 ): string => {
   if (ownerType === "agent") {

@@ -120,19 +120,19 @@ run-processor:
 
 # Docker
 docker-build:
-	docker-compose build
+	docker compose build
 
 docker-up:
-	docker-compose up -d
+	docker compose up -d
 
 docker-down:
-	docker-compose down
+	docker compose down
 
 docker-logs:
-	docker-compose logs -f
+	docker compose logs -f
 
 docker-ps:
-	docker-compose ps
+	docker compose ps
 
 # Database
 migrate:

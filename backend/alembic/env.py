@@ -13,21 +13,43 @@ sys.path.insert(0, str(backend_dir))
 
 # Import our configuration loader
 from shared.config import get_config
+from shared.runtime_env import bootstrap_runtime_env
+
+bootstrap_runtime_env()
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.
 config = context.config
 
-# Load our application configuration
-app_config = get_config()
+DEFAULT_ALEMBIC_URL = "postgresql://platform_user:dev_password@localhost:5432/workforce_platform"
 
-# Override the sqlalchemy.url with our configuration
-db_config = app_config.get_section("database.postgres")
-database_url = (
-    f"postgresql://{db_config['username']}:{db_config['password']}"
-    f"@{db_config['host']}:{db_config['port']}/{db_config['database']}"
-)
-config.set_main_option("sqlalchemy.url", database_url)
+
+def _normalize_database_url(url: str) -> str:
+    return (
+        str(url)
+        .replace("postgresql+asyncpg://", "postgresql://")
+        .replace("postgresql+psycopg://", "postgresql://")
+    )
+
+
+def _resolve_database_url() -> str:
+    override_url = os.environ.get("TEST_DATABASE_URL") or os.environ.get("DATABASE_URL")
+    if override_url:
+        return _normalize_database_url(override_url)
+
+    configured_url = config.get_main_option("sqlalchemy.url")
+    if configured_url and configured_url != DEFAULT_ALEMBIC_URL:
+        return _normalize_database_url(configured_url)
+
+    app_config = get_config()
+    db_config = app_config.get_section("database.postgres")
+    return (
+        f"postgresql://{db_config['username']}:{db_config['password']}"
+        f"@{db_config['host']}:{db_config['port']}/{db_config['database']}"
+    )
+
+
+config.set_main_option("sqlalchemy.url", _resolve_database_url())
 
 # Interpret the config file for Python logging.
 # This line sets up loggers basically.
@@ -39,6 +61,7 @@ if config.config_file_name is not None:
 # from myapp import mymodel
 # target_metadata = mymodel.Base.metadata
 from database.models import Base
+from object_storage.file_metadata import FileMetadata  # noqa: F401
 
 target_metadata = Base.metadata
 
@@ -66,6 +89,8 @@ def run_migrations_offline() -> None:
         target_metadata=target_metadata,
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
+        compare_type=True,
+        compare_server_default=True,
     )
 
     with context.begin_transaction():
@@ -86,7 +111,12 @@ def run_migrations_online() -> None:
     )
 
     with connectable.connect() as connection:
-        context.configure(connection=connection, target_metadata=target_metadata)
+        context.configure(
+            connection=connection,
+            target_metadata=target_metadata,
+            compare_type=True,
+            compare_server_default=True,
+        )
 
         with context.begin_transaction():
             context.run_migrations()

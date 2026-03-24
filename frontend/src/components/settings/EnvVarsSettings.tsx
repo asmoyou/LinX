@@ -41,6 +41,7 @@ export const EnvVarsSettings: React.FC = () => {
     if (!newKey.trim() || !newValue.trim()) {
       addNotification({
         type: 'error',
+        title: t('settings.envVars.validationError', 'Validation error'),
         message: t('settings.envVars.keyValueRequired', 'Key and value are required'),
       });
       return;
@@ -50,6 +51,7 @@ export const EnvVarsSettings: React.FC = () => {
     if (!/^[A-Z][A-Z0-9_]*$/.test(newKey)) {
       addNotification({
         type: 'error',
+        title: t('settings.envVars.validationError', 'Validation error'),
         message: t('settings.envVars.invalidKeyFormat', 'Key must be uppercase alphanumeric with underscores'),
       });
       return;
@@ -61,6 +63,7 @@ export const EnvVarsSettings: React.FC = () => {
       
       addNotification({
         type: 'success',
+        title: t('settings.envVars.addedTitle', 'Environment variable added'),
         message: t('settings.envVars.added', 'Environment variable added successfully'),
       });
       
@@ -72,6 +75,7 @@ export const EnvVarsSettings: React.FC = () => {
       console.error('Failed to add env var:', error);
       addNotification({
         type: 'error',
+        title: t('settings.envVars.addFailedTitle', 'Add failed'),
         message: t('settings.envVars.addFailed', 'Failed to add environment variable'),
       });
     } finally {
@@ -89,6 +93,7 @@ export const EnvVarsSettings: React.FC = () => {
       
       addNotification({
         type: 'success',
+        title: t('settings.envVars.deletedTitle', 'Environment variable deleted'),
         message: t('settings.envVars.deleted', 'Environment variable deleted'),
       });
       
@@ -97,6 +102,7 @@ export const EnvVarsSettings: React.FC = () => {
       console.error('Failed to delete env var:', error);
       addNotification({
         type: 'error',
+        title: t('settings.envVars.deleteFailedTitle', 'Delete failed'),
         message: t('settings.envVars.deleteFailed', 'Failed to delete environment variable'),
       });
     }

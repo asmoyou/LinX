@@ -580,7 +580,8 @@ class DocumentProcessorWorker:
             if not summary:
                 return "\n\n".join(batch_texts)
 
-            return f"Video Summary:\n{summary}\n\n" f"Segment Details:\n{'\n\n'.join(batch_texts)}"
+            segment_details = "\n\n".join(batch_texts)
+            return f"Video Summary:\n{summary}\n\nSegment Details:\n{segment_details}"
 
     @staticmethod
     def _build_video_fallback_text(file_path: Path, errors: list[str]) -> str:

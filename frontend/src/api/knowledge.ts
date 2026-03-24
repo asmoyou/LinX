@@ -127,6 +127,9 @@ export interface KBConfigResponse {
       model?: string;
       language?: string;
       temperature?: number;
+      funasr_service_url?: string;
+      funasr_service_timeout_seconds?: number;
+      funasr_service_api_key?: string;
     };
   };
   chunking: {

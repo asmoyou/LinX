@@ -64,7 +64,7 @@ export const MemoryRetrievalTestPanel: React.FC<
         limit,
         minScore,
       });
-      setResults(data);
+      setResults(data.items);
     } catch {
       setResults([]);
     } finally {

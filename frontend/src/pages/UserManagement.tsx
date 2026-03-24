@@ -8,7 +8,6 @@ import {
   Edit2,
   Trash2,
   KeyRound,
-  X,
   ChevronLeft,
   ChevronRight,
   Ban,

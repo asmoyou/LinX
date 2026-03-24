@@ -11,10 +11,7 @@ References:
 
 import logging
 from contextlib import asynccontextmanager
-from pathlib import Path
 from typing import AsyncGenerator
-
-from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -49,43 +46,12 @@ from api_gateway.routers import (
 from api_gateway.websocket import router as websocket_router
 from shared.config import get_config
 from shared.logging import get_logger, setup_logging
+from shared.runtime_env import bootstrap_runtime_env
 
 logger = get_logger(__name__)
 
-
-def _bootstrap_runtime_env() -> None:
-    """Load runtime env files for local development before module wiring.
-
-    Priority is "first loaded wins" because ``override=False``:
-    1) repository root ``.env`` (preferred for local dev)
-    2) backend ``.env``
-    3) current working directory ``.env``
-    """
-    backend_root = Path(__file__).resolve().parents[1]
-    repo_root = backend_root.parent
-    candidates = [
-        repo_root / ".env",
-        backend_root / ".env",
-        Path.cwd() / ".env",
-    ]
-
-    loaded_any = False
-    seen: set[str] = set()
-    for candidate in candidates:
-        key = str(candidate.resolve())
-        if key in seen:
-            continue
-        seen.add(key)
-        if not candidate.exists():
-            continue
-        if load_dotenv(candidate, override=False):
-            loaded_any = True
-
-    if loaded_any:
-        logger.info("Loaded runtime .env file(s) for API Gateway startup")
-
-
-_bootstrap_runtime_env()
+if bootstrap_runtime_env():
+    logger.info("Loaded runtime .env file(s) for API Gateway startup")
 
 
 @asynccontextmanager

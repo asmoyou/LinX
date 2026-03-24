@@ -254,7 +254,7 @@ export const MemoryWorkbench: React.FC<MemoryWorkbenchProps> = ({
     setCurrentPage(1);
   }, [debouncedFilters, selectedUserId, pageSize]);
 
-  const fetchRef = useRef<() => Promise<void>>();
+  const fetchRef = useRef<(() => Promise<void>) | undefined>(undefined);
 
   const fetchMemories = useCallback(async () => {
     const version = ++fetchVersionRef.current;

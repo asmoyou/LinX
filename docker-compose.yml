@@ -8,7 +8,7 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-dwp_password_change_me}
       POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=en_US.UTF-8"
     volumes:
-      - postgres-data:/var/lib/postgresql/data
+      - ./data/postgres:/var/lib/postgresql/data
       - ./infrastructure/scripts/init-db.sql:/docker-entrypoint-initdb.d/init.sql:ro
     ports:
       - "${POSTGRES_PORT:-5432}:5432"
@@ -34,11 +34,11 @@ services:
       --maxmemory-policy allkeys-lru
       --requirepass ${REDIS_PASSWORD:-redis_password_change_me}
     volumes:
-      - redis-data:/data
+      - ./data/redis:/data
     ports:
       - "${REDIS_PORT:-6379}:6379"
     healthcheck:
-      test: ["CMD", "redis-cli", "--raw", "incr", "ping"]
+      test: ["CMD-SHELL", "redis-cli --no-auth-warning -a \"${REDIS_PASSWORD:-redis_password_change_me}\" ping | grep PONG"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -57,7 +57,7 @@ services:
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin_change_me}
       MINIO_BROWSER_REDIRECT_URL: ${MINIO_BROWSER_URL:-http://localhost:9001}
     volumes:
-      - minio-data:/data
+      - ./data/minio:/data
     ports:
       - "${MINIO_API_PORT:-9000}:9000"
       - "${MINIO_CONSOLE_PORT:-9001}:9001"
@@ -81,7 +81,7 @@ services:
       - ETCD_QUOTA_BACKEND_BYTES=4294967296
       - ETCD_SNAPSHOT_COUNT=50000
     volumes:
-      - etcd-data:/etcd
+      - ./data/etcd:/etcd
     command: etcd -advertise-client-urls=http://etcd:2379 -listen-client-urls http://0.0.0.0:2379 --data-dir /etcd
     healthcheck:
       test: ["CMD", "etcdctl", "endpoint", "health"]
@@ -100,8 +100,8 @@ services:
       MINIO_ROOT_USER: ${MILVUS_MINIO_USER:-minioadmin}
       MINIO_ROOT_PASSWORD: ${MILVUS_MINIO_PASSWORD:-minioadmin}
     volumes:
-      - minio-milvus-data:/minio_data
-    command: minio server /minio_data --console-address ":9002"
+      - ./data/minio-milvus:/data
+    command: minio server /data --console-address ":9002"
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
       interval: 30s
@@ -123,7 +123,7 @@ services:
       MINIO_ACCESS_KEY_ID: ${MILVUS_MINIO_USER:-minioadmin}
       MINIO_SECRET_ACCESS_KEY: ${MILVUS_MINIO_PASSWORD:-minioadmin}
     volumes:
-      - milvus-data:/var/lib/milvus
+      - ./data/milvus:/var/lib/milvus
     ports:
       - "${MILVUS_PORT:-19530}:19530"
       - "${MILVUS_METRICS_PORT:-9091}:9091"
@@ -146,9 +146,11 @@ services:
   # Application Services
   api-gateway:
     build:
-      context: ./backend
-      dockerfile: ../infrastructure/docker/Dockerfile.api-gateway
+      context: .
+      dockerfile: infrastructure/docker/Dockerfile.api-gateway
     container_name: dwp-api-gateway
+    group_add:
+      - "0"
     environment:
       - POSTGRES_HOST=postgres
       - POSTGRES_PORT=5432
@@ -167,9 +169,10 @@ services:
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
       - LINX_SANDBOX_PYTHON_IMAGE=${LINX_SANDBOX_PYTHON_IMAGE:-linx/sandbox-runtime:py312-office}
       - LINX_SANDBOX_TMPFS_SIZE=${LINX_SANDBOX_TMPFS_SIZE:-1G}
+      - LINX_SANDBOX_IO_DEVICE_PATH=${LINX_SANDBOX_IO_DEVICE_PATH:-}
     volumes:
       - ./backend:/app
-      - ./backend/config.yaml:/app/config.yaml:ro
+      - /var/run/docker.sock:/var/run/docker.sock
     ports:
       - "${API_PORT:-8000}:8000"
     depends_on:
@@ -182,7 +185,7 @@ services:
       milvus:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=5)"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -192,101 +195,19 @@ services:
       - dwp-backend
     restart: unless-stopped
 
-  task-manager:
-    build:
-      context: ./backend
-      dockerfile: ../infrastructure/docker/Dockerfile.task-manager
-    container_name: dwp-task-manager
-    environment:
-      - POSTGRES_HOST=postgres
-      - POSTGRES_PORT=5432
-      - POSTGRES_DB=${POSTGRES_DB:-digital_workforce}
-      - POSTGRES_USER=${POSTGRES_USER:-dwp_user}
-      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-dwp_password_change_me}
-      - REDIS_HOST=redis
-      - REDIS_PORT=6379
-      - REDIS_PASSWORD=${REDIS_PASSWORD:-redis_password_change_me}
-      - MILVUS_HOST=milvus
-      - MILVUS_PORT=19530
-      - LOG_LEVEL=${LOG_LEVEL:-INFO}
-      - LINX_SANDBOX_PYTHON_IMAGE=${LINX_SANDBOX_PYTHON_IMAGE:-linx/sandbox-runtime:py312-office}
-      - LINX_SANDBOX_TMPFS_SIZE=${LINX_SANDBOX_TMPFS_SIZE:-1G}
-    volumes:
-      - ./backend:/app
-      - ./backend/config.yaml:/app/config.yaml:ro
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-      milvus:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD", "python", "-c", "import sys; sys.exit(0)"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 30s
-    networks:
-      - dwp-backend
-      - dwp-agents
-    restart: unless-stopped
-
-  document-processor:
-    build:
-      context: ./backend
-      dockerfile: ../infrastructure/docker/Dockerfile.document-processor
-    container_name: dwp-document-processor
-    environment:
-      - POSTGRES_HOST=postgres
-      - POSTGRES_PORT=5432
-      - POSTGRES_DB=${POSTGRES_DB:-digital_workforce}
-      - POSTGRES_USER=${POSTGRES_USER:-dwp_user}
-      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-dwp_password_change_me}
-      - REDIS_HOST=redis
-      - REDIS_PORT=6379
-      - REDIS_PASSWORD=${REDIS_PASSWORD:-redis_password_change_me}
-      - MINIO_ENDPOINT=minio:9000
-      - MINIO_ACCESS_KEY=${MINIO_ROOT_USER:-minioadmin}
-      - MINIO_SECRET_KEY=${MINIO_ROOT_PASSWORD:-minioadmin_change_me}
-      - MILVUS_HOST=milvus
-      - MILVUS_PORT=19530
-      - LOG_LEVEL=${LOG_LEVEL:-INFO}
-      - LINX_SANDBOX_PYTHON_IMAGE=${LINX_SANDBOX_PYTHON_IMAGE:-linx/sandbox-runtime:py312-office}
-      - LINX_SANDBOX_TMPFS_SIZE=${LINX_SANDBOX_TMPFS_SIZE:-1G}
-    volumes:
-      - ./backend:/app
-      - ./backend/config.yaml:/app/config.yaml:ro
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-      minio:
-        condition: service_healthy
-      milvus:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD", "python", "-c", "import sys; sys.exit(0)"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 30s
-    networks:
-      - dwp-backend
-    restart: unless-stopped
-
   funasr-service:
     build:
       context: .
       dockerfile: infrastructure/docker/Dockerfile.funasr-service
     container_name: dwp-funasr-service
+    profiles:
+      - funasr
     environment:
       - FUNASR_MODEL=${FUNASR_MODEL:-iic/SenseVoiceSmall}
       - FUNASR_AUTH_TOKEN=${FUNASR_AUTH_TOKEN:-}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
     volumes:
-      - funasr-model-cache:/root/.cache
+      - ./data/funasr-model-cache:/root/.cache
     ports:
       - "${FUNASR_SERVICE_PORT:-10095}:10095"
     healthcheck:
@@ -321,15 +242,6 @@ services:
       - dwp-frontend
     restart: unless-stopped
 
-volumes:
-  postgres-data:
-  redis-data:
-  minio-data:
-  minio-milvus-data:
-  milvus-data:
-  etcd-data:
-  funasr-model-cache:
-
 networks:
   dwp-frontend:
     driver: bridge
@@ -338,5 +250,3 @@ networks:
   dwp-data:
     driver: bridge
     internal: true
-  dwp-agents:
-    driver: bridge

@@ -122,7 +122,9 @@ export const GoalInput: React.FC<GoalInputProps> = ({ onSubmit, isLoading }) => 
               {errors.title && (
                 <p className="mt-1 text-sm text-red-500 dark:text-red-400 flex items-center gap-1">
                   <AlertCircle className="w-4 h-4" />
-                  {t(`goal.errors.${errors.title.message?.replace(/\s+/g, '')}`, errors.title.message)}
+                  {t(`goal.errors.${errors.title.message?.replace(/\s+/g, '')}`, {
+                    defaultValue: errors.title.message,
+                  })}
                 </p>
               )}
               {titleValue && !errors.title && (
@@ -155,7 +157,12 @@ export const GoalInput: React.FC<GoalInputProps> = ({ onSubmit, isLoading }) => 
               {errors.description && (
                 <p className="mt-1 text-sm text-red-500 dark:text-red-400 flex items-center gap-1">
                   <AlertCircle className="w-4 h-4" />
-                  {t(`goal.errors.${errors.description.message?.replace(/\s+/g, '')}`, errors.description.message)}
+                  {t(
+                    `goal.errors.${errors.description.message?.replace(/\s+/g, '')}`,
+                    {
+                      defaultValue: errors.description.message,
+                    },
+                  )}
                 </p>
               )}
               {descriptionValue && !errors.description && (

@@ -54,10 +54,10 @@ api:
 database:
   # PostgreSQL - Primary Database
   postgres:
-    host: "localhost"
+    host: "${POSTGRES_HOST}"
     port: 5432
-    database: "workforce_platform"
-    username: "platform_user"
+    database: "${POSTGRES_DB}"
+    username: "${POSTGRES_USER}"
     password: "${POSTGRES_PASSWORD}"  # REQUIRED: Set in environment
     
     # Connection Pool Settings
@@ -78,7 +78,7 @@ database:
   
   # Milvus - Vector Database
   milvus:
-    host: "localhost"
+    host: "${MILVUS_HOST}"
     port: 19530
     user: ""
     password: "${MILVUS_PASSWORD}"  # Optional
@@ -106,7 +106,7 @@ database:
   
   # Redis - Message Bus and Cache
   redis:
-    host: "localhost"
+    host: "${REDIS_HOST}"
     port: 6379
     password: "${REDIS_PASSWORD}"  # Optional
     db: 0
@@ -130,7 +130,7 @@ database:
 # ============================================================================
 storage:
   minio:
-    endpoint: "localhost:9000"
+    endpoint: "${MINIO_ENDPOINT}"
     # Optional browser-facing endpoint for presigned URLs.
     # Set this to a LAN IP / public hostname when the backend uses localhost internally.
     # public_endpoint: "192.168.0.29:9000"

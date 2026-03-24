@@ -675,12 +675,12 @@ export const TestAgentModal: React.FC<TestAgentModalProps> = ({ agent, isOpen, o
                   <ConversationRoundComponent
                     key={`${message.timestamp.getTime()}-${round.roundNumber}-${roundIdx}`}
                     round={round}
-                    isLatest={roundIdx === message.rounds.length - 1}
+                    isLatest={roundIdx === message.rounds!.length - 1}
                     artifacts={extractRoundArtifacts(round)}
                     onOpenArtifact={handleOpenArtifactInWorkspace}
                     onDownloadArtifact={handleDownloadArtifact}
                     downloadingArtifactPath={downloadingArtifactPath}
-                    defaultCollapsed={roundIdx < message.rounds.length - 1}
+                    defaultCollapsed={roundIdx < message.rounds!.length - 1}
                   />
                 ))}
                 <p className="text-[10px] font-bold text-zinc-400 dark:text-zinc-600 uppercase tracking-widest px-1">

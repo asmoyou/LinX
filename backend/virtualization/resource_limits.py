@@ -20,6 +20,7 @@ MIN_MEMORY_MB = 128
 MAX_MEMORY_MB = 262144
 DEFAULT_HOST_MEMORY_MB = 4096
 DEFAULT_DYNAMIC_MAX_MEMORY_MB = 65536
+SANDBOX_IO_DEVICE_PATH = os.getenv("LINX_SANDBOX_IO_DEVICE_PATH", "").strip()
 
 
 @dataclass
@@ -64,12 +65,20 @@ class ResourceLimits:
             "memswap_limit": f"{self.memory_swap_mb}m",
         }
         
-        # Only add I/O limits on Linux where cgroup controllers are available
+        # blkio controls are highly runtime-dependent and break on Docker Desktop/
+        # LinuxKit where io.weight and specific device paths may not exist.
+        # Only enable them when the operator explicitly provides a device path.
         import platform
+
         if platform.system() == "Linux":
-            config["blkio_weight"] = 500
-            config["device_read_bps"] = [{"Path": "/dev/sda", "Rate": self.disk_read_bps}]
-            config["device_write_bps"] = [{"Path": "/dev/sda", "Rate": self.disk_write_bps}]
+            if SANDBOX_IO_DEVICE_PATH:
+                config["blkio_weight"] = 500
+                config["device_read_bps"] = [
+                    {"Path": SANDBOX_IO_DEVICE_PATH, "Rate": self.disk_read_bps}
+                ]
+                config["device_write_bps"] = [
+                    {"Path": SANDBOX_IO_DEVICE_PATH, "Rate": self.disk_write_bps}
+                ]
         
         return config
 

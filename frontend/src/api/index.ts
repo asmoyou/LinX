@@ -11,6 +11,7 @@ export {
   retryRequest,
 } from "./client";
 export { authApi } from "./auth";
+export type { SetupStatusResponse } from "./auth";
 export { usersApi } from "./users";
 export { agentsApi } from "./agents";
 export { schedulesApi } from "./schedules";

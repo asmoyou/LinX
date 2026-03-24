@@ -98,12 +98,13 @@ export const PersistentConversationProcessLine: React.FC<
   PersistentConversationProcessLineProps
 > = ({ descriptor, isVisible }) => {
   const { t } = useTranslation();
+  const translate = (key: string, fallback?: string) => t(key, fallback ?? key);
 
   if (!isVisible || !descriptor) {
     return null;
   }
 
-  const presentation = buildProcessPresentation(descriptor, t);
+  const presentation = buildProcessPresentation(descriptor, translate);
   const Icon = presentation.icon;
 
   return (
