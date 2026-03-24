@@ -210,6 +210,29 @@ type ProviderOptionsByType = {
   rerank: string[];
 };
 
+export const canEnsureProviderTypedModels = ({
+  provider,
+  availableProviders,
+  typedModelsByProvider,
+  loadingModelMetadataByProvider,
+}: {
+  provider: string;
+  availableProviders: Record<string, string[]>;
+  typedModelsByProvider: Record<string, ProviderTypedModels>;
+  loadingModelMetadataByProvider: Record<string, boolean>;
+}): boolean => {
+  if (!provider) {
+    return false;
+  }
+  if (!Object.prototype.hasOwnProperty.call(availableProviders, provider)) {
+    return false;
+  }
+  if (typedModelsByProvider[provider] || loadingModelMetadataByProvider[provider]) {
+    return false;
+  }
+  return true;
+};
+
 const asObject = (value: unknown): Record<string, unknown> => {
   if (value && typeof value === "object") {
     return value as Record<string, unknown>;
@@ -659,6 +682,7 @@ export const MemoryConfigPanel: React.FC<MemoryConfigPanelProps> = ({
       return;
     }
 
+    let cancelled = false;
     setTypedModelsByProvider({});
     setLoadingModelMetadataByProvider({});
 
@@ -666,18 +690,25 @@ export const MemoryConfigPanel: React.FC<MemoryConfigPanelProps> = ({
       setIsLoading(true);
       try {
         const data = await memoryWorkbenchApi.getConfig();
+        if (cancelled) {
+          return;
+        }
         setConfig(data);
         setFormState(toFormState(data));
       } catch (error: unknown) {
-        toast.error(
-          getErrorDetail(error) ||
-            t(
-              "memory.config.loadFailed",
-              "Failed to load memory configuration",
-            ),
-        );
+        if (!cancelled) {
+          toast.error(
+            getErrorDetail(error) ||
+              t(
+                "memory.config.loadFailed",
+                "Failed to load memory configuration",
+              ),
+          );
+        }
       } finally {
-        setIsLoading(false);
+        if (!cancelled) {
+          setIsLoading(false);
+        }
       }
     };
 
@@ -685,17 +716,31 @@ export const MemoryConfigPanel: React.FC<MemoryConfigPanelProps> = ({
       setIsLoadingProviders(true);
       try {
         const providers = await llmApi.getAvailableProviders();
+        if (cancelled) {
+          return;
+        }
         setAvailableProviders(providers);
       } catch {
-        setAvailableProviders({});
+        // Keep the last successful provider snapshot on transient failures.
       } finally {
-        setIsLoadingProviders(false);
+        if (!cancelled) {
+          setIsLoadingProviders(false);
+        }
       }
     };
 
-    loadConfig();
-    loadProviders();
+    void loadConfig();
+    void loadProviders();
+
+    return () => {
+      cancelled = true;
+    };
   }, [isOpen, t]);
+
+  useEffect(() => {
+    setTypedModelsByProvider({});
+    setLoadingModelMetadataByProvider({});
+  }, [availableProviders]);
 
   const providerOptions = useMemo(
     () => Object.keys(availableProviders).sort((a, b) => a.localeCompare(b)),
@@ -733,12 +778,13 @@ export const MemoryConfigPanel: React.FC<MemoryConfigPanelProps> = ({
 
   const ensureProviderTypedModels = useCallback(
     async (provider: string) => {
-      if (!provider) {
-        return;
-      }
       if (
-        typedModelsByProvider[provider] ||
-        loadingModelMetadataByProvider[provider]
+        !canEnsureProviderTypedModels({
+          provider,
+          availableProviders,
+          typedModelsByProvider,
+          loadingModelMetadataByProvider,
+        })
       ) {
         return;
       }

@@ -1222,12 +1222,11 @@ async def get_available_providers_and_models(
     """
     Get available providers and their models for agent configuration.
 
-    Returns enabled providers with their configured models from database only.
-    Does NOT perform actual health checks to avoid blocking.
-    Uses last known test status from database.
+    Returns enabled providers with configured models from the database.
 
-    This endpoint is used by the agent configuration UI.
-    Config.yaml providers are synced to database on startup.
+    This endpoint intentionally does not perform live health checks and does not
+    hide providers based on the last saved test status. Dropdowns should remain
+    stable even if a provider had a transient connection failure.
     """
     if get_llm_provider is None:
         raise HTTPException(
@@ -1236,9 +1235,8 @@ async def get_available_providers_and_models(
         )
 
     try:
-        result = {}
+        result: Dict[str, List[str]] = {}
 
-        # Get providers from database only
         try:
             with get_db_session() as db:
                 db_manager = ProviderDBManager(db)
@@ -1252,15 +1250,12 @@ async def get_available_providers_and_models(
                     logger.info(
                         f"[LLM-AVAILABLE-PROVIDERS] Provider: {p.name}, enabled={p.enabled}, models={len(p.models) if p.models else 0}, test_status={p.last_test_status}"
                     )
-                    # Include if enabled and has models
-                    # Optionally filter by last_test_status == 'success'
                     if p.enabled and p.models:
-                        # Only include if last test was successful or untested
-                        if p.last_test_status in ["success", None, "untested"]:
-                            result[p.name] = p.models
+                        result[p.name] = list(dict.fromkeys(p.models))
         except Exception as e:
             logger.warning(f"Failed to get database providers: {e}")
 
+        result = dict(sorted(result.items()))
         logger.info(
             f"[LLM-AVAILABLE-PROVIDERS] Returning {len(result)} providers: {list(result.keys())}"
         )
