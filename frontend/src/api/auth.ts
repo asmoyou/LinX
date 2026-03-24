@@ -26,6 +26,7 @@ export interface SetupStatusResponse {
   has_admin_account: boolean;
   default_admin_username: string;
   initialized_at?: string | null;
+  organization_name?: string | null;
   language?: string | null;
   timezone?: string | null;
 }
@@ -33,6 +34,7 @@ export interface SetupStatusResponse {
 export interface InitializePlatformRequest {
   email: string;
   password: string;
+  organization_name: string;
   language: 'zh' | 'en';
   timezone: string;
   theme: 'light' | 'dark' | 'system';

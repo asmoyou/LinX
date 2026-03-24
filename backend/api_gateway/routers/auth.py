@@ -8,6 +8,8 @@ References:
 - Task 2.1.5: Create authentication endpoints (login, logout, refresh)
 """
 
+import re
+import unicodedata
 from datetime import datetime, timezone
 from typing import Any, Literal, Optional
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -153,6 +155,7 @@ class SetupStatusResponse(BaseModel):
     has_admin_account: bool
     default_admin_username: str = DEFAULT_BOOTSTRAP_ADMIN_USERNAME
     initialized_at: str | None = None
+    organization_name: str | None = None
     language: str | None = None
     timezone: str | None = None
 
@@ -162,6 +165,7 @@ class InitializePlatformRequest(BaseModel):
 
     email: str = Field(..., pattern=r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
     password: str = Field(..., min_length=8)
+    organization_name: str = Field(..., min_length=1, max_length=100)
     language: Literal["zh", "en"] = DEFAULT_PLATFORM_LANGUAGE
     timezone: str = Field(..., min_length=1, max_length=100)
     theme: Literal["light", "dark", "system"] = DEFAULT_PLATFORM_THEME
@@ -194,6 +198,59 @@ def _validate_timezone_name(timezone_name: str) -> str:
     return candidate
 
 
+def _validate_organization_name(organization_name: str) -> str:
+    """Validate and normalize the initial organization name."""
+    candidate = (organization_name or "").strip()
+    if not candidate:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="Organization name is required",
+        )
+
+    return candidate
+
+
+def _slugify_department_code(name: str) -> str:
+    """Build a safe department code from a display name."""
+    normalized = unicodedata.normalize("NFKD", name).encode("ascii", "ignore").decode("ascii")
+    slug = re.sub(r"[^a-zA-Z0-9]+", "_", normalized).strip("_").lower()
+    return (slug or "root")[:50].rstrip("_") or "root"
+
+
+def _build_unique_department_code(session, organization_name: str) -> str:
+    """Generate a unique department code for the setup root department."""
+    from database.models import Department
+
+    base_code = _slugify_department_code(organization_name)
+    candidate = base_code
+    suffix = 1
+
+    while (
+        session.query(Department.department_id).filter(Department.code == candidate).first()
+        is not None
+    ):
+        suffix += 1
+        suffix_text = f"_{suffix}"
+        candidate = f"{base_code[: 50 - len(suffix_text)]}{suffix_text}"
+
+    return candidate
+
+
+def _create_root_department(session, organization_name: str, manager_id):
+    """Create the initial root department during first-run setup."""
+    from database.models import Department
+
+    department = Department(
+        name=organization_name,
+        code=_build_unique_department_code(session, organization_name),
+        description="Initial organization root created during platform setup.",
+        manager_id=manager_id,
+    )
+    session.add(department)
+    session.flush()
+    return department
+
+
 def _build_setup_status(session) -> SetupStatusResponse:
     """Build the public platform setup status payload."""
     has_admin_account = _has_admin_account(session)
@@ -206,6 +263,7 @@ def _build_setup_status(session) -> SetupStatusResponse:
             "default_admin_username", DEFAULT_BOOTSTRAP_ADMIN_USERNAME
         ),
         initialized_at=bootstrap_settings.get("initialized_at"),
+        organization_name=bootstrap_settings.get("organization_name"),
         language=bootstrap_settings.get("language"),
         timezone=bootstrap_settings.get("timezone"),
     )
@@ -348,6 +406,7 @@ async def initialize_platform(request: InitializePlatformRequest, http_request: 
     from database.connection import get_db_session
     from database.models import User
 
+    organization_name = _validate_organization_name(request.organization_name)
     timezone_name = _validate_timezone_name(request.timezone)
     initialized_at = datetime.now(timezone.utc).isoformat()
     attributes = {
@@ -355,6 +414,7 @@ async def initialize_platform(request: InitializePlatformRequest, http_request: 
         "bootstrap": {
             "source": "web_setup",
             "initialized_at": initialized_at,
+            "organization_name": organization_name,
         },
         "preferences": {
             "language": request.language,
@@ -392,19 +452,6 @@ async def initialize_platform(request: InitializePlatformRequest, http_request: 
                 },
             )
 
-            upsert_platform_setting(
-                session=session,
-                key=PLATFORM_BOOTSTRAP_SETTINGS_KEY,
-                value={
-                    "initialized_at": initialized_at,
-                    "default_admin_username": DEFAULT_BOOTSTRAP_ADMIN_USERNAME,
-                    "admin_user_id": registration.user_id,
-                    "language": request.language,
-                    "timezone": timezone_name,
-                    "theme": request.theme,
-                },
-            )
-
             user = (
                 session.query(User)
                 .filter(User.username == DEFAULT_BOOTSTRAP_ADMIN_USERNAME)
@@ -415,6 +462,28 @@ async def initialize_platform(request: InitializePlatformRequest, http_request: 
                     status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                     detail="Failed to create administrator account",
                 )
+
+            root_department = _create_root_department(
+                session=session,
+                organization_name=organization_name,
+                manager_id=user.user_id,
+            )
+            user.department_id = root_department.department_id
+
+            upsert_platform_setting(
+                session=session,
+                key=PLATFORM_BOOTSTRAP_SETTINGS_KEY,
+                value={
+                    "initialized_at": initialized_at,
+                    "default_admin_username": DEFAULT_BOOTSTRAP_ADMIN_USERNAME,
+                    "admin_user_id": registration.user_id,
+                    "organization_name": organization_name,
+                    "root_department_id": str(root_department.department_id),
+                    "language": request.language,
+                    "timezone": timezone_name,
+                    "theme": request.theme,
+                },
+            )
 
             tokens = create_token_pair(
                 user_id=str(user.user_id),
@@ -446,6 +515,8 @@ async def initialize_platform(request: InitializePlatformRequest, http_request: 
                 extra={
                     "user_id": str(user.user_id),
                     "username": user.username,
+                    "organization_name": organization_name,
+                    "department_id": str(root_department.department_id),
                     "language": request.language,
                     "timezone": timezone_name,
                 },

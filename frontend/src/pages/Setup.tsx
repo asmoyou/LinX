@@ -24,6 +24,7 @@ const COMMON_TIMEZONES = [
 
 type SetupLanguage = 'zh' | 'en';
 type SetupTheme = 'light' | 'dark' | 'system';
+type PasswordStrength = 'weak' | 'medium' | 'strong';
 
 interface SetupProps {
   defaultAdminUsername?: string;
@@ -42,18 +43,31 @@ const getCopy = (language: SetupLanguage) =>
   language === 'zh'
     ? {
         title: '项目首次初始化',
-        subtitle: '创建首个管理员账号，并设置平台的基础偏好。',
+        subtitle: '创建首个管理员账号、初始化组织根部门，并设置平台的基础偏好。',
         adminCardTitle: '管理员账号',
         adminCardBody: '首次安装只会创建一个默认超级管理员账号，账号名固定为 admin。',
         platformCardTitle: '平台偏好',
-        platformCardBody: '初始化时设置的语言、时区和主题会作为首个管理员的默认偏好保存。',
+        platformCardBody: '初始化时设置的组织名称会作为部门管理的根节点创建，语言、时区和主题会保存为首个管理员的默认偏好。',
         accountLabel: '管理员账号',
         emailLabel: '管理员邮箱',
         emailPlaceholder: '请输入管理员邮箱',
+        organizationLabel: '团队/企业名称',
+        organizationPlaceholder: '请输入团队或企业名称',
+        organizationHint: '该名称会作为部门管理中的根部门名称创建。',
         passwordLabel: '管理员密码',
         passwordPlaceholder: '请输入高强度密码',
+        passwordStrengthLabel: '密码强度',
+        passwordStrengthWeak: '弱',
+        passwordStrengthMedium: '中',
+        passwordStrengthStrong: '强',
+        passwordRequirementLength: '至少 8 位',
+        passwordRequirementUppercase: '包含大写字母',
+        passwordRequirementLowercase: '包含小写字母',
+        passwordRequirementDigit: '包含数字',
+        passwordRequirementSpecial: '包含特殊字符',
         confirmPasswordLabel: '确认密码',
         confirmPasswordPlaceholder: '请再次输入密码',
+        confirmPasswordMatch: '两次输入的密码一致。',
         languageLabel: '默认语言',
         timezoneLabel: '默认时区',
         themeLabel: '默认主题',
@@ -70,12 +84,14 @@ const getCopy = (language: SetupLanguage) =>
         timelineTitle: '初始化会完成这些事情',
         timelineItems: [
           '创建默认管理员账号 admin',
+          '创建组织根部门，并将首个管理员绑定到该部门',
           '保存首个管理员的语言、时区和主题偏好',
           '自动登录并进入控制台',
         ],
         errors: {
           emailRequired: '管理员邮箱不能为空。',
           emailInvalid: '请输入有效的邮箱地址。',
+          organizationRequired: '团队/企业名称不能为空。',
           passwordRequired: '管理员密码不能为空。',
           passwordWeak: '密码强度不足，请补齐大小写字母、数字和特殊字符。',
           confirmPasswordRequired: '请再次输入管理员密码。',
@@ -86,20 +102,33 @@ const getCopy = (language: SetupLanguage) =>
       }
     : {
         title: 'Initialize Your Workspace',
-        subtitle: 'Create the first administrator account and set the platform defaults.',
+        subtitle: 'Create the first administrator account, initialize the organization root department, and set the platform defaults.',
         adminCardTitle: 'Administrator Account',
         adminCardBody:
           'The first installation creates a single default super admin account. The username is fixed as admin.',
         platformCardTitle: 'Platform Preferences',
         platformCardBody:
-          'Language, timezone, and theme selected here are saved as the first administrator preferences.',
+          'The organization name entered here becomes the root department, while language, timezone, and theme are saved as the first administrator preferences.',
         accountLabel: 'Admin Username',
         emailLabel: 'Admin Email',
         emailPlaceholder: 'Enter the administrator email',
+        organizationLabel: 'Team / Company Name',
+        organizationPlaceholder: 'Enter the team or company name',
+        organizationHint: 'This will be created as the root department in Department Management.',
         passwordLabel: 'Admin Password',
         passwordPlaceholder: 'Create a strong password',
+        passwordStrengthLabel: 'Password Strength',
+        passwordStrengthWeak: 'Weak',
+        passwordStrengthMedium: 'Medium',
+        passwordStrengthStrong: 'Strong',
+        passwordRequirementLength: 'At least 8 characters',
+        passwordRequirementUppercase: 'Include an uppercase letter',
+        passwordRequirementLowercase: 'Include a lowercase letter',
+        passwordRequirementDigit: 'Include a number',
+        passwordRequirementSpecial: 'Include a symbol',
         confirmPasswordLabel: 'Confirm Password',
         confirmPasswordPlaceholder: 'Enter the password again',
+        confirmPasswordMatch: 'Passwords match.',
         languageLabel: 'Default Language',
         timezoneLabel: 'Default Timezone',
         themeLabel: 'Default Theme',
@@ -117,12 +146,14 @@ const getCopy = (language: SetupLanguage) =>
         timelineTitle: 'This setup will',
         timelineItems: [
           'Create the default administrator account admin',
+          'Create the root department and bind the first administrator to it',
           'Save language, timezone, and theme preferences',
           'Sign in automatically and open the dashboard',
         ],
         errors: {
           emailRequired: 'Administrator email is required.',
           emailInvalid: 'Enter a valid email address.',
+          organizationRequired: 'Team or company name is required.',
           passwordRequired: 'Administrator password is required.',
           passwordWeak:
             'Password is too weak. Include uppercase, lowercase, numbers, and symbols.',
@@ -146,6 +177,27 @@ const isStrongPassword = (password: string): boolean => {
   return hasUpper && hasLower && hasDigit && hasSpecial;
 };
 
+const getPasswordStrength = (password: string): PasswordStrength => {
+  if (!password) {
+    return 'weak';
+  }
+
+  let score = 0;
+  if (password.length >= 8) score += 1;
+  if (/[A-Z]/.test(password)) score += 1;
+  if (/[a-z]/.test(password)) score += 1;
+  if (/\d/.test(password)) score += 1;
+  if (/[^A-Za-z0-9]/.test(password)) score += 1;
+
+  if (score <= 2) {
+    return 'weak';
+  }
+  if (score <= 4) {
+    return 'medium';
+  }
+  return 'strong';
+};
+
 export default function Setup({
   defaultAdminUsername = 'admin',
   onSetupComplete,
@@ -159,6 +211,7 @@ export default function Setup({
   const copy = getCopy(currentLanguage);
   const [formData, setFormData] = useState(() => ({
     email: '',
+    organizationName: '',
     password: '',
     confirmPassword: '',
     language: currentLanguage,
@@ -202,6 +255,71 @@ export default function Setup({
     return [formData.timezone, ...COMMON_TIMEZONES];
   }, [formData.timezone]);
 
+  const passwordRequirements = useMemo(
+    () => [
+      {
+        label: copy.passwordRequirementLength,
+        passed: formData.password.length >= 8,
+      },
+      {
+        label: copy.passwordRequirementUppercase,
+        passed: /[A-Z]/.test(formData.password),
+      },
+      {
+        label: copy.passwordRequirementLowercase,
+        passed: /[a-z]/.test(formData.password),
+      },
+      {
+        label: copy.passwordRequirementDigit,
+        passed: /\d/.test(formData.password),
+      },
+      {
+        label: copy.passwordRequirementSpecial,
+        passed: /[^A-Za-z0-9]/.test(formData.password),
+      },
+    ],
+    [copy, formData.password],
+  );
+
+  const passwordStrength = useMemo(
+    () => getPasswordStrength(formData.password),
+    [formData.password],
+  );
+  const passwordStrengthSegments =
+    passwordStrength === 'strong' ? 3 : passwordStrength === 'medium' ? 2 : 1;
+  const passwordStrengthColor =
+    passwordStrength === 'strong'
+      ? 'bg-emerald-500'
+      : passwordStrength === 'medium'
+        ? 'bg-amber-500'
+        : 'bg-red-500';
+  const confirmPasswordMatches =
+    Boolean(formData.confirmPassword) &&
+    formData.confirmPassword === formData.password;
+
+  const getPasswordValidationError = (
+    password: string,
+    { requireValue = false }: { requireValue?: boolean } = {},
+  ) => {
+    if (!password) {
+      return requireValue ? copy.errors.passwordRequired : '';
+    }
+
+    return isStrongPassword(password) ? '' : copy.errors.passwordWeak;
+  };
+
+  const getConfirmPasswordValidationError = (
+    password: string,
+    confirmPassword: string,
+    { requireValue = false }: { requireValue?: boolean } = {},
+  ) => {
+    if (!confirmPassword) {
+      return requireValue ? copy.errors.confirmPasswordRequired : '';
+    }
+
+    return confirmPassword === password ? '' : copy.errors.confirmPasswordMismatch;
+  };
+
   const validateForm = () => {
     const nextErrors: Record<string, string> = {};
 
@@ -211,16 +329,24 @@ export default function Setup({
       nextErrors.email = copy.errors.emailInvalid;
     }
 
-    if (!formData.password) {
-      nextErrors.password = copy.errors.passwordRequired;
-    } else if (!isStrongPassword(formData.password)) {
-      nextErrors.password = copy.errors.passwordWeak;
+    if (!formData.organizationName.trim()) {
+      nextErrors.organizationName = copy.errors.organizationRequired;
     }
 
-    if (!formData.confirmPassword) {
-      nextErrors.confirmPassword = copy.errors.confirmPasswordRequired;
-    } else if (formData.confirmPassword !== formData.password) {
-      nextErrors.confirmPassword = copy.errors.confirmPasswordMismatch;
+    const passwordError = getPasswordValidationError(formData.password, {
+      requireValue: true,
+    });
+    if (passwordError) {
+      nextErrors.password = passwordError;
+    }
+
+    const confirmPasswordError = getConfirmPasswordValidationError(
+      formData.password,
+      formData.confirmPassword,
+      { requireValue: true },
+    );
+    if (confirmPasswordError) {
+      nextErrors.confirmPassword = confirmPasswordError;
     }
 
     if (!formData.timezone) {
@@ -239,8 +365,53 @@ export default function Setup({
 
   const handleTextChange = (event: React.ChangeEvent<HTMLInputElement>) => {
     const { name, value } = event.target;
-    setFormData((prev) => ({ ...prev, [name]: value }));
-    setErrors((prev) => ({ ...prev, [name]: '' }));
+    const nextFormData = { ...formData, [name]: value };
+
+    setFormData(nextFormData);
+    setErrors((prev) => {
+      const nextErrors = { ...prev };
+      delete nextErrors.submit;
+
+      if (name === 'password') {
+        const passwordError = getPasswordValidationError(nextFormData.password);
+        const confirmPasswordError = getConfirmPasswordValidationError(
+          nextFormData.password,
+          nextFormData.confirmPassword,
+        );
+
+        if (passwordError) {
+          nextErrors.password = passwordError;
+        } else {
+          delete nextErrors.password;
+        }
+
+        if (confirmPasswordError) {
+          nextErrors.confirmPassword = confirmPasswordError;
+        } else {
+          delete nextErrors.confirmPassword;
+        }
+
+        return nextErrors;
+      }
+
+      if (name === 'confirmPassword') {
+        const confirmPasswordError = getConfirmPasswordValidationError(
+          nextFormData.password,
+          nextFormData.confirmPassword,
+        );
+
+        if (confirmPasswordError) {
+          nextErrors.confirmPassword = confirmPasswordError;
+        } else {
+          delete nextErrors.confirmPassword;
+        }
+
+        return nextErrors;
+      }
+
+      nextErrors[name] = '';
+      return nextErrors;
+    });
   };
 
   const handleSelectChange = async (
@@ -273,6 +444,7 @@ export default function Setup({
       const response = await authApi.initializePlatform({
         email: formData.email.trim(),
         password: formData.password,
+        organization_name: formData.organizationName.trim(),
         language: formData.language,
         timezone: formData.timezone,
         theme: formData.theme,
@@ -403,6 +575,29 @@ export default function Setup({
                 </div>
               </div>
 
+              <div>
+                <label htmlFor="organizationName" className="block text-sm font-medium text-zinc-700 dark:text-zinc-300 mb-2">
+                  {copy.organizationLabel}
+                </label>
+                <input
+                  id="organizationName"
+                  name="organizationName"
+                  type="text"
+                  value={formData.organizationName}
+                  onChange={handleTextChange}
+                  disabled={isLoading}
+                  className={`w-full px-4 py-3 rounded-xl border ${
+                    errors.organizationName ? 'border-red-500 dark:border-red-400' : 'border-zinc-300 dark:border-zinc-700'
+                  } bg-white/80 dark:bg-zinc-800/70 text-zinc-900 dark:text-zinc-100 placeholder-zinc-400 dark:placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-emerald-500 transition-all`}
+                  placeholder={copy.organizationPlaceholder}
+                  autoComplete="organization"
+                />
+                <p className="mt-2 text-xs text-zinc-500 dark:text-zinc-400">{copy.organizationHint}</p>
+                {errors.organizationName ? (
+                  <p className="mt-1 text-sm text-red-500">{errors.organizationName}</p>
+                ) : null}
+              </div>
+
               <div className="grid gap-5 md:grid-cols-2">
                 <div>
                   <label htmlFor="password" className="block text-sm font-medium text-zinc-700 dark:text-zinc-300 mb-2">
@@ -416,13 +611,80 @@ export default function Setup({
                     onChange={handleTextChange}
                     disabled={isLoading}
                     className={`w-full px-4 py-3 rounded-xl border ${
-                      errors.password ? 'border-red-500 dark:border-red-400' : 'border-zinc-300 dark:border-zinc-700'
+                      errors.password
+                        ? 'border-red-500 dark:border-red-400'
+                        : formData.password && isStrongPassword(formData.password)
+                          ? 'border-emerald-500/70 dark:border-emerald-400/70'
+                          : 'border-zinc-300 dark:border-zinc-700'
                     } bg-white/80 dark:bg-zinc-800/70 text-zinc-900 dark:text-zinc-100 placeholder-zinc-400 dark:placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-emerald-500 transition-all`}
                     placeholder={copy.passwordPlaceholder}
                     autoComplete="new-password"
                   />
                   <p className="mt-2 text-xs text-zinc-500 dark:text-zinc-400">{copy.passwordHint}</p>
                   {errors.password ? <p className="mt-1 text-sm text-red-500">{errors.password}</p> : null}
+                  {formData.password ? (
+                    <div className="mt-3 rounded-xl border border-zinc-200/80 bg-zinc-50/90 p-3 dark:border-zinc-700/80 dark:bg-zinc-900/60">
+                      <div className="flex items-center justify-between gap-3">
+                        <span className="text-xs font-medium text-zinc-600 dark:text-zinc-400">
+                          {copy.passwordStrengthLabel}
+                        </span>
+                        <span
+                          className={`text-xs font-semibold ${
+                            passwordStrength === 'strong'
+                              ? 'text-emerald-600 dark:text-emerald-400'
+                              : passwordStrength === 'medium'
+                                ? 'text-amber-600 dark:text-amber-400'
+                                : 'text-red-500 dark:text-red-400'
+                          }`}
+                        >
+                          {passwordStrength === 'strong'
+                            ? copy.passwordStrengthStrong
+                            : passwordStrength === 'medium'
+                              ? copy.passwordStrengthMedium
+                              : copy.passwordStrengthWeak}
+                        </span>
+                      </div>
+                      <div className="mt-2 flex gap-1.5">
+                        {[0, 1, 2].map((segment) => (
+                          <div
+                            key={segment}
+                            className={`h-1.5 flex-1 rounded-full transition-colors ${
+                              segment < passwordStrengthSegments
+                                ? passwordStrengthColor
+                                : 'bg-zinc-200 dark:bg-zinc-700'
+                            }`}
+                          />
+                        ))}
+                      </div>
+                      <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                        {passwordRequirements.map((requirement) => (
+                          <div
+                            key={requirement.label}
+                            className={`flex items-center gap-2 text-xs ${
+                              requirement.passed
+                                ? 'text-emerald-700 dark:text-emerald-300'
+                                : 'text-zinc-500 dark:text-zinc-400'
+                            }`}
+                          >
+                            <span
+                              className={`inline-flex h-4 w-4 items-center justify-center rounded-full border ${
+                                requirement.passed
+                                  ? 'border-emerald-500/70 bg-emerald-500/10'
+                                  : 'border-zinc-300 dark:border-zinc-600'
+                              }`}
+                            >
+                              {requirement.passed ? (
+                                <CheckCircle2 className="h-3 w-3" />
+                              ) : (
+                                <span className="h-1.5 w-1.5 rounded-full bg-zinc-400 dark:bg-zinc-500" />
+                              )}
+                            </span>
+                            <span>{requirement.label}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  ) : null}
                 </div>
 
                 <div>
@@ -437,13 +699,22 @@ export default function Setup({
                     onChange={handleTextChange}
                     disabled={isLoading}
                     className={`w-full px-4 py-3 rounded-xl border ${
-                      errors.confirmPassword ? 'border-red-500 dark:border-red-400' : 'border-zinc-300 dark:border-zinc-700'
+                      errors.confirmPassword
+                        ? 'border-red-500 dark:border-red-400'
+                        : confirmPasswordMatches
+                          ? 'border-emerald-500/70 dark:border-emerald-400/70'
+                          : 'border-zinc-300 dark:border-zinc-700'
                     } bg-white/80 dark:bg-zinc-800/70 text-zinc-900 dark:text-zinc-100 placeholder-zinc-400 dark:placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-emerald-500 transition-all`}
                     placeholder={copy.confirmPasswordPlaceholder}
                     autoComplete="new-password"
                   />
                   {errors.confirmPassword ? (
                     <p className="mt-1 text-sm text-red-500">{errors.confirmPassword}</p>
+                  ) : null}
+                  {!errors.confirmPassword && confirmPasswordMatches ? (
+                    <p className="mt-1 text-sm text-emerald-600 dark:text-emerald-400">
+                      {copy.confirmPasswordMatch}
+                    </p>
                   ) : null}
                 </div>
               </div>
