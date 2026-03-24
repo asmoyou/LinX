@@ -5,10 +5,10 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
-from pathlib import Path
 
 from cryptography.fernet import Fernet
-from dotenv import load_dotenv
+
+from shared.runtime_env import bootstrap_runtime_env
 
 logger = logging.getLogger(__name__)
 
@@ -20,9 +20,7 @@ def _ensure_env_loaded() -> None:
     if _ENV_LOADED:
         return
 
-    env_path = Path(__file__).resolve().parents[1] / ".env"
-    if env_path.exists():
-        load_dotenv(env_path, override=False)
+    bootstrap_runtime_env()
     _ENV_LOADED = True
 
 

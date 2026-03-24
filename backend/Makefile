@@ -1,4 +1,7 @@
-.PHONY: help install install-dev clean test lint format type-check security-check run docker-build docker-up docker-down migrate
+.PHONY: help install install-dev clean test lint format type-check security-check run docker-build docker-up docker-down migrate ensure-venv
+
+VENV_BIN := .venv/bin
+PYTHON := $(VENV_BIN)/python
 
 # Default target
 help:
@@ -25,6 +28,9 @@ help:
 	@echo "  docker-down      - Stop Docker services"
 	@echo "  migrate          - Run database migrations"
 	@echo "  migrate-create   - Create new migration"
+
+ensure-venv:
+	@test -x "$(PYTHON)" || (echo "Missing $(PYTHON). Run 'cd backend && python3 -m venv .venv && .venv/bin/pip install -r requirements.txt' first."; exit 1)
 
 # Installation
 install:
@@ -85,19 +91,16 @@ security-check:
 	pip-audit
 
 # Development
-run:
-	set -a; [ -f ../.env ] && . ../.env; set +a; \
-	python -m uvicorn api_gateway.main:app --reload --host 0.0.0.0 --port 8000
+run: ensure-venv
+	$(PYTHON) -m uvicorn api_gateway.main:app --reload --host 0.0.0.0 --port 8000
 
-run-debug:
-	set -a; [ -f ../.env ] && . ../.env; set +a; \
-	python -m uvicorn api_gateway.main:app --reload --host 0.0.0.0 --port 8000 --log-level debug
+run-debug: ensure-venv
+	$(PYTHON) -m uvicorn api_gateway.main:app --reload --host 0.0.0.0 --port 8000 --log-level debug
 
-run-log:
+run-log: ensure-venv
 	@echo "Starting backend with logs written to backend.log..."
 	@echo "Use 'tail -f backend.log' in another terminal to monitor"
-	set -a; [ -f ../.env ] && . ../.env; set +a; \
-	python -m uvicorn api_gateway.main:app --reload --host 0.0.0.0 --port 8000 --log-level debug >> backend.log 2>&1
+	$(PYTHON) -m uvicorn api_gateway.main:app --reload --host 0.0.0.0 --port 8000 --log-level debug >> backend.log 2>&1
 
 restart: clean stop run
 	@echo "Backend restarted"

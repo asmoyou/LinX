@@ -10,26 +10,19 @@ References:
 
 import logging
 import os
-from pathlib import Path
 from typing import List, Optional
 from uuid import UUID
 
 from cryptography.fernet import Fernet
-from dotenv import load_dotenv
 from sqlalchemy.orm import Session
 
 from database.models import LLMProvider
 from llm_providers.models import ProviderConfig, ProviderProtocol
+from shared.runtime_env import bootstrap_runtime_env
 
 logger = logging.getLogger(__name__)
 
-# Load .env file from backend directory
-env_path = Path(__file__).parent.parent / '.env'
-if env_path.exists():
-    load_dotenv(env_path)
-    logger.info(f"Loaded .env file from {env_path}")
-else:
-    logger.warning(f".env file not found at {env_path}")
+bootstrap_runtime_env()
 
 
 def _get_encryption_key() -> bytes:

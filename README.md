@@ -196,6 +196,10 @@ For local development without Docker:
 #### Backend Setup
 
 ```bash
+# From the repository root
+cp .env.example .env
+# Edit .env with your local runtime settings
+
 cd backend
 
 # Create virtual environment
@@ -211,10 +215,9 @@ pip install -r requirements-dev.txt
 # Install package in editable mode
 pip install -e .
 
-# Copy configuration files
+# Copy backend configuration file
 cp config.yaml.example config.yaml
-cp .env.example .env
-# Edit config.yaml and .env with your settings
+# Edit config.yaml as needed
 
 # Start required services (PostgreSQL, Milvus, Redis, MinIO)
 # See docker-compose.yml for service configurations
@@ -381,6 +384,9 @@ The platform uses `backend/config.yaml` for detailed configuration. Key sections
 - **Alerting**: Email, Slack, Teams, PagerDuty
 
 See `backend/config.yaml.example` for a complete template with all available options.
+
+The backend and Docker Compose both read runtime environment variables from the repository root `.env`.
+Use the root `.env` as the single environment file for local development.
 
 For detailed configuration documentation, see [backend/CONFIG.md](backend/CONFIG.md).
 
