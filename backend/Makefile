@@ -1,4 +1,4 @@
-.PHONY: help install install-dev clean test lint format type-check security-check run docker-build docker-up docker-down migrate ensure-venv
+.PHONY: help install install-dev clean test lint format type-check security-check run run-debug run-log restart restart-log stop status logs preflight docker-build docker-up docker-down migrate ensure-venv
 
 VENV_BIN := .venv/bin
 PYTHON := $(VENV_BIN)/python
@@ -19,10 +19,13 @@ help:
 	@echo "  security-check   - Run security vulnerability checks"
 	@echo "  run              - Run API Gateway in development mode"
 	@echo "  run-debug        - Run with debug logging to console"
-	@echo "  run-log          - Run with debug logging to backend.log"
+	@echo "  run-log          - Start backend in background and write debug logs to backend.log"
 	@echo "  restart          - Clean cache, stop and restart backend"
 	@echo "  restart-log      - Clean cache, stop and restart with logging"
 	@echo "  stop             - Stop running backend processes"
+	@echo "  status           - Check local backend health"
+	@echo "  logs             - Tail backend.log"
+	@echo "  preflight        - Check required local dependencies before startup"
 	@echo "  docker-build     - Build Docker images"
 	@echo "  docker-up        - Start Docker services"
 	@echo "  docker-down      - Stop Docker services"
@@ -92,21 +95,25 @@ security-check:
 
 # Development
 run: ensure-venv
-	$(PYTHON) -m uvicorn api_gateway.main:app --reload --host 0.0.0.0 --port 8000
+	$(PYTHON) scripts/dev_server.py console --log-level info
 
 run-debug: ensure-venv
-	$(PYTHON) -m uvicorn api_gateway.main:app --reload --host 0.0.0.0 --port 8000 --log-level debug
+	$(PYTHON) scripts/dev_server.py console --log-level debug
 
 run-log: ensure-venv
-	@echo "Starting backend with logs written to backend.log..."
-	@echo "Use 'tail -f backend.log' in another terminal to monitor"
-	$(PYTHON) -m uvicorn api_gateway.main:app --reload --host 0.0.0.0 --port 8000 --log-level debug >> backend.log 2>&1
+	$(PYTHON) scripts/dev_server.py log --log-level debug --log-file backend.log
 
-restart: clean stop run
-	@echo "Backend restarted"
+restart: ensure-venv
+	@$(MAKE) clean
+	@$(MAKE) stop
+	@echo "Starting backend in foreground..."
+	@$(MAKE) run
 
-restart-log: clean stop run-log
-	@echo "Backend restarted with logging"
+restart-log: ensure-venv
+	@$(MAKE) clean
+	@$(MAKE) stop
+	@echo "Starting backend with log capture..."
+	@$(MAKE) run-log
 
 stop:
 	@echo "Stopping backend processes on port 8000..."
@@ -114,6 +121,15 @@ stop:
 	@pkill -9 -f "uvicorn.*api_gateway" 2>/dev/null || true
 	@sleep 1
 	@echo "Backend stopped"
+
+status: ensure-venv
+	$(PYTHON) scripts/dev_server.py status
+
+logs:
+	@tail -f backend.log
+
+preflight: ensure-venv
+	$(PYTHON) scripts/dev_server.py preflight
 
 run-worker:
 	python -m task_manager.worker
@@ -127,6 +143,7 @@ docker-build:
 
 docker-up:
 	docker compose up -d
+	docker compose ps
 
 docker-down:
 	docker compose down
