@@ -28,6 +28,8 @@ interface SessionWorkspacePanelProps {
   isOpen: boolean;
   onClose: () => void;
   focusPath?: string | null;
+  displayMode?: 'portal' | 'embedded';
+  zIndexClassName?: string;
 }
 
 type PreviewKind =
@@ -301,6 +303,8 @@ export const SessionWorkspacePanel: React.FC<SessionWorkspacePanelProps> = ({
   isOpen,
   onClose,
   focusPath = null,
+  displayMode = 'portal',
+  zIndexClassName = 'z-[60]',
 }) => {
   const { t } = useTranslation();
   const [files, setFiles] = useState<AgentSessionWorkspaceFile[]>([]);
@@ -794,12 +798,20 @@ export const SessionWorkspacePanel: React.FC<SessionWorkspacePanelProps> = ({
 
   const panel = (
     <div
-      className="fixed right-0 z-[60] flex flex-col border-l border-zinc-200 bg-white/95 shadow-2xl backdrop-blur dark:border-zinc-700 dark:bg-zinc-950/95"
-      style={{
-        top: 'var(--app-header-height, 4rem)',
-        height: 'calc(100vh - var(--app-header-height, 4rem))',
-        width: 'min(88vw, 1240px)',
-      }}
+      className={
+        displayMode === 'embedded'
+          ? 'flex h-full min-h-0 w-full flex-col border-l border-zinc-200 bg-white/95 shadow-2xl backdrop-blur dark:border-zinc-700 dark:bg-zinc-950/95'
+          : `fixed right-0 ${zIndexClassName} flex flex-col border-l border-zinc-200 bg-white/95 shadow-2xl backdrop-blur dark:border-zinc-700 dark:bg-zinc-950/95`
+      }
+      style={
+        displayMode === 'embedded'
+          ? undefined
+          : {
+              top: 'var(--app-header-height, 4rem)',
+              height: 'calc(100vh - var(--app-header-height, 4rem))',
+              width: 'min(88vw, 1240px)',
+            }
+      }
     >
       <div className="flex items-center justify-between border-b border-zinc-200 px-5 py-4 dark:border-zinc-700">
         <div className="min-w-0">
@@ -1082,7 +1094,7 @@ export const SessionWorkspacePanel: React.FC<SessionWorkspacePanelProps> = ({
     </div>
   );
 
-  if (typeof document === 'undefined') {
+  if (displayMode === 'embedded' || typeof document === 'undefined') {
     return panel;
   }
 

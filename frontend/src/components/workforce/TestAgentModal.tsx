@@ -1638,18 +1638,6 @@ export const TestAgentModal: React.FC<TestAgentModalProps> = ({ agent, isOpen, o
             </div>
           </div>
 
-          {/* Workspace Panel Container */}
-          {showWorkspacePanel && (
-            <div className="w-[400px] shrink-0 border-l border-zinc-100 dark:border-zinc-800">
-              <SessionWorkspacePanel
-                agentId={agent.id}
-                sessionId={sessionId}
-                isOpen={showWorkspacePanel}
-                focusPath={workspaceFocusPath}
-                onClose={() => setShowWorkspacePanel(false)}
-              />
-            </div>
-          )}
         </div>
 
         {/* Input Area */}
@@ -1790,6 +1778,16 @@ export const TestAgentModal: React.FC<TestAgentModalProps> = ({ agent, isOpen, o
           </div>
         </div>
       </div>
+
+      <SessionWorkspacePanel
+        agentId={agent.id}
+        sessionId={sessionId}
+        isOpen={showWorkspacePanel}
+        focusPath={workspaceFocusPath}
+        onClose={() => setShowWorkspacePanel(false)}
+        displayMode="portal"
+        zIndexClassName="z-[80]"
+      />
     </LayoutModal>
   );
 };
