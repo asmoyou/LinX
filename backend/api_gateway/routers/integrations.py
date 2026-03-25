@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import atexit
 import asyncio
+import atexit
 import heapq
 import io
 import json
@@ -28,11 +28,15 @@ from agent_framework.persistent_conversations import (
     build_default_conversation_title,
     get_persistent_conversation_runtime_service,
 )
+from api_gateway.feishu_publication_helpers import extract_feishu_message as _extract_feishu_message
 from api_gateway.feishu_publication_helpers import (
-    extract_feishu_message as _extract_feishu_message,
     extract_feishu_message_from_long_connection_event as _extract_feishu_message_from_long_connection_event,
+)
+from api_gateway.feishu_publication_helpers import (
     load_publication_or_raise as _load_publication_or_raise,
-    publication_secrets as _publication_secrets,
+)
+from api_gateway.feishu_publication_helpers import publication_secrets as _publication_secrets
+from api_gateway.feishu_publication_helpers import (
     resolve_public_web_base_url as _resolve_public_web_base_url,
 )
 from api_gateway.routers import agents as agents_router
@@ -70,6 +74,7 @@ _FEISHU_IGNORED_ARTIFACT_NAMES = {
     ".mypy_cache",
 }
 _FEISHU_PROCESSING_REACTION_EMOJI_TYPES = ("EYES", "SMILE")
+_FEISHU_EXECUTION_FAILURE_TEXT = "抱歉，刚才处理这条消息时失败了，请稍后重试。"
 
 
 def _utc_now() -> datetime:
@@ -632,9 +637,7 @@ def _normalize_feishu_card_markdown(markdown_text: str) -> str:
 
 def _is_feishu_markdown_table_separator(line: str) -> bool:
     stripped = str(line or "").strip()
-    return bool(
-        re.fullmatch(r"\|?\s*:?-{3,}:?(?:\s*\|\s*:?-{3,}:?)+\s*\|?", stripped)
-    )
+    return bool(re.fullmatch(r"\|?\s*:?-{3,}:?(?:\s*\|\s*:?-{3,}:?)+\s*\|?", stripped))
 
 
 def _is_feishu_markdown_table_row(line: str) -> bool:
@@ -679,7 +682,11 @@ def _flatten_feishu_markdown_tables(markdown_text: str) -> str:
                     for cell_index, cell in enumerate(cells):
                         if not cell:
                             continue
-                        header = headers[cell_index] if cell_index < len(headers) else f"列{cell_index + 1}"
+                        header = (
+                            headers[cell_index]
+                            if cell_index < len(headers)
+                            else f"列{cell_index + 1}"
+                        )
                         pairs.append(f"{header}: {cell}")
                     if pairs:
                         converted_rows.append(f"- {'；'.join(pairs)}")
@@ -2300,146 +2307,176 @@ async def process_feishu_publication_message(
         )
         return {"success": True, "ignored": True, "reason": "audio_transcription_failed"}
 
-    result = await execute_persistent_conversation_turn(
-        conversation=conversation,
-        principal=build_conversation_execution_principal(
-            user_id=current_user.user_id,
-            role=current_user.role,
-            username=current_user.username,
-        ),
-        message=prepared_input.message_text,
-        files=prepared_input.files,
-        source="feishu",
-        external_event_id=message.get("event_id"),
-        input_message_text=prepared_input.input_message_text,
-        input_message_content_json=prepared_input.input_message_content_json,
-        execution_task_text=prepared_input.execution_task_text,
-        execution_intent_text=prepared_input.execution_intent_text,
-        title_seed_text=prepared_input.title_seed_text,
-    )
-    if result.get("duplicate"):
-        return {"success": True, "duplicate": True}
+    try:
+        result = await execute_persistent_conversation_turn(
+            conversation=conversation,
+            principal=build_conversation_execution_principal(
+                user_id=current_user.user_id,
+                role=current_user.role,
+                username=current_user.username,
+            ),
+            message=prepared_input.message_text,
+            files=prepared_input.files,
+            source="feishu",
+            external_event_id=message.get("event_id"),
+            input_message_text=prepared_input.input_message_text,
+            input_message_content_json=prepared_input.input_message_content_json,
+            execution_task_text=prepared_input.execution_task_text,
+            execution_intent_text=prepared_input.execution_intent_text,
+            title_seed_text=prepared_input.title_seed_text,
+        )
+        if result.get("duplicate"):
+            return {"success": True, "duplicate": True}
 
-    resolved_request_text = str(
-        prepared_input.execution_task_text or prepared_input.message_text or ""
-    ).strip()
-    current_artifacts = list(result.get("artifacts") or [])
-    delta_artifacts = _select_feishu_deliverable_artifacts(result.get("artifact_delta") or [])
-    requested_artifacts = _select_feishu_explicitly_requested_artifacts(
-        current_artifacts,
-        resolved_request_text,
-        str(result.get("output") or ""),
-    )
-    deliverable_artifacts: list[dict[str, Any]] = []
-    seen_artifact_paths: set[str] = set()
-    for artifact in [*delta_artifacts, *requested_artifacts]:
-        path = str(artifact.get("path") or "").strip()
-        if not path or path in seen_artifact_paths:
-            continue
-        deliverable_artifacts.append(artifact)
-        seen_artifact_paths.add(path)
+        resolved_request_text = str(
+            prepared_input.execution_task_text or prepared_input.message_text or ""
+        ).strip()
+        current_artifacts = list(result.get("artifacts") or [])
+        delta_artifacts = _select_feishu_deliverable_artifacts(result.get("artifact_delta") or [])
+        requested_artifacts = _select_feishu_explicitly_requested_artifacts(
+            current_artifacts,
+            resolved_request_text,
+            str(result.get("output") or ""),
+        )
+        deliverable_artifacts: list[dict[str, Any]] = []
+        seen_artifact_paths: set[str] = set()
+        for artifact in [*delta_artifacts, *requested_artifacts]:
+            path = str(artifact.get("path") or "").strip()
+            if not path or path in seen_artifact_paths:
+                continue
+            deliverable_artifacts.append(artifact)
+            seen_artifact_paths.add(path)
 
-    resolved_deliverable_files = _resolve_feishu_artifact_file_paths(
-        conversation,
-        deliverable_artifacts,
-    )
-    sent_artifacts: list[dict[str, Any]] = []
-    pending_artifacts: list[dict[str, Any]] = []
-    delivery_notes: list[str] = []
-    resolved_paths = {
-        str(artifact.get("path") or "").strip() for artifact, _ in resolved_deliverable_files
-    }
-    pending_artifacts.extend(
-        artifact
-        for artifact in deliverable_artifacts
-        if str(artifact.get("path") or "").strip() not in resolved_paths
-    )
-
-    for artifact, local_path in resolved_deliverable_files[:_FEISHU_MAX_DIRECT_FILE_MESSAGES]:
-        if local_path.stat().st_size > _FEISHU_MAX_DIRECT_FILE_SIZE_BYTES:
-            pending_artifacts.append(artifact)
-            continue
-        try:
-            await asyncio.to_thread(
-                _send_feishu_file_message,
-                publication,
-                chat_id=str(message.get("chat_id") or ""),
-                file_path=local_path,
-                file_name=local_path.name,
-            )
-            sent_artifacts.append(artifact)
-        except Exception as exc:
-            logger.warning(
-                "Failed to send Feishu deliverable file: %s",
-                exc,
-                extra={
-                    "publication_id": str(publication.publication_id),
-                    "conversation_id": str(conversation.conversation_id),
-                    "artifact_path": str(artifact.get("path") or ""),
-                    **_build_feishu_file_delivery_log_extra(exc),
-                },
-            )
-            queued_for_retry = False
-            if _is_retryable_feishu_file_delivery_error(exc):
-                queued_for_retry = await asyncio.to_thread(
-                    _enqueue_feishu_file_delivery_retry,
-                    publication=publication,
-                    conversation=conversation,
-                    chat_id=str(message.get("chat_id") or ""),
-                    artifact_path=str(artifact.get("path") or ""),
-                    local_path=local_path,
-                )
-            if queued_for_retry:
-                delivery_notes.append(_queued_feishu_file_delivery_note())
-            else:
-                delivery_note = _classify_feishu_file_delivery_error(exc)
-                if delivery_note:
-                    delivery_notes.append(delivery_note)
-            pending_artifacts.append(artifact)
-
-    if len(resolved_deliverable_files) > _FEISHU_MAX_DIRECT_FILE_MESSAGES:
+        resolved_deliverable_files = _resolve_feishu_artifact_file_paths(
+            conversation,
+            deliverable_artifacts,
+        )
+        sent_artifacts: list[dict[str, Any]] = []
+        pending_artifacts: list[dict[str, Any]] = []
+        delivery_notes: list[str] = []
+        resolved_paths = {
+            str(artifact.get("path") or "").strip() for artifact, _ in resolved_deliverable_files
+        }
         pending_artifacts.extend(
             artifact
-            for artifact, _ in resolved_deliverable_files[_FEISHU_MAX_DIRECT_FILE_MESSAGES:]
+            for artifact in deliverable_artifacts
+            if str(artifact.get("path") or "").strip() not in resolved_paths
         )
 
-    deduped_pending: list[dict[str, Any]] = []
-    seen_pending_paths: set[str] = set()
-    for artifact in pending_artifacts:
-        path = str(artifact.get("path") or "").strip()
-        if not path or path in seen_pending_paths:
-            continue
-        deduped_pending.append(artifact)
-        seen_pending_paths.add(path)
+        for artifact, local_path in resolved_deliverable_files[:_FEISHU_MAX_DIRECT_FILE_MESSAGES]:
+            if local_path.stat().st_size > _FEISHU_MAX_DIRECT_FILE_SIZE_BYTES:
+                pending_artifacts.append(artifact)
+                continue
+            try:
+                await asyncio.to_thread(
+                    _send_feishu_file_message,
+                    publication,
+                    chat_id=str(message.get("chat_id") or ""),
+                    file_path=local_path,
+                    file_name=local_path.name,
+                )
+                sent_artifacts.append(artifact)
+            except Exception as exc:
+                logger.warning(
+                    "Failed to send Feishu deliverable file: %s",
+                    exc,
+                    extra={
+                        "publication_id": str(publication.publication_id),
+                        "conversation_id": str(conversation.conversation_id),
+                        "artifact_path": str(artifact.get("path") or ""),
+                        **_build_feishu_file_delivery_log_extra(exc),
+                    },
+                )
+                queued_for_retry = False
+                if _is_retryable_feishu_file_delivery_error(exc):
+                    queued_for_retry = await asyncio.to_thread(
+                        _enqueue_feishu_file_delivery_retry,
+                        publication=publication,
+                        conversation=conversation,
+                        chat_id=str(message.get("chat_id") or ""),
+                        artifact_path=str(artifact.get("path") or ""),
+                        local_path=local_path,
+                    )
+                if queued_for_retry:
+                    delivery_notes.append(_queued_feishu_file_delivery_note())
+                else:
+                    delivery_note = _classify_feishu_file_delivery_error(exc)
+                    if delivery_note:
+                        delivery_notes.append(delivery_note)
+                pending_artifacts.append(artifact)
 
-    if (
-        not deliverable_artifacts
-        and not deduped_pending
-        and not sent_artifacts
-        and _looks_like_feishu_file_send_request(resolved_request_text)
-    ):
-        delivery_notes.append(
-            "如果需要发送现有工作区文件，请在消息里写明文件名或路径，例如 output/report.md。"
-        )
+        if len(resolved_deliverable_files) > _FEISHU_MAX_DIRECT_FILE_MESSAGES:
+            pending_artifacts.extend(
+                artifact
+                for artifact, _ in resolved_deliverable_files[_FEISHU_MAX_DIRECT_FILE_MESSAGES:]
+            )
 
-    reply_text = _build_feishu_reply_text(
-        agent=agent,
-        conversation=conversation,
-        output_text=str(result.get("output") or ""),
-        request_text=resolved_request_text,
-        delivered_artifacts=sent_artifacts,
-        pending_artifacts=deduped_pending,
-        delivery_notes=delivery_notes,
-        base_url=base_url or _resolve_public_web_base_url(),
-    )
-    if reply_text.strip():
-        await asyncio.to_thread(
-            _send_feishu_markdown_card_message,
-            publication,
-            chat_id=str(message.get("chat_id") or ""),
-            markdown_text=reply_text,
+        deduped_pending: list[dict[str, Any]] = []
+        seen_pending_paths: set[str] = set()
+        for artifact in pending_artifacts:
+            path = str(artifact.get("path") or "").strip()
+            if not path or path in seen_pending_paths:
+                continue
+            deduped_pending.append(artifact)
+            seen_pending_paths.add(path)
+
+        if (
+            not deliverable_artifacts
+            and not deduped_pending
+            and not sent_artifacts
+            and _looks_like_feishu_file_send_request(resolved_request_text)
+        ):
+            delivery_notes.append(
+                "如果需要发送现有工作区文件，请在消息里写明文件名或路径，例如 output/report.md。"
+            )
+
+        reply_text = _build_feishu_reply_text(
+            agent=agent,
+            conversation=conversation,
+            output_text=str(result.get("output") or ""),
+            request_text=resolved_request_text,
+            delivered_artifacts=sent_artifacts,
+            pending_artifacts=deduped_pending,
+            delivery_notes=delivery_notes,
+            base_url=base_url or _resolve_public_web_base_url(),
         )
-    return {"success": True}
+        if reply_text.strip():
+            await asyncio.to_thread(
+                _send_feishu_markdown_card_message,
+                publication,
+                chat_id=str(message.get("chat_id") or ""),
+                markdown_text=reply_text,
+            )
+        return {"success": True}
+    except Exception as exc:
+        log_extra = {
+            "publication_id": str(publication.publication_id),
+            "conversation_id": str(conversation.conversation_id),
+            "agent_id": str(agent.agent_id),
+            "event_id": str(message.get("event_id") or ""),
+            "chat_id": str(message.get("chat_id") or ""),
+        }
+        logger.warning(
+            "Feishu publication message execution failed: %s",
+            exc,
+            exc_info=True,
+            extra=log_extra,
+        )
+        try:
+            await asyncio.to_thread(
+                _send_feishu_text_message,
+                publication,
+                chat_id=str(message.get("chat_id") or ""),
+                text=_FEISHU_EXECUTION_FAILURE_TEXT,
+            )
+        except Exception as notify_exc:
+            logger.warning(
+                "Failed to send Feishu execution failure notice: %s",
+                notify_exc,
+                exc_info=True,
+                extra=log_extra,
+            )
+        return {"success": False, "error": str(exc)}
 
 
 @router.post("/feishu/{publication_id}/events")

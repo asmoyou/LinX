@@ -3,6 +3,7 @@ from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
 from api_gateway.routers.agent_conversations import (
+    _cleanup_incomplete_turn_state,
     _delete_message_and_cleanup_storage,
 )
 from database.models import AgentConversation, AgentConversationMessage
@@ -121,3 +122,36 @@ def test_delete_message_and_cleanup_storage_updates_conversation_and_deletes_att
     assert conversation.updated_at is not None
     assert conversation.updated_at >= deleted_message_time
     assert deleted_refs == [{"artifacts/conversations/input-1"}]
+
+
+def test_cleanup_incomplete_turn_state_keeps_persisted_input_message_on_execution_failure(
+    monkeypatch,
+) -> None:
+    input_message = AgentConversationMessage(
+        message_id=uuid4(),
+        conversation_id=uuid4(),
+        role="user",
+        content_text="failed turn input",
+        attachments_json=[{"storage_ref": "artifacts/conversations/input-2"}],
+    )
+
+    deleted_message_ids: list = []
+    deleted_refs: list[set[str]] = []
+    monkeypatch.setattr(
+        "api_gateway.routers.agent_conversations._delete_message_and_cleanup_storage",
+        lambda message_id: deleted_message_ids.append(message_id),
+    )
+    monkeypatch.setattr(
+        "api_gateway.routers.agent_conversations.delete_object_references",
+        lambda refs: deleted_refs.append(set(refs)),
+    )
+
+    _cleanup_incomplete_turn_state(
+        input_message_row=input_message,
+        assistant_message_row=None,
+        uploaded_attachment_refs={"artifacts/conversations/input-2"},
+        remove_input_message=False,
+    )
+
+    assert deleted_message_ids == []
+    assert deleted_refs == []

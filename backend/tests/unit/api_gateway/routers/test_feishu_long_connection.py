@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import json
+from contextlib import contextmanager
+from types import SimpleNamespace
+from uuid import uuid4
+
 import pytest
 import requests
-from types import SimpleNamespace
 
 from api_gateway import feishu_long_connection
 from api_gateway.feishu_long_connection import (
@@ -11,31 +14,33 @@ from api_gateway.feishu_long_connection import (
     FeishuPublicationTarget,
     _resolve_feishu_long_connection_proxy,
 )
-from api_gateway.routers.agent_conversations import _diff_workspace_entries
 from api_gateway.routers import integrations as integrations_router
+from api_gateway.routers.agent_conversations import _diff_workspace_entries
 from api_gateway.routers.integrations import (
     FeishuApiError,
     FeishuFileDeliveryRetryService,
-    _QueuedFeishuFileDelivery,
     _build_feishu_reply_text,
     _classify_feishu_file_delivery_error,
     _extract_feishu_message_from_long_connection_event,
     _flatten_feishu_markdown_tables,
-    _is_supported_feishu_inbound_message_type,
-    _normalize_feishu_card_markdown,
-    _queued_feishu_file_delivery_note,
     _format_feishu_api_error,
+    _is_supported_feishu_inbound_message_type,
     _looks_like_feishu_file_send_request,
+    _normalize_feishu_card_markdown,
     _parse_feishu_json_response,
     _prepare_feishu_execution_input,
     _prepare_feishu_message_uploads,
-    _resolve_feishu_message_resource,
+    _queued_feishu_file_delivery_note,
+    _QueuedFeishuFileDelivery,
     _resolve_feishu_artifact_file_paths,
-    _send_feishu_markdown_card_message,
-    _send_feishu_text_message,
+    _resolve_feishu_message_resource,
     _select_feishu_deliverable_artifacts,
     _select_feishu_explicitly_requested_artifacts,
+    _send_feishu_markdown_card_message,
+    _send_feishu_text_message,
+    process_feishu_publication_message,
 )
+from database.models import Agent, User
 
 
 class _FakeProcess:
@@ -62,6 +67,39 @@ class _FakeProcess:
 
     def kill(self) -> None:
         self._alive = False
+
+
+class _FakeIntegrationsQuery:
+    def __init__(self, *, session: "_FakeIntegrationsSession", model) -> None:
+        self._session = session
+        self._model = model
+
+    def filter(self, *_args, **_kwargs):
+        return self
+
+    def first(self):
+        if self._model is User:
+            return self._session.user
+        if self._model is Agent:
+            return self._session.agent
+        return None
+
+
+class _FakeIntegrationsSession:
+    def __init__(self, *, user, agent) -> None:
+        self.user = user
+        self.agent = agent
+        self.commit_calls = 0
+        self.refreshed: list[object] = []
+
+    def query(self, model):
+        return _FakeIntegrationsQuery(session=self, model=model)
+
+    def commit(self) -> None:
+        self.commit_calls += 1
+
+    def refresh(self, obj) -> None:
+        self.refreshed.append(obj)
 
 
 def test_extract_feishu_message_from_long_connection_event_parses_expected_fields() -> None:
@@ -212,8 +250,7 @@ async def test_prepare_feishu_execution_input_merges_text_and_audio_transcript(
     assert prepared.message_text == "请帮我总结重点"
     assert prepared.input_message_text == "请帮我总结重点"
     assert (
-        prepared.execution_task_text
-        == "请帮我总结重点\n\n[语音转写]\n会议纪要的重点是排期和预算。"
+        prepared.execution_task_text == "请帮我总结重点\n\n[语音转写]\n会议纪要的重点是排期和预算。"
     )
     assert prepared.execution_intent_text == "请帮我总结重点"
     assert prepared.title_seed_text == "请帮我总结重点"
@@ -229,6 +266,117 @@ async def test_prepare_feishu_execution_input_merges_text_and_audio_transcript(
             "contentPayloadKeys": ["audio_key"],
         }
     }
+
+
+@pytest.mark.asyncio
+async def test_process_feishu_publication_message_sends_failure_notice_on_execution_error(
+    monkeypatch,
+) -> None:
+    publication = SimpleNamespace(
+        publication_id=uuid4(),
+        status="published",
+        agent_id=uuid4(),
+    )
+    binding = SimpleNamespace(user_id=uuid4(), last_seen_at=None)
+    user = SimpleNamespace(user_id=binding.user_id, username="admin", role="admin")
+    agent = SimpleNamespace(agent_id=publication.agent_id, name="小白")
+    conversation = SimpleNamespace(conversation_id=uuid4(), agent_id=publication.agent_id)
+    message = {
+        "event_id": "evt-1",
+        "message_id": "msg-1",
+        "chat_id": "chat-1",
+        "chat_type": "p2p",
+        "message_type": "text",
+        "text": "帮我整理一份文档",
+        "open_id": "open-1",
+        "external_user_id": "user-1",
+        "union_id": "union-1",
+        "thread_key": "chat-1",
+    }
+    fake_session = _FakeIntegrationsSession(user=user, agent=agent)
+    sent_text_messages: list[dict[str, str]] = []
+
+    @contextmanager
+    def _fake_db_session():
+        yield fake_session
+
+    async def _fake_prepare_feishu_execution_input(**_kwargs):
+        return SimpleNamespace(
+            message_text="帮我整理一份文档",
+            files=[],
+            input_message_text="帮我整理一份文档",
+            input_message_content_json=None,
+            execution_task_text="帮我整理一份文档",
+            execution_intent_text="帮我整理一份文档",
+            title_seed_text="帮我整理一份文档",
+            direct_reply_text=None,
+            skip_execution_reason=None,
+        )
+
+    async def _fake_execute_persistent_conversation_turn(**_kwargs):
+        raise RuntimeError("write_file validation failed")
+
+    monkeypatch.setattr(integrations_router, "get_db_session", _fake_db_session)
+    monkeypatch.setattr(
+        integrations_router,
+        "_load_publication_or_raise",
+        lambda _session, _publication_id: publication,
+    )
+    monkeypatch.setattr(
+        integrations_router,
+        "_try_add_feishu_processing_reaction",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        integrations_router,
+        "_find_external_binding",
+        lambda *_args, **_kwargs: binding,
+    )
+    monkeypatch.setattr(
+        integrations_router,
+        "_user_can_access_agent",
+        lambda *_args, **_kwargs: True,
+    )
+    monkeypatch.setattr(
+        integrations_router,
+        "_get_or_create_external_conversation",
+        lambda *_args, **_kwargs: conversation,
+    )
+    monkeypatch.setattr(
+        integrations_router,
+        "_conversation_already_processed",
+        lambda *_args, **_kwargs: False,
+    )
+    monkeypatch.setattr(
+        integrations_router,
+        "_prepare_feishu_execution_input",
+        _fake_prepare_feishu_execution_input,
+    )
+    monkeypatch.setattr(
+        integrations_router,
+        "execute_persistent_conversation_turn",
+        _fake_execute_persistent_conversation_turn,
+    )
+    monkeypatch.setattr(
+        integrations_router,
+        "_send_feishu_text_message",
+        lambda _publication, *, chat_id, text: sent_text_messages.append(
+            {"chat_id": chat_id, "text": text}
+        ),
+    )
+
+    result = await process_feishu_publication_message(
+        publication.publication_id,
+        message,
+    )
+
+    assert result == {"success": False, "error": "write_file validation failed"}
+    assert sent_text_messages == [
+        {
+            "chat_id": "chat-1",
+            "text": integrations_router._FEISHU_EXECUTION_FAILURE_TEXT,
+        }
+    ]
 
 
 @pytest.mark.asyncio
@@ -656,9 +804,7 @@ def test_flatten_feishu_markdown_tables_converts_table_to_list() -> None:
 """.strip()
 
     assert _flatten_feishu_markdown_tables(raw) == (
-        "## 今日金价\n\n"
-        "- 足金: 800 元/克\n"
-        "- 金条: 760 元/克"
+        "## 今日金价\n\n" "- 足金: 800 元/克\n" "- 金条: 760 元/克"
     )
 
 

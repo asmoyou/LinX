@@ -71,11 +71,11 @@ from api_gateway.routers import agents as agents_router
 from database.connection import get_db_session
 from database.models import (
     Agent,
+    AgentChannelPublication,
     AgentConversation,
     AgentConversationHistorySummary,
-    AgentChannelPublication,
-    AgentConversationMessageArchive,
     AgentConversationMessage,
+    AgentConversationMessageArchive,
     AgentConversationSnapshot,
 )
 from object_storage.minio_client import get_minio_client
@@ -1160,6 +1160,23 @@ def _delete_message_and_cleanup_storage(message_id: UUID) -> bool:
     return True
 
 
+def _cleanup_incomplete_turn_state(
+    *,
+    input_message_row: AgentConversationMessage | None,
+    assistant_message_row: AgentConversationMessage | None,
+    uploaded_attachment_refs: set[str],
+    remove_input_message: bool = True,
+) -> None:
+    if assistant_message_row is not None:
+        return
+    if input_message_row is not None:
+        if remove_input_message:
+            _delete_message_and_cleanup_storage(input_message_row.message_id)
+        return
+    if uploaded_attachment_refs:
+        delete_object_references(uploaded_attachment_refs)
+
+
 def _update_conversation_title(conversation_id: UUID, title: str) -> None:
     normalized = " ".join(str(title or "").split()).strip()
     if not normalized:
@@ -1311,14 +1328,13 @@ async def execute_persistent_conversation_turn(
     assistant_message_row: AgentConversationMessage | None = None
     uploaded_attachment_refs: set[str] = set()
 
-    def cleanup_incomplete_turn() -> None:
-        if assistant_message_row is not None:
-            return
-        if input_message_row is not None:
-            _delete_message_and_cleanup_storage(input_message_row.message_id)
-            return
-        if uploaded_attachment_refs:
-            delete_object_references(uploaded_attachment_refs)
+    def cleanup_incomplete_turn(*, remove_input_message: bool = True) -> None:
+        _cleanup_incomplete_turn_state(
+            input_message_row=input_message_row,
+            assistant_message_row=assistant_message_row,
+            uploaded_attachment_refs=uploaded_attachment_refs,
+            remove_input_message=remove_input_message,
+        )
 
     try:
         from agent_framework.conversation_workspace_decay import (
@@ -1702,7 +1718,7 @@ async def execute_persistent_conversation_turn(
             )
 
     if error_holder[0]:
-        cleanup_incomplete_turn()
+        cleanup_incomplete_turn(remove_input_message=False)
         await _emit_chunk(chunk_callback, {"type": "error", "content": f"Error: {error_holder[0]}"})
         raise RuntimeError(error_holder[0])
 
