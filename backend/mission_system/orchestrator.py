@@ -43,6 +43,7 @@ from mission_system.mission_repository import assign_agent as assign_mission_age
 from mission_system.mission_repository import (
     get_mission,
     prepare_partial_retry_for_failed_tasks,
+    sync_mission_settings_snapshot,
 )
 from mission_system.mission_repository import update_agent_status as update_mission_agent_status
 from mission_system.mission_repository import (
@@ -108,6 +109,8 @@ class MissionOrchestrator:
         if mission is None:
             raise MissionError(mission_id, "Mission not found")
 
+        sync_mission_settings_snapshot(mission_id, allowed_statuses={"draft"})
+
         task = asyncio.create_task(
             self._run_mission(mission_id, user_id),
             name=f"mission-{mission_id}",
@@ -135,6 +138,7 @@ class MissionOrchestrator:
                 "Only failed or cancelled missions can retry failed parts",
             )
 
+        sync_mission_settings_snapshot(mission_id, allowed_statuses={"failed", "cancelled"})
         retry_summary = prepare_partial_retry_for_failed_tasks(mission_id)
         self._emitter.emit(
             mission_id=mission_id,

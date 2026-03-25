@@ -417,3 +417,159 @@ def test_prepare_partial_retry_for_failed_tasks_resets_unfinished_tasks(monkeypa
     assert in_progress_task.status == "pending"
     assert in_progress_task.completed_at is None
     assert in_progress_task.task_metadata["review_status"] == "pending"
+
+
+def test_sync_mission_settings_snapshot_refreshes_llm_settings(monkeypatch):
+    mission = type(
+        "MissionStub",
+        (),
+        {
+            "mission_id": uuid4(),
+            "status": "draft",
+            "created_by_user_id": uuid4(),
+            "mission_config": {
+                "leader_config": {"llm_provider": "ollama", "llm_model": "qwen2.5:14b"},
+                "supervisor_config": {"llm_provider": "ollama", "llm_model": "qwen2.5:14b"},
+                "qa_config": {"llm_provider": "ollama", "llm_model": "qwen2.5:14b"},
+                "temporary_worker_config": {
+                    "llm_provider": "ollama",
+                    "llm_model": "qwen2.5:14b",
+                },
+                "execution_config": {
+                    "max_retries": 3,
+                    "network_access": False,
+                    "max_concurrent_tasks": 2,
+                },
+                "network_access": True,
+                "max_retries": 9,
+                "base_image": "custom-image:latest",
+            },
+        },
+    )()
+
+    latest_settings = {
+        "leader_config": {
+            "llm_provider": "vllm",
+            "llm_model": "Qwen3.5-27B-FP8",
+            "temperature": 0.3,
+            "max_tokens": 8192,
+        },
+        "supervisor_config": {
+            "llm_provider": "vllm",
+            "llm_model": "Qwen3.5-27B-FP8",
+            "temperature": 0.2,
+            "max_tokens": 2048,
+        },
+        "qa_config": {
+            "llm_provider": "vllm",
+            "llm_model": "Qwen3.5-27B-FP8",
+            "temperature": 0.1,
+            "max_tokens": 4096,
+        },
+        "temporary_worker_config": {
+            "llm_provider": "vllm",
+            "llm_model": "Qwen3.5-27B-FP8",
+            "temperature": 0.3,
+            "max_tokens": 8192,
+        },
+        "execution_config": {
+            "max_retries": 3,
+            "network_access": False,
+            "max_concurrent_tasks": 6,
+            "allow_temporary_workers": True,
+        },
+    }
+
+    class _MissionQuery:
+        def filter(self, *args, **kwargs):
+            return self
+
+        def first(self):
+            return mission
+
+    class _FakeSession:
+        def query(self, model, *args, **kwargs):
+            model_name = getattr(model, "__name__", str(model))
+            if model_name == "Mission":
+                return _MissionQuery()
+            raise AssertionError(f"Unexpected model query: {model_name}")
+
+        def flush(self):
+            return None
+
+    @contextmanager
+    def _fake_db_session():
+        yield _FakeSession()
+
+    monkeypatch.setattr(mission_repository, "get_db_session", _fake_db_session)
+    monkeypatch.setattr(mission_repository, "get_mission_settings", lambda _user_id: latest_settings)
+
+    refreshed = mission_repository.sync_mission_settings_snapshot(mission.mission_id)
+
+    assert refreshed["leader_config"]["llm_provider"] == "vllm"
+    assert refreshed["leader_config"]["llm_model"] == "Qwen3.5-27B-FP8"
+    assert refreshed["temporary_worker_config"]["llm_provider"] == "vllm"
+    assert refreshed["execution_config"]["max_concurrent_tasks"] == 6
+    assert refreshed["execution_config"]["max_retries"] == 9
+    assert refreshed["execution_config"]["network_access"] is True
+    assert refreshed["max_retries"] == 9
+    assert refreshed["network_access"] is True
+    assert refreshed["base_image"] == "custom-image:latest"
+    assert mission.mission_config == refreshed
+
+
+def test_sync_mission_settings_snapshot_uses_network_enabled_legacy_override(monkeypatch):
+    mission = type(
+        "MissionStub",
+        (),
+        {
+            "mission_id": uuid4(),
+            "status": "failed",
+            "created_by_user_id": uuid4(),
+            "mission_config": {
+                "network_enabled": True,
+                "execution_config": {"network_access": False},
+            },
+        },
+    )()
+
+    latest_settings = {
+        "leader_config": {"llm_provider": "vllm", "llm_model": "Qwen3.5-27B-FP8"},
+        "supervisor_config": {"llm_provider": "vllm", "llm_model": "Qwen3.5-27B-FP8"},
+        "qa_config": {"llm_provider": "vllm", "llm_model": "Qwen3.5-27B-FP8"},
+        "temporary_worker_config": {
+            "llm_provider": "vllm",
+            "llm_model": "Qwen3.5-27B-FP8",
+        },
+        "execution_config": {"network_access": False},
+    }
+
+    class _MissionQuery:
+        def filter(self, *args, **kwargs):
+            return self
+
+        def first(self):
+            return mission
+
+    class _FakeSession:
+        def query(self, model, *args, **kwargs):
+            model_name = getattr(model, "__name__", str(model))
+            if model_name == "Mission":
+                return _MissionQuery()
+            raise AssertionError(f"Unexpected model query: {model_name}")
+
+        def flush(self):
+            return None
+
+    @contextmanager
+    def _fake_db_session():
+        yield _FakeSession()
+
+    monkeypatch.setattr(mission_repository, "get_db_session", _fake_db_session)
+    monkeypatch.setattr(mission_repository, "get_mission_settings", lambda _user_id: latest_settings)
+
+    refreshed = mission_repository.sync_mission_settings_snapshot(mission.mission_id)
+
+    assert refreshed["execution_config"]["network_access"] is True
+    assert refreshed["network_access"] is True
+    assert "network_enabled" not in refreshed

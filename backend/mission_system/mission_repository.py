@@ -26,6 +26,33 @@ from shared.datetime_utils import utcnow
 
 logger = logging.getLogger(__name__)
 
+MISSION_SETTINGS_ROLE_CONFIG_KEYS = (
+    "leader_config",
+    "supervisor_config",
+    "qa_config",
+    "temporary_worker_config",
+)
+
+MISSION_LEGACY_EXECUTION_CONFIG_KEYS = (
+    "max_retries",
+    "task_timeout_s",
+    "dependency_wait_timeout_s",
+    "require_dependency_review_pass",
+    "max_rework_cycles",
+    "max_qa_cycles",
+    "max_concurrent_tasks",
+    "network_access",
+    "debug_mode",
+    "enable_team_blueprint",
+    "prefer_existing_agents",
+    "allow_temporary_workers",
+    "auto_select_temp_skills",
+    "temp_worker_skill_limit",
+    "temp_worker_memory_scopes",
+    "temp_worker_knowledge_strategy",
+    "temp_worker_knowledge_limit",
+)
+
 
 # ------------------------------------------------------------------
 # Mission CRUD
@@ -105,6 +132,58 @@ def update_mission_fields(mission_id: UUID, **fields: Any) -> None:
             raise ValueError(f"Mission {mission_id} not found")
         for key, value in fields.items():
             setattr(mission, key, value)
+
+
+def sync_mission_settings_snapshot(
+    mission_id: UUID,
+    allowed_statuses: Optional[set[str]] = None,
+) -> Dict[str, Any]:
+    """Refresh a mission's settings snapshot from the latest per-user mission settings.
+
+    Only draft/failed/cancelled missions are expected to use this helper. Role-level
+    LLM settings are always refreshed. Execution settings are refreshed from the
+    latest defaults, while preserving explicit legacy top-level per-mission overrides
+    already stored on the mission config.
+    """
+    allowed = allowed_statuses or {"draft", "failed", "cancelled"}
+
+    with get_db_session() as session:
+        mission = session.query(Mission).filter(Mission.mission_id == mission_id).first()
+        if mission is None:
+            raise ValueError(f"Mission {mission_id} not found")
+        if mission.status not in allowed:
+            return copy.deepcopy(mission.mission_config or {})
+
+        current_config = copy.deepcopy(mission.mission_config or {})
+        latest_settings = get_mission_settings(mission.created_by_user_id)
+
+        refreshed_config = dict(current_config)
+        for key in MISSION_SETTINGS_ROLE_CONFIG_KEYS:
+            refreshed_config[key] = copy.deepcopy(latest_settings.get(key) or {})
+
+        resolved_execution_config = copy.deepcopy(latest_settings.get("execution_config") or {})
+        for key in MISSION_LEGACY_EXECUTION_CONFIG_KEYS:
+            if key in current_config and current_config[key] is not None:
+                resolved_execution_config[key] = copy.deepcopy(current_config[key])
+
+        if (
+            "network_access" not in current_config
+            and "network_enabled" in current_config
+            and current_config["network_enabled"] is not None
+        ):
+            resolved_execution_config["network_access"] = bool(current_config["network_enabled"])
+
+        refreshed_config["execution_config"] = resolved_execution_config
+        for key in MISSION_LEGACY_EXECUTION_CONFIG_KEYS:
+            if key in resolved_execution_config:
+                refreshed_config[key] = copy.deepcopy(resolved_execution_config[key])
+            else:
+                refreshed_config.pop(key, None)
+        refreshed_config.pop("network_enabled", None)
+
+        mission.mission_config = refreshed_config
+        session.flush()
+        return copy.deepcopy(refreshed_config)
 
 
 def list_missions(

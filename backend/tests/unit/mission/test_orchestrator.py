@@ -911,6 +911,10 @@ async def test_retry_failed_parts_emits_event_and_tracks_active_task(monkeypatch
         "mission_system.orchestrator.prepare_partial_retry_for_failed_tasks",
         lambda _mission_id: {"retried_tasks": 2, "total_tasks": 4},
     )
+    monkeypatch.setattr(
+        "mission_system.orchestrator.sync_mission_settings_snapshot",
+        lambda _mission_id, allowed_statuses=None: None,
+    )
 
     async def _fake_run_partial_retry(_mission_id, _user_id):
         return None
@@ -924,6 +928,76 @@ async def test_retry_failed_parts_emits_event_and_tracks_active_task(monkeypatch
     assert any(
         event.get("event_type") == "MISSION_PARTIAL_RETRY_REQUESTED" for event in emitted_events
     )
+
+
+@pytest.mark.asyncio
+async def test_start_mission_syncs_latest_settings_before_launch(monkeypatch):
+    mission_id = uuid4()
+    user_id = uuid4()
+    sync_calls = []
+
+    orchestrator = MissionOrchestrator.__new__(MissionOrchestrator)
+    orchestrator._active_missions = {}
+    orchestrator._emitter = SimpleNamespace(emit=lambda **kwargs: None)
+
+    monkeypatch.setattr(
+        "mission_system.orchestrator.get_mission",
+        lambda _mission_id: SimpleNamespace(status="draft"),
+    )
+    monkeypatch.setattr(
+        "mission_system.orchestrator.sync_mission_settings_snapshot",
+        lambda _mission_id, allowed_statuses=None: sync_calls.append(
+            (_mission_id, allowed_statuses)
+        ),
+    )
+
+    async def _fake_run_mission(_mission_id, _user_id):
+        return None
+
+    monkeypatch.setattr(orchestrator, "_run_mission", _fake_run_mission)
+
+    await MissionOrchestrator.start_mission(orchestrator, mission_id, user_id)
+
+    assert sync_calls == [(mission_id, {"draft"})]
+    assert mission_id in orchestrator._active_missions
+    await orchestrator._active_missions[mission_id]
+
+
+@pytest.mark.asyncio
+async def test_retry_failed_parts_syncs_latest_settings_before_retry(monkeypatch):
+    mission_id = uuid4()
+    user_id = uuid4()
+    sync_calls = []
+
+    orchestrator = MissionOrchestrator.__new__(MissionOrchestrator)
+    orchestrator._active_missions = {}
+    orchestrator._emitter = SimpleNamespace(emit=lambda **kwargs: None)
+
+    monkeypatch.setattr(
+        "mission_system.orchestrator.get_mission",
+        lambda _mission_id: SimpleNamespace(status="failed"),
+    )
+    monkeypatch.setattr(
+        "mission_system.orchestrator.sync_mission_settings_snapshot",
+        lambda _mission_id, allowed_statuses=None: sync_calls.append(
+            (_mission_id, allowed_statuses)
+        ),
+    )
+    monkeypatch.setattr(
+        "mission_system.orchestrator.prepare_partial_retry_for_failed_tasks",
+        lambda _mission_id: {"retried_tasks": 1, "total_tasks": 1},
+    )
+
+    async def _fake_run_partial_retry(_mission_id, _user_id):
+        return None
+
+    monkeypatch.setattr(orchestrator, "_run_partial_retry", _fake_run_partial_retry)
+
+    await MissionOrchestrator.retry_failed_parts(orchestrator, mission_id, user_id)
+
+    assert sync_calls == [(mission_id, {"failed", "cancelled"})]
+    assert mission_id in orchestrator._active_missions
+    await orchestrator._active_missions[mission_id]
 
 
 @pytest.mark.asyncio
@@ -1027,7 +1101,8 @@ async def test_execute_task_with_retry_falls_back_to_temporary_agent(monkeypatch
 
     status_updates = []
 
-    async def _fake_create_registered(agent_id, owner_user_id):
+    async def _fake_create_registered(agent_id, actor_user_id):
+        _ = actor_user_id
         if agent_id == temporary_agent_id:
             return SimpleNamespace(agent_id=agent_id, name="temporary-worker")
         return None
@@ -1146,7 +1221,8 @@ async def test_execute_task_with_retry_persists_delivery_handoff(monkeypatch):
         completed_at=None,
     )
 
-    async def _fake_create_registered(agent_id, owner_user_id):
+    async def _fake_create_registered(agent_id, actor_user_id):
+        _ = actor_user_id
         return SimpleNamespace(agent_id=agent_id, name="worker-agent")
 
     async def _fake_execute_agent_task(agent, prompt, container_id=None, **kwargs):
@@ -1271,7 +1347,8 @@ async def test_execute_task_with_retry_marks_unsuccessful_agent_response_as_fail
         completed_at=None,
     )
 
-    async def _fake_create_registered(agent_id, owner_user_id):
+    async def _fake_create_registered(agent_id, actor_user_id):
+        _ = actor_user_id
         return SimpleNamespace(agent_id=agent_id, name="worker-agent")
 
     async def _fake_execute_agent_task(agent, prompt, container_id=None, **kwargs):
@@ -1393,7 +1470,8 @@ async def test_execute_task_with_retry_prefers_platform_agent_before_temporary(m
         completed_at=None,
     )
 
-    async def _fake_create_registered(agent_id, owner_user_id):
+    async def _fake_create_registered(agent_id, actor_user_id):
+        _ = actor_user_id
         if agent_id == matched_agent_id:
             return SimpleNamespace(agent_id=agent_id, name="backend-agent")
         return None
@@ -1526,7 +1604,8 @@ async def test_execute_task_with_retry_keeps_temporary_plan_when_existing_match_
 
     created_agent_ids: List[UUID] = []
 
-    async def _fake_create_registered(agent_id, owner_user_id):
+    async def _fake_create_registered(agent_id, actor_user_id):
+        _ = actor_user_id
         created_agent_ids.append(agent_id)
         if agent_id == temporary_agent_id:
             return SimpleNamespace(agent_id=agent_id, name="temp-worker")
@@ -1648,7 +1727,8 @@ async def test_execute_task_with_retry_fails_when_temp_worker_disabled_and_no_pl
         completed_at=None,
     )
 
-    async def _fake_create_registered(agent_id, owner_user_id):
+    async def _fake_create_registered(agent_id, actor_user_id):
+        _ = actor_user_id
         return None
 
     monkeypatch.setattr(
@@ -2067,8 +2147,10 @@ def test_select_temporary_worker_skills_uses_task_overlap(monkeypatch):
     )
 
     class _FakeSkill:
-        def __init__(self, name, description, skill_type="agent_skill"):
-            self.name = name
+        def __init__(self, skill_id, skill_slug, description, skill_type="agent_skill"):
+            self.skill_id = skill_id
+            self.skill_slug = skill_slug
+            self.display_name = skill_slug.replace("_", " ")
             self.description = description
             self.skill_type = skill_type
 
@@ -2106,8 +2188,8 @@ def test_select_temporary_worker_skills_uses_task_overlap(monkeypatch):
             return False
 
     rows = [
-        _FakeSkill("python_api_helper", "Build python API services"),
-        _FakeSkill("ui_styling_pack", "Improve CSS and visual style"),
+        _FakeSkill("skill-python-api", "python_api_helper", "Build python API services"),
+        _FakeSkill("skill-ui-styling", "ui_styling_pack", "Improve CSS and visual style"),
     ]
     monkeypatch.setattr(
         "database.connection.get_db_session",
@@ -2120,8 +2202,8 @@ def test_select_temporary_worker_skills_uses_task_overlap(monkeypatch):
         task_obj=task_obj,
         exec_cfg={"auto_select_temp_skills": True, "temp_worker_skill_limit": 2},
     )
-    assert "python_api_helper" in selected
-    assert "ui_styling_pack" not in selected
+    assert "skill-python-api" in selected
+    assert "skill-ui-styling" not in selected
 
 
 def test_select_platform_agent_for_task_prefers_capability_overlap():
@@ -2257,7 +2339,8 @@ async def test_execute_task_with_retry_escalates_rework_to_temporary_for_non_tem
 
     create_calls = []
 
-    async def _fake_create_registered(agent_id, owner_user_id):
+    async def _fake_create_registered(agent_id, actor_user_id):
+        _ = actor_user_id
         create_calls.append(agent_id)
         if agent_id == temporary_agent_id:
             return SimpleNamespace(agent_id=agent_id, name="temp-worker")
@@ -2593,11 +2676,22 @@ async def test_phase_execution_resets_failed_tasks_to_pending(monkeypatch):
         def all(self):
             return self._tasks
 
+    class _FakeUserQuery:
+        def filter(self, *args, **kwargs):
+            return self
+
+        def first(self):
+            return None
+
     class _FakeSession:
         def __init__(self, tasks):
             self._tasks = tasks
 
-        def query(self, *args, **kwargs):
+        def query(self, model, *args, **kwargs):
+            _ = args, kwargs
+            model_name = getattr(model, "__name__", str(model))
+            if model_name == "User":
+                return _FakeUserQuery()
             return _FakeQuery(self._tasks)
 
         def expunge(self, _obj):
@@ -2729,8 +2823,11 @@ async def test_phase_execution_propagates_blocked_dependency_without_wait_loop(m
         def __init__(self, tasks):
             self._tasks = tasks
 
-        def query(self, *args, **kwargs):
+        def query(self, model, *args, **kwargs):
             _ = args, kwargs
+            model_name = getattr(model, "__name__", str(model))
+            if model_name == "User":
+                return SimpleNamespace(filter=lambda *a, **k: SimpleNamespace(first=lambda: None))
             return _FakeQuery(self._tasks)
 
         def expunge(self, _obj):
@@ -2883,8 +2980,11 @@ async def test_phase_execution_fails_on_dependency_wait_timeout(monkeypatch):
         def __init__(self, tasks):
             self._tasks = tasks
 
-        def query(self, *args, **kwargs):
+        def query(self, model, *args, **kwargs):
             _ = args, kwargs
+            model_name = getattr(model, "__name__", str(model))
+            if model_name == "User":
+                return SimpleNamespace(filter=lambda *a, **k: SimpleNamespace(first=lambda: None))
             return _FakeQuery(self._tasks)
 
         def expunge(self, _obj):
@@ -3056,7 +3156,8 @@ async def test_execute_task_with_retry_includes_review_feedback_in_prompt(monkey
         completed_at=None,
     )
 
-    async def _fake_create_registered(agent_id, owner_user_id):
+    async def _fake_create_registered(agent_id, actor_user_id):
+        _ = actor_user_id
         return SimpleNamespace(agent_id=agent_id, name="worker-agent")
 
     async def _fake_execute_agent_task(agent, prompt, container_id=None, **kwargs):
@@ -3162,7 +3263,8 @@ async def test_execute_task_with_retry_respects_task_timeout(monkeypatch):
         completed_at=None,
     )
 
-    async def _fake_create_registered(agent_id, owner_user_id):
+    async def _fake_create_registered(agent_id, actor_user_id):
+        _ = actor_user_id
         return SimpleNamespace(agent_id=agent_id, name="worker-agent")
 
     async def _fake_execute_agent_task(*args, **kwargs):
