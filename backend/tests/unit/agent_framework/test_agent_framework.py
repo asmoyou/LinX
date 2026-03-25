@@ -22,7 +22,6 @@ from agent_framework.agent_lifecycle import AgentLifecycleManager, LifecyclePhas
 from agent_framework.agent_registry import AgentInfo, AgentRegistry
 from agent_framework.agent_status import AgentStatusTracker, StatusUpdate
 from agent_framework.agent_tools import AgentToolkit, create_langchain_tools
-from agent_framework.runtime_context_service import RuntimeContextService
 from agent_framework.base_agent import (
     AgentConfig,
     AgentStatus,
@@ -32,12 +31,15 @@ from agent_framework.base_agent import (
     ToolResult,
 )
 from agent_framework.capability_matcher import CapabilityMatch, CapabilityMatcher
+from agent_framework.runtime_context_service import RuntimeContextService
 from agent_framework.runtime_policy import (
     ExecutionProfile,
     FileDeliveryGuardMode,
     LoopMode,
     RuntimePolicy,
 )
+from agent_framework.tools.file_tools import WriteFileInput
+from llm_providers.custom_openai_provider import CustomOpenAIChat
 
 
 class TestBaseAgent:
@@ -248,7 +250,10 @@ class TestBaseAgent:
 
         assert isinstance(messages[0], SystemMessage)
         assert "Do NOT paste the full file contents" in messages[0].content
-        assert "report the exact saved file path(s) and keep the summary concise" in messages[0].content
+        assert (
+            "report the exact saved file path(s) and keep the summary concise"
+            in messages[0].content
+        )
 
     def test_assess_autonomous_completion_rejects_inline_file_dump_after_file_delivery(
         self,
@@ -547,12 +552,17 @@ class TestBaseAgent:
 
         messages = agent._build_messages_with_history(
             human_content="查询今天的国内金价",
-            extra_system_messages=["这是一次已触发的定时任务，请直接执行，不要把它当成刚收到的新消息。"],
+            extra_system_messages=[
+                "这是一次已触发的定时任务，请直接执行，不要把它当成刚收到的新消息。"
+            ],
         )
 
         assert isinstance(messages[0], SystemMessage)
         assert isinstance(messages[1], SystemMessage)
-        assert messages[1].content == "这是一次已触发的定时任务，请直接执行，不要把它当成刚收到的新消息。"
+        assert (
+            messages[1].content
+            == "这是一次已触发的定时任务，请直接执行，不要把它当成刚收到的新消息。"
+        )
         assert isinstance(messages[2], HumanMessage)
         assert messages[2].content == "查询今天的国内金价"
 
@@ -743,10 +753,7 @@ class TestBaseAgent:
 
         decision = agent._assess_autonomous_completion(
             task_intent_text="你能听到我在说话吗",
-            latest_output=(
-                "所以，请继续用文字和我聊天吧！\n"
-                "有什么问题尽管问，我会认真回答的！"
-            ),
+            latest_output=("所以，请继续用文字和我聊天吧！\n" "有什么问题尽管问，我会认真回答的！"),
             tool_call_records=[],
             round_number=1,
             max_rounds=6,
@@ -1052,6 +1059,57 @@ class TestBaseAgent:
         assert "timeout=3" in str(results[0].result)
         assert state.tool_calls_made[0].arguments["timeout"] == 3
 
+    def test_recovery_bash_install_command_uses_extended_timeout_cap(self, monkeypatch):
+        """Install-like bash commands should get a longer timeout budget."""
+        monkeypatch.setenv("AGENT_INSTALL_TOOL_TIMEOUT", "120")
+        config = AgentConfig(
+            agent_id=uuid4(),
+            name="Test Agent",
+            agent_type="test",
+            owner_user_id=uuid4(),
+            capabilities=[],
+            tool_timeout_seconds=3.0,
+        )
+        agent = BaseAgent(config=config)
+        state = ConversationState(round_number=1)
+
+        def bash_execute(
+            command: str,
+            pty: bool = False,
+            workdir: str | None = None,
+            background: bool = False,
+            timeout: int | None = None,
+        ) -> str:
+            return (
+                f"command={command};pty={pty};workdir={workdir};"
+                f"background={background};timeout={timeout}"
+            )
+
+        bash_tool = Tool(
+            name="bash",
+            description="test bash tool",
+            func=bash_execute,
+        )
+        agent.tools_by_name = {"bash": bash_tool}
+
+        with asyncio.Runner() as runner:
+            results = runner.run(
+                agent._execute_tools_with_recovery(
+                    [
+                        ToolCall(
+                            tool_name="bash",
+                            arguments={"command": "python3 -m pip install -q fpdf2"},
+                            raw_json="{}",
+                        )
+                    ],
+                    state,
+                )
+            )
+
+        assert results[0].status == "success"
+        assert "timeout=120" in str(results[0].result)
+        assert state.tool_calls_made[0].arguments["timeout"] == 120
+
     def test_recovery_bash_arg1_is_normalized_to_command_for_single_input_tool(self):
         """When parser emits __arg1 for bash, recovery should normalize it to command."""
         config = AgentConfig(
@@ -1104,6 +1162,55 @@ class TestBaseAgent:
         assert state.tool_calls_made[0].arguments["command"] == "python3 -m http.server 8080"
         assert "__arg1" not in state.tool_calls_made[0].arguments
         assert state.tool_calls_made[0].arguments["timeout"] == 3
+
+    def test_recovery_validation_error_is_caught_before_tool_execution(self):
+        """Schema-invalid tool args should be intercepted before invoking the tool."""
+        config = AgentConfig(
+            agent_id=uuid4(),
+            name="Test Agent",
+            agent_type="test",
+            owner_user_id=uuid4(),
+            capabilities=[],
+        )
+        agent = BaseAgent(config=config)
+        state = ConversationState(round_number=1)
+
+        write_tool = Mock()
+        write_tool.args_schema = WriteFileInput
+        write_tool.ainvoke = AsyncMock(
+            side_effect=AssertionError("write_file should not be invoked on invalid args")
+        )
+        agent.tools_by_name = {"write_file": write_tool}
+
+        raw_json = '{"tool":"write_file","file_path":"/workspace/output/report.md"}'
+
+        with asyncio.Runner() as runner:
+            results = runner.run(
+                agent._execute_tools_with_recovery(
+                    [
+                        ToolCall(
+                            tool_name="write_file",
+                            arguments={"file_path": "/workspace/output/report.md"},
+                            raw_json=raw_json,
+                        )
+                    ],
+                    state,
+                )
+            )
+
+        assert len(results) == 1
+        assert results[0].status == "error"
+        assert results[0].error_type == "validation_error"
+        assert "content" in (results[0].error or "").lower()
+        assert results[0].malformed_input == raw_json
+        write_tool.ainvoke.assert_not_called()
+
+        feedback = agent._handle_execution_failures(results, state)
+
+        assert feedback is not None
+        assert feedback.error_type == "Validation Error"
+        assert feedback.malformed_input == raw_json
+        assert '"content": "<required string>"' in feedback.expected_format
 
     def test_recovery_file_delivery_guard_triggers_extra_write_round(self):
         """When file intent exists and no file write occurred, recovery loop should add one save round."""
@@ -1309,6 +1416,81 @@ class TestBaseAgent:
         agent.llm = Mock()
         agent.llm.stream = _fake_stream
         agent.llm.invoke = Mock(side_effect=AssertionError("llm.invoke should not be called"))
+
+        result = agent.execute_task(
+            task_description="输出完整报告",
+            stream_callback=lambda *_args, **_kwargs: None,
+        )
+
+        assert result["success"] is True
+        assert result["output"] == "这是补全后的最终结果。"
+        assert stream_call_count["count"] == 2
+
+    def test_recovery_custom_openai_provider_length_finish_reason_forces_followup_round(
+        self, monkeypatch
+    ):
+        """CustomOpenAIChat stream metadata should propagate length truncation into recovery."""
+        config = AgentConfig(
+            agent_id=uuid4(),
+            name="Test Agent",
+            agent_type="test",
+            owner_user_id=uuid4(),
+            capabilities=[],
+        )
+        agent = BaseAgent(config=config)
+        agent.status = AgentStatus.ACTIVE
+        agent.agent = Mock()
+        agent.tools = []
+        agent.tools_by_name = {}
+        agent.llm = CustomOpenAIChat(base_url="https://example.com/v1", model="qwen3.5-flash")
+
+        stream_rounds = [
+            [
+                'data: {"choices":[{"delta":{"content":"这是被截断的输出片段。"}}]}',
+                'data: {"choices":[{"delta":{},"finish_reason":"length"}]}',
+                "data: [DONE]",
+            ],
+            [
+                'data: {"choices":[{"delta":{"content":"这是补全后的最终结果。"}}]}',
+                'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}',
+                "data: [DONE]",
+            ],
+        ]
+        stream_call_count = {"count": 0}
+
+        class _FakeStreamResponse:
+            def __init__(self, lines):
+                self._lines = lines
+
+            def raise_for_status(self) -> None:
+                return None
+
+            def iter_lines(self):
+                for line in self._lines:
+                    yield line
+
+        class _FakeStreamContext:
+            def __init__(self, lines):
+                self._lines = lines
+
+            def __enter__(self) -> _FakeStreamResponse:
+                return _FakeStreamResponse(self._lines)
+
+            def __exit__(self, exc_type, exc_val, exc_tb) -> bool:
+                del exc_type, exc_val, exc_tb
+                return False
+
+        def _fake_stream(_method, _url, *, json, headers, timeout):
+            del json, headers, timeout
+            index = stream_call_count["count"]
+            stream_call_count["count"] += 1
+            return _FakeStreamContext(stream_rounds[index])
+
+        def _unexpected_post(*_args, **_kwargs):
+            raise AssertionError("streaming path should not fall back to non-streaming invoke")
+
+        monkeypatch.setattr("llm_providers.custom_openai_provider.httpx.stream", _fake_stream)
+        monkeypatch.setattr("llm_providers.custom_openai_provider.httpx.post", _unexpected_post)
 
         result = agent.execute_task(
             task_description="输出完整报告",

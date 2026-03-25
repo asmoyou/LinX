@@ -133,6 +133,53 @@ def test_stream_restores_tool_calls_from_chunks(monkeypatch):
     assert merged.tool_calls[0]["args"]["expression"] == "23223 * 23 / 32"
 
 
+def test_stream_emits_finish_reason_metadata(monkeypatch):
+    lines: List[str] = [
+        'data: {"choices":[{"delta":{"content":"partial"}}]}',
+        'data: {"choices":[{"delta":{},"finish_reason":"length"}]}',
+        "data: [DONE]",
+    ]
+
+    class _FakeStreamResponse:
+        def raise_for_status(self) -> None:
+            return None
+
+        def iter_lines(self):
+            for line in lines:
+                yield line
+
+    class _FakeStreamContext:
+        def __enter__(self) -> _FakeStreamResponse:
+            return _FakeStreamResponse()
+
+        def __exit__(self, exc_type, exc_val, exc_tb) -> bool:
+            del exc_type, exc_val, exc_tb
+            return False
+
+    def _fake_stream(
+        _method: str,
+        _url: str,
+        *,
+        json: Dict[str, Any],
+        headers: Dict[str, Any],
+        timeout: httpx.Timeout,
+    ) -> _FakeStreamContext:
+        del json, headers, timeout
+        return _FakeStreamContext()
+
+    monkeypatch.setattr("llm_providers.custom_openai_provider.httpx.stream", _fake_stream)
+
+    llm = CustomOpenAIChat(base_url="https://example.com/v1", model="qwen3.5-flash")
+    chunks = list(llm.stream([HumanMessage(content="hello")]))
+    merged = None
+    for chunk in chunks:
+        merged = chunk if merged is None else merged + chunk
+
+    assert any(chunk.response_metadata.get("finish_reason") == "length" for chunk in chunks)
+    assert merged is not None
+    assert merged.response_metadata["finish_reason"] == "length"
+
+
 def test_stream_handles_non_sse_json_body(monkeypatch):
     lines: List[str] = [
         (
@@ -178,6 +225,79 @@ def test_stream_handles_non_sse_json_body(monkeypatch):
     chunks = list(llm.stream([HumanMessage(content="hello")]))
     assert chunks
     assert any(chunk.content == "plain json response" for chunk in chunks)
+
+
+def test_generate_preserves_finish_reason_metadata(monkeypatch):
+    def _fake_post(
+        _url: str,
+        *,
+        json: Dict[str, Any],
+        headers: Dict[str, Any],
+        timeout: int,
+    ) -> _FakeResponse:
+        del json, headers, timeout
+        return _FakeResponse(
+            {
+                "choices": [
+                    {
+                        "message": {"content": "partial response"},
+                        "finish_reason": "length",
+                    }
+                ],
+                "usage": {"prompt_tokens": 3, "completion_tokens": 2, "total_tokens": 5},
+            }
+        )
+
+    monkeypatch.setattr("llm_providers.custom_openai_provider.httpx.post", _fake_post)
+
+    llm = CustomOpenAIChat(base_url="https://example.com/v1", model="qwen3.5-flash")
+    message = llm.invoke([HumanMessage(content="hello")])
+
+    assert message.content == "partial response"
+    assert message.response_metadata["finish_reason"] == "length"
+
+
+def test_generate_preserves_raw_tool_arguments_when_json_is_truncated(monkeypatch):
+    def _fake_post(
+        _url: str,
+        *,
+        json: Dict[str, Any],
+        headers: Dict[str, Any],
+        timeout: int,
+    ) -> _FakeResponse:
+        del json, headers, timeout
+        return _FakeResponse(
+            {
+                "choices": [
+                    {
+                        "message": {
+                            "content": "",
+                            "tool_calls": [
+                                {
+                                    "id": "call_1",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "calculator",
+                                        "arguments": '{"expression":"23223 * 23 / 32',
+                                    },
+                                }
+                            ],
+                        },
+                        "finish_reason": "tool_calls",
+                    }
+                ],
+                "usage": {"prompt_tokens": 6, "completion_tokens": 3, "total_tokens": 9},
+            }
+        )
+
+    monkeypatch.setattr("llm_providers.custom_openai_provider.httpx.post", _fake_post)
+
+    llm = CustomOpenAIChat(base_url="https://example.com/v1", model="qwen3.5-flash")
+    bound = llm.bind_tools([calculator], tool_choice="calculator")
+    message = bound.invoke([HumanMessage(content="23223*23/32=?")])
+
+    assert message.tool_calls
+    assert message.tool_calls[0]["args"]["__raw_arguments__"] == '{"expression":"23223 * 23 / 32'
 
 
 def test_stream_timeout_uses_longer_read_deadline():

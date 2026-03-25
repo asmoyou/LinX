@@ -292,7 +292,9 @@ def _validate_skill_ids(
     missing_or_inaccessible: List[str] = []
     validated: List[str] = []
     for skill_id in normalized_skill_ids:
-        skill_info = registry.get_visible_skill(skill_id=UUID(skill_id), access_context=access_context)
+        skill_info = registry.get_visible_skill(
+            skill_id=UUID(skill_id), access_context=access_context
+        )
         if not skill_info or not skill_info.is_active:
             missing_or_inaccessible.append(skill_id)
             continue
@@ -622,6 +624,74 @@ def _resolve_model_context_window(
             detect_error,
         )
         return None
+
+
+def _resolve_model_max_output_tokens(
+    provider: Any,
+    provider_name: str,
+    model_name: str,
+) -> Optional[int]:
+    """Resolve model max output tokens from provider metadata or detector fallback."""
+    if provider and provider.model_metadata and model_name in provider.model_metadata:
+        metadata = provider.model_metadata.get(model_name) or {}
+        max_output_tokens = _to_positive_int(metadata.get("max_output_tokens"))
+        if max_output_tokens:
+            return max_output_tokens
+
+    try:
+        from llm_providers.model_metadata import EnhancedModelCapabilityDetector
+
+        detector = EnhancedModelCapabilityDetector()
+        detected = detector.detect_metadata(model_name, provider_name)
+        return _to_positive_int(detected.max_output_tokens)
+    except Exception as detect_error:
+        logger.warning(
+            "Failed to resolve model max output tokens via detector: %s",
+            detect_error,
+        )
+        return None
+
+
+def _validate_agent_max_tokens(
+    *,
+    provider_name: Optional[str],
+    model_name: Optional[str],
+    max_tokens: Optional[int],
+) -> None:
+    """Validate configured generation cap against resolved model metadata when available."""
+    resolved_max_tokens = _to_positive_int(max_tokens)
+    normalized_provider_name = str(provider_name or "").strip()
+    normalized_model_name = str(model_name or "").strip()
+
+    if not resolved_max_tokens or not normalized_provider_name or not normalized_model_name:
+        return
+
+    provider = None
+    try:
+        from llm_providers.db_manager import ProviderDBManager
+
+        with get_db_session() as db:
+            db_manager = ProviderDBManager(db)
+            provider = db_manager.get_provider(normalized_provider_name)
+    except Exception as provider_error:
+        logger.warning(
+            "Failed to load provider while validating agent max tokens: %s",
+            provider_error,
+        )
+
+    resolved_limit = _resolve_model_max_output_tokens(
+        provider=provider,
+        provider_name=normalized_provider_name,
+        model_name=normalized_model_name,
+    )
+    if resolved_limit and resolved_max_tokens > resolved_limit:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                f"maxTokens {resolved_max_tokens} exceeds model limit {resolved_limit} "
+                f"for {normalized_provider_name}/{normalized_model_name}"
+            ),
+        )
 
 
 _HISTORY_ALLOWED_ROLES = {"user", "assistant"}
@@ -2099,7 +2169,7 @@ class CreateAgentRequest(BaseModel):
     model: Optional[str] = None
     provider: Optional[str] = None
     temperature: Optional[float] = Field(default=0.7, ge=0.0, le=2.0)
-    maxTokens: Optional[int] = Field(default=2000, ge=1, le=8000)
+    maxTokens: Optional[int] = Field(default=2000, ge=1)
     topP: Optional[float] = Field(default=0.9, ge=0.0, le=1.0)
     accessLevel: Optional[str] = Field(default="private")
     allowedKnowledge: List[str] = Field(default_factory=list)
@@ -2116,7 +2186,7 @@ class UpdateAgentRequest(BaseModel):
     model: Optional[str] = None
     provider: Optional[str] = None
     temperature: Optional[float] = Field(None, ge=0.0, le=2.0)
-    maxTokens: Optional[int] = Field(None, ge=1, le=8000)
+    maxTokens: Optional[int] = Field(None, ge=1)
     topP: Optional[float] = Field(None, ge=0.0, le=1.0)
     accessLevel: Optional[str] = None
     allowedKnowledge: Optional[List[str]] = None
@@ -2224,7 +2294,9 @@ def _build_agent_response(
 
     department = getattr(agent_info, "department", None)
     department_name = getattr(department, "name", None) if department is not None else None
-    normalized_access_level = normalize_agent_access_level(getattr(agent_info, "access_level", None))
+    normalized_access_level = normalize_agent_access_level(
+        getattr(agent_info, "access_level", None)
+    )
     normalized_status = str(getattr(agent_info, "status", "") or "").strip().lower()
     if normalized_status in {"active", "initializing", "working", "busy"}:
         response_status = "working"
@@ -2257,7 +2329,9 @@ def _build_agent_response(
         allowedKnowledge=getattr(agent_info, "allowed_knowledge", None) or [],
         topK=getattr(agent_info, "top_k", None),
         similarityThreshold=getattr(agent_info, "similarity_threshold", None),
-        departmentId=str(agent_info.department_id) if getattr(agent_info, "department_id", None) else None,
+        departmentId=(
+            str(agent_info.department_id) if getattr(agent_info, "department_id", None) else None
+        ),
         departmentName=department_name,
         ownerUserId=str(agent_info.owner_user_id),
         ownerUsername=owner_username,
@@ -2268,6 +2342,7 @@ def _build_agent_response(
         updatedAt=agent_info.updated_at,
     )
 
+
 def _build_agent_response_payload(agent_info: Any) -> Dict[str, Any]:
     """Build skill-related payload fields for agent API responses."""
     from skill_library.canonical_service import get_canonical_skill_service
@@ -2275,7 +2350,9 @@ def _build_agent_response_payload(agent_info: Any) -> Dict[str, Any]:
     configured_bindings = get_canonical_skill_service().list_bindings(agent_id=agent_info.agent_id)
     skill_ids = [str(binding.skill_id) for binding in configured_bindings if binding.enabled]
     skill_summary_map = _build_skill_summary_map(skill_ids)
-    skill_summaries = [skill_summary_map[skill_id] for skill_id in skill_ids if skill_id in skill_summary_map]
+    skill_summaries = [
+        skill_summary_map[skill_id] for skill_id in skill_ids if skill_id in skill_summary_map
+    ]
     return {
         "skill_ids": skill_ids,
         "skill_summaries": skill_summaries,
@@ -2352,6 +2429,12 @@ async def create_agent(
             owner_department_id = resolve_agent_owner_department_id(session, current_user.user_id)
         if normalized_access_level == "department" and not owner_department_id:
             normalized_access_level = "private"
+
+        _validate_agent_max_tokens(
+            provider_name=request.provider,
+            model_name=request.model,
+            max_tokens=request.maxTokens,
+        )
 
         # Register agent in database with LLM configuration
         agent_info = registry.register_agent(
@@ -2592,6 +2675,12 @@ async def update_agent(
             owner_department_id = resolve_agent_owner_department_id(session, agent.owner_user_id)
         if normalized_access_level == "department" and not owner_department_id:
             normalized_access_level = "private"
+
+        _validate_agent_max_tokens(
+            provider_name=payload.provider if payload.provider is not None else agent.llm_provider,
+            model_name=payload.model if payload.model is not None else agent.llm_model,
+            max_tokens=payload.maxTokens,
+        )
         updated_agent = registry.update_agent(
             agent_id=UUID(agent_id),
             name=payload.name,
@@ -3608,7 +3697,10 @@ async def test_agent(
             access_type="execute",
         )
 
-        logger.info(f"Testing agent: {agent_info.name}", extra={"agent_id": agent_id, "user_id": current_user.user_id})
+        logger.info(
+            f"Testing agent: {agent_info.name}",
+            extra={"agent_id": agent_id, "user_id": current_user.user_id},
+        )
 
         async def generate_stream():
             """Generate SSE stream for agent execution with real streaming."""
@@ -4897,7 +4989,9 @@ class AgentSkillsResponse(BaseModel):
     available_skills: List[Dict[str, Any]] = Field(description="List of visible active skills")
 
 
-@router.get("/{agent_id}/legacy-skills", response_model=AgentSkillsResponse, include_in_schema=False)
+@router.get(
+    "/{agent_id}/legacy-skills", response_model=AgentSkillsResponse, include_in_schema=False
+)
 async def get_agent_skills(agent_id: str, current_user: CurrentUser = Depends(get_current_user)):
     """Get agent's configured skills and available skills.
 
@@ -4918,7 +5012,9 @@ async def get_agent_skills(agent_id: str, current_user: CurrentUser = Depends(ge
 
         access_context = build_skill_access_context(current_user)
         registry = get_skill_registry()
-        visible_skills = registry.list_visible_skills(access_context=access_context, limit=1000, offset=0)
+        visible_skills = registry.list_visible_skills(
+            access_context=access_context, limit=1000, offset=0
+        )
         available_skills = [
             {
                 "skill_id": str(skill.skill_id),
@@ -4938,7 +5034,9 @@ async def get_agent_skills(agent_id: str, current_user: CurrentUser = Depends(ge
         available_skill_ids = {item["skill_id"] for item in available_skills}
         configured_skill_ids = [
             skill_id
-            for skill_id in _platform_skill_id_strings(agent_info.agent_type, agent_info.capabilities)
+            for skill_id in _platform_skill_id_strings(
+                agent_info.agent_type, agent_info.capabilities
+            )
             if skill_id in available_skill_ids
         ]
 

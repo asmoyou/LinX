@@ -17,6 +17,7 @@ import pty
 import re
 import select
 import shlex
+import signal
 import subprocess
 import time
 from dataclasses import dataclass, replace
@@ -38,7 +39,7 @@ _WORKSPACE_PATH_PATTERN = re.compile(r"(/workspace(?:/[^\s'\"`<>(){},;]+)?)")
 @dataclass
 class BashToolConfig:
     """Configuration for bash tool execution."""
-    
+
     command: str
     pty: bool = False  # Allocate pseudo-terminal for interactive tools
     workdir: Optional[str] = None  # Working directory
@@ -51,7 +52,7 @@ class BashToolConfig:
 @dataclass
 class BashResult:
     """Result of bash command execution."""
-    
+
     success: bool
     stdout: str
     stderr: str
@@ -63,7 +64,7 @@ class BashResult:
 
 class EnhancedBashTool:
     """Enhanced bash tool with PTY and background support.
-    
+
     Features:
     - PTY mode for interactive terminal applications
     - Background process execution with session management
@@ -71,10 +72,10 @@ class EnhancedBashTool:
     - Environment variable injection
     - Timeout protection
     """
-    
+
     def __init__(self, process_manager=None, allow_host_fallback: Optional[bool] = None):
         """Initialize enhanced bash tool.
-        
+
         Args:
             process_manager: Optional ProcessManager for background processes
             allow_host_fallback: Optional override for host subprocess fallback policy
@@ -108,7 +109,9 @@ class EnhancedBashTool:
         except Exception:
             return None
 
-    def _resolve_workdir(self, workdir: Optional[str], workspace_root: Optional[Path]) -> Optional[str]:
+    def _resolve_workdir(
+        self, workdir: Optional[str], workspace_root: Optional[Path]
+    ) -> Optional[str]:
         """Resolve workdir with /workspace semantics."""
         if workspace_root is None:
             return workdir
@@ -166,7 +169,11 @@ class EnhancedBashTool:
                 if workspace_root and candidate_path.is_absolute():
                     try:
                         rel = candidate_path.resolve().relative_to(workspace_root.resolve())
-                        resolved_workdir = f"/workspace/{rel.as_posix()}" if rel.as_posix() != "." else "/workspace"
+                        resolved_workdir = (
+                            f"/workspace/{rel.as_posix()}"
+                            if rel.as_posix() != "."
+                            else "/workspace"
+                        )
                     except Exception:
                         resolved_workdir = candidate
                 elif candidate_path.is_absolute():
@@ -200,7 +207,9 @@ class EnhancedBashTool:
         if status != ContainerStatus.RUNNING:
             started = self._container_manager.start_container(sandbox_id)
             if not started:
-                self.logger.error("Failed to start session sandbox", extra={"sandbox_id": sandbox_id})
+                self.logger.error(
+                    "Failed to start session sandbox", extra={"sandbox_id": sandbox_id}
+                )
                 return None
         return sandbox_id
 
@@ -278,18 +287,18 @@ class EnhancedBashTool:
                 exit_code=-1,
                 error_message=str(e),
             )
-    
+
     def execute(self, config: BashToolConfig) -> BashResult:
         """Execute bash command with enhanced features.
-        
+
         Args:
             config: Bash tool configuration
-        
+
         Returns:
             BashResult with execution details
         """
         start_time = time.time()
-        
+
         try:
             if self._should_execute_in_sandbox(config):
                 result = self._execute_in_sandbox(config)
@@ -322,14 +331,13 @@ class EnhancedBashTool:
                     result = self._execute_pty(resolved_config)
                 else:
                     result = self._execute_normal(resolved_config)
-            
+
             result.execution_time = time.time() - start_time
             return result
-            
+
         except Exception as e:
             self.logger.error(
-                f"Bash execution failed: {e}",
-                extra={"command": config.command, "error": str(e)}
+                f"Bash execution failed: {e}", extra={"command": config.command, "error": str(e)}
             )
             return BashResult(
                 success=False,
@@ -337,28 +345,40 @@ class EnhancedBashTool:
                 stderr=str(e),
                 exit_code=-1,
                 execution_time=time.time() - start_time,
-                error_message=f"Execution error: {str(e)}"
+                error_message=f"Execution error: {str(e)}",
             )
-    
+
     def _execute_normal(self, config: BashToolConfig) -> BashResult:
         """Execute bash command in normal mode.
-        
+
         Args:
             config: Bash tool configuration
-        
+
         Returns:
             BashResult with output
         """
         self.logger.info(
             f"Executing bash command (normal mode)",
-            extra={"command": config.command[:100], "workdir": config.workdir}
+            extra={"command": config.command[:100], "workdir": config.workdir},
         )
-        
+
         # Prepare environment
         env = os.environ.copy()
         if config.env:
             env.update(config.env)
-        
+
+        def _kill_process_group(process: subprocess.Popen) -> None:
+            try:
+                os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+            except ProcessLookupError:
+                return
+            except Exception as kill_error:
+                self.logger.warning("Failed to kill bash process group: %s", kill_error)
+                try:
+                    process.kill()
+                except Exception:
+                    return
+
         try:
             # Execute command
             process = subprocess.Popen(
@@ -368,93 +388,99 @@ class EnhancedBashTool:
                 stderr=subprocess.PIPE,
                 cwd=config.workdir,
                 env=env,
-                text=True
+                text=True,
+                start_new_session=True,
             )
-            
+
             # Wait with timeout
             try:
                 stdout, stderr = process.communicate(timeout=config.timeout)
                 exit_code = process.returncode
-                
+
                 success = exit_code == 0
-                
+
                 self.logger.info(
                     f"Bash command completed",
                     extra={
                         "exit_code": exit_code,
                         "success": success,
                         "stdout_length": len(stdout),
-                        "stderr_length": len(stderr)
-                    }
+                        "stderr_length": len(stderr),
+                    },
                 )
-                
+
                 return BashResult(
-                    success=success,
-                    stdout=stdout,
-                    stderr=stderr,
-                    exit_code=exit_code
+                    success=success, stdout=stdout, stderr=stderr, exit_code=exit_code
                 )
-                
+
             except subprocess.TimeoutExpired:
-                process.kill()
+                _kill_process_group(process)
                 stdout, stderr = process.communicate()
-                
+
                 self.logger.warning(
                     f"Bash command timeout",
-                    extra={"command": config.command[:100], "timeout": config.timeout}
+                    extra={"command": config.command[:100], "timeout": config.timeout},
                 )
-                
+
                 return BashResult(
                     success=False,
                     stdout=stdout,
                     stderr=stderr + f"\n\nCommand timed out after {config.timeout} seconds",
                     exit_code=-1,
-                    error_message=f"Timeout after {config.timeout} seconds"
+                    error_message=f"Timeout after {config.timeout} seconds",
                 )
-        
+
         except Exception as e:
             self.logger.error(f"Normal execution failed: {e}")
             return BashResult(
-                success=False,
-                stdout="",
-                stderr=str(e),
-                exit_code=-1,
-                error_message=str(e)
+                success=False, stdout="", stderr=str(e), exit_code=-1, error_message=str(e)
             )
-    
+
     def _execute_pty(self, config: BashToolConfig) -> BashResult:
         """Execute bash command with pseudo-terminal (PTY mode).
-        
+
         PTY mode is essential for interactive terminal applications like
         coding agents (Codex, Claude Code, Pi) that need proper terminal
         output with colors and formatting.
-        
+
         Args:
             config: Bash tool configuration
-        
+
         Returns:
             BashResult with terminal output
         """
         self.logger.info(
             f"Executing bash command (PTY mode)",
-            extra={"command": config.command[:100], "workdir": config.workdir}
+            extra={"command": config.command[:100], "workdir": config.workdir},
         )
-        
+
         # Prepare environment
         env = os.environ.copy()
         if config.env:
             env.update(config.env)
-        
+
+        def _kill_process_group(process: subprocess.Popen) -> None:
+            try:
+                os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+            except ProcessLookupError:
+                return
+            except Exception as kill_error:
+                self.logger.warning("Failed to kill PTY bash process group: %s", kill_error)
+                try:
+                    process.kill()
+                except Exception:
+                    return
+
         # Set working directory
         original_cwd = None
         if config.workdir:
             original_cwd = os.getcwd()
             os.chdir(config.workdir)
-        
+
         try:
             # Create pseudo-terminal
             master_fd, slave_fd = pty.openpty()
-            
+
             # Start process with PTY
             process = subprocess.Popen(
                 config.command,
@@ -463,89 +489,85 @@ class EnhancedBashTool:
                 stdout=slave_fd,
                 stderr=slave_fd,
                 env=env,
-                preexec_fn=os.setsid  # Create new session
+                preexec_fn=os.setsid,  # Create new session
             )
-            
+
             # Close slave fd in parent process
             os.close(slave_fd)
-            
+
             # Read output from master fd
             output = []
             start_time = time.time()
             timeout = config.timeout or 300  # Default 5 minutes
-            
+
             while True:
                 # Check if process is still running
                 if process.poll() is not None:
                     break
-                
+
                 # Check timeout
                 if time.time() - start_time > timeout:
-                    process.kill()
+                    _kill_process_group(process)
                     output.append(f"\n\n[Timeout after {timeout} seconds]")
                     break
-                
+
                 # Check if data is available
                 ready, _, _ = select.select([master_fd], [], [], 0.1)
-                
+
                 if ready:
                     try:
                         data = os.read(master_fd, 4096)
                         if data:
-                            output.append(data.decode('utf-8', errors='replace'))
+                            output.append(data.decode("utf-8", errors="replace"))
                     except OSError:
                         break
-            
+
             # Get exit code
             exit_code = process.wait()
-            
+
             # Close master fd
             os.close(master_fd)
-            
+
             # Combine output
-            full_output = ''.join(output)
+            full_output = "".join(output)
             success = exit_code == 0
-            
+
             self.logger.info(
                 f"PTY command completed",
                 extra={
                     "exit_code": exit_code,
                     "success": success,
-                    "output_length": len(full_output)
-                }
+                    "output_length": len(full_output),
+                },
             )
-            
+
             return BashResult(
                 success=success,
                 stdout=full_output,
                 stderr="",  # PTY combines stdout/stderr
-                exit_code=exit_code
+                exit_code=exit_code,
             )
-        
+
         except Exception as e:
             self.logger.error(f"PTY execution failed: {e}")
             return BashResult(
-                success=False,
-                stdout="",
-                stderr=str(e),
-                exit_code=-1,
-                error_message=str(e)
+                success=False, stdout="", stderr=str(e), exit_code=-1, error_message=str(e)
             )
-        
+
         finally:
             # Restore working directory
             if original_cwd:
                 os.chdir(original_cwd)
-    
+
     def _execute_background(self, config: BashToolConfig) -> BashResult:
         """Execute bash command in background.
-        
+
         Returns immediately with a session ID that can be used to monitor
         the process with the process tool.
-        
+
         Args:
             config: Bash tool configuration
-        
+
         Returns:
             BashResult with session_id
         """
@@ -555,50 +577,43 @@ class EnhancedBashTool:
                 stdout="",
                 stderr="Background execution requires ProcessManager",
                 exit_code=-1,
-                error_message="ProcessManager not available"
+                error_message="ProcessManager not available",
             )
-        
+
         self.logger.info(
             f"Starting background process",
-            extra={"command": config.command[:100], "workdir": config.workdir}
+            extra={"command": config.command[:100], "workdir": config.workdir},
         )
-        
+
         try:
             # Start background process via ProcessManager
             session_id = self.process_manager.start_process(config)
-            
-            self.logger.info(
-                f"Background process started",
-                extra={"session_id": session_id}
-            )
-            
+
+            self.logger.info(f"Background process started", extra={"session_id": session_id})
+
             return BashResult(
                 success=True,
                 stdout=f"Background process started with session ID: {session_id}",
                 stderr="",
                 exit_code=0,
-                session_id=session_id
+                session_id=session_id,
             )
-        
+
         except Exception as e:
             self.logger.error(f"Failed to start background process: {e}")
             return BashResult(
-                success=False,
-                stdout="",
-                stderr=str(e),
-                exit_code=-1,
-                error_message=str(e)
+                success=False, stdout="", stderr=str(e), exit_code=-1, error_message=str(e)
             )
 
 
 def create_bash_tool(agent_id: UUID, user_id: UUID, process_manager=None) -> Tool:
     """Create enhanced bash tool for agent.
-    
+
     Args:
         agent_id: Agent UUID
         user_id: User UUID
         process_manager: Optional ProcessManager for background processes
-    
+
     Returns:
         LangChain Tool for bash execution
     """
@@ -632,33 +647,33 @@ def create_bash_tool(agent_id: UUID, user_id: UUID, process_manager=None) -> Too
                 },
             )
             return {}
-    
+
     def bash_execute(
         command: str,
         pty: bool = False,
         workdir: Optional[str] = None,
         background: bool = False,
-        timeout: Optional[int] = None
+        timeout: Optional[int] = None,
     ) -> str:
         """Execute bash command with enhanced features.
-        
+
         Args:
             command: Shell command to execute
             pty: Allocate pseudo-terminal (use for interactive tools like codex, claude, pi)
             workdir: Working directory (agent sees only this folder's context)
             background: Run in background, returns session ID for monitoring
             timeout: Timeout in seconds (default: 300)
-        
+
         Returns:
             Command output or session ID (if background)
-        
+
         Examples:
             # Normal execution
             bash(command="ls -la")
-            
+
             # PTY mode for interactive tools (REQUIRED for coding agents!)
             bash(command="codex exec 'Your prompt'", pty=True, workdir="~/project")
-            
+
             # Background execution for long-running tasks
             bash(command="npm run build", background=True, workdir="~/project")
         """
@@ -670,12 +685,12 @@ def create_bash_tool(agent_id: UUID, user_id: UUID, process_manager=None) -> Too
             timeout=timeout or 300,
             env=_load_user_skill_env() or None,
         )
-        
+
         result = bash_executor.execute(config)
-        
+
         if background and result.session_id:
             return f"✅ Background process started\nSession ID: {result.session_id}\n\nUse process tool to monitor:\n- process(action='poll', session_id='{result.session_id}')\n- process(action='log', session_id='{result.session_id}')"
-        
+
         if result.success:
             return result.stdout
         else:
@@ -685,7 +700,7 @@ def create_bash_tool(agent_id: UUID, user_id: UUID, process_manager=None) -> Too
             if result.stdout:
                 error_output += f"Output:\n{result.stdout}"
             return error_output
-    
+
     tool = Tool(
         name="bash",
         description=(
@@ -694,7 +709,7 @@ def create_bash_tool(agent_id: UUID, user_id: UUID, process_manager=None) -> Too
             "Use background=True for long-running processes. "
             "Use workdir to set working directory."
         ),
-        func=bash_execute
+        func=bash_execute,
     )
 
     # Expose runtime hooks so BaseAgent can propagate session/container context.

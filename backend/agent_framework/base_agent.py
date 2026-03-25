@@ -24,6 +24,7 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langgraph.errors import GraphRecursionError
 from langgraph.graph import END, START, MessagesState, StateGraph
+from pydantic import ValidationError
 
 from agent_framework.code_block_executor import CodeBlockExecutor, get_code_block_executor
 from agent_framework.runtime_capabilities import (
@@ -148,6 +149,19 @@ _FORMAT_ALIASES = {
     "yaml": "yml",
 }
 _FILE_WRITE_TOOL_NAMES = {"write_file", "append_file", "edit_file"}
+_INSTALL_COMMAND_PATTERN = re.compile(
+    r"(?i)(?:^|[;&|]\s*|&&\s*|\|\|\s*)"
+    r"(?:"
+    r"(?:python(?:3)?\s+-m\s+pip|pip(?:3)?|uv\s+pip)\s+install\b"
+    r"|npm\s+(?:install|i)\b"
+    r"|pnpm\s+(?:install|add)\b"
+    r"|yarn\s+(?:add|install)\b"
+    r"|poetry\s+install\b"
+    r"|apt(?:-get)?\s+install\b"
+    r"|apk\s+add\b"
+    r"|brew\s+install\b"
+    r")"
+)
 
 
 def _get_env_int(key: str, default: int) -> int:
@@ -222,6 +236,9 @@ class ToolResult:
     result: Optional[Any] = None
     error: Optional[str] = None
     error_type: Optional[str] = None  # "timeout", "execution_error", "validation_error"
+    arguments: Optional[Dict[str, Any]] = None
+    malformed_input: Optional[str] = None
+    expected_format: Optional[str] = None
     retry_count: int = 0
 
 
@@ -305,6 +322,21 @@ class ConversationState:
     errors: List[ErrorRecord] = field(default_factory=list)
     is_terminated: bool = False
     termination_reason: Optional[str] = None
+
+
+class ToolArgumentValidationError(ValueError):
+    """Raised when parsed tool arguments do not satisfy the tool schema."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        arguments: Optional[Dict[str, Any]] = None,
+        expected_format: Optional[str] = None,
+    ) -> None:
+        super().__init__(message)
+        self.arguments = dict(arguments or {})
+        self.expected_format = expected_format or ""
 
 
 # ============================================================================
@@ -1933,6 +1965,105 @@ class BaseAgent:
         normalized_arguments["__arg1"] = positional_payload
         return normalized_arguments
 
+    @staticmethod
+    def _serialize_tool_call_payload(tool_name: str, arguments: Optional[Dict[str, Any]]) -> str:
+        """Render tool payload as compact JSON for error feedback."""
+        payload = {"tool": str(tool_name or "").strip()}
+        if isinstance(arguments, dict):
+            payload.update(arguments)
+        return json.dumps(payload, ensure_ascii=False)
+
+    @staticmethod
+    def _build_tool_expected_format(tool_name: str, tool: Any) -> str:
+        """Build a compact expected JSON shape for one tool."""
+        normalized_tool_name = str(tool_name or "").strip()
+        if not normalized_tool_name:
+            return '{"tool": "<tool_name>"}'
+
+        if normalized_tool_name == "bash":
+            return json.dumps(
+                {
+                    "tool": "bash",
+                    "command": "<shell command>",
+                    "timeout": "<optional seconds>",
+                },
+                ensure_ascii=False,
+            )
+
+        args_schema = getattr(tool, "args_schema", None)
+        if args_schema is None or not hasattr(args_schema, "model_json_schema"):
+            return json.dumps({"tool": normalized_tool_name}, ensure_ascii=False)
+
+        try:
+            schema = args_schema.model_json_schema()
+        except Exception:
+            return json.dumps({"tool": normalized_tool_name}, ensure_ascii=False)
+
+        required = set(schema.get("required") or [])
+        properties = schema.get("properties") or {}
+        expected: Dict[str, str] = {"tool": normalized_tool_name}
+        if isinstance(properties, dict):
+            for key, value in properties.items():
+                if not isinstance(key, str):
+                    continue
+                prop = value if isinstance(value, dict) else {}
+                type_hint = str(prop.get("type") or "value").strip()
+                marker = "required" if key in required else "optional"
+                expected[key] = f"<{marker} {type_hint}>"
+
+        return json.dumps(expected, ensure_ascii=False)
+
+    def _prevalidate_tool_arguments_for_execution(
+        self,
+        tool_name: str,
+        tool: Any,
+        arguments: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Validate tool arguments before invoking the underlying tool implementation."""
+        normalized_tool_name = str(tool_name or "").strip().lower()
+
+        if normalized_tool_name == "bash":
+            command = arguments.get("command")
+            if not isinstance(command, str) or not command.strip():
+                raise ToolArgumentValidationError(
+                    "Bash tool requires a non-empty 'command' argument.",
+                    arguments=arguments,
+                    expected_format=self._build_tool_expected_format(tool_name, tool),
+                )
+            return arguments
+
+        args_schema = getattr(tool, "args_schema", None)
+        if args_schema is None or not hasattr(args_schema, "model_validate"):
+            return arguments
+
+        try:
+            validated = args_schema.model_validate(arguments or {})
+        except ValidationError as exc:
+            raise ToolArgumentValidationError(
+                str(exc),
+                arguments=arguments,
+                expected_format=self._build_tool_expected_format(tool_name, tool),
+            ) from exc
+
+        if hasattr(validated, "model_dump"):
+            dumped = validated.model_dump(exclude_none=False)
+            if isinstance(dumped, dict):
+                return dumped
+        return arguments
+
+    def _resolve_bash_timeout_cap(self, command: str) -> int:
+        """Resolve timeout cap for bash commands, allowing longer installs by default."""
+        default_cap = max(1, int(self.config.tool_timeout_seconds))
+        normalized_command = str(command or "").strip()
+        if not normalized_command:
+            return default_cap
+
+        if _INSTALL_COMMAND_PATTERN.search(normalized_command):
+            install_cap = _get_env_int("AGENT_INSTALL_TOOL_TIMEOUT", 900)
+            return max(default_cap, max(1, min(install_cap, 3600)))
+
+        return default_cap
+
     def _summarize_tool_result_for_stream(self, tool_name: str, result: Any) -> str:
         """Build compact result summary for tool_result stream events."""
         normalized_tool = str(tool_name or "").strip().lower()
@@ -2026,16 +2157,23 @@ class BaseAgent:
             if args is None:
                 args = raw_call.get("arguments")
 
+            raw_payload: Dict[str, Any] = {"tool": tool_name}
             if isinstance(args, str):
                 try:
-                    args = json.loads(args)
+                    parsed_args = json.loads(args)
+                    args = parsed_args
                 except json.JSONDecodeError:
+                    raw_payload["__raw_arguments__"] = args
                     args = {}
 
             if not isinstance(args, dict):
+                if args is not None:
+                    raw_payload["__raw_arguments__"] = str(args)
                 args = {}
+            else:
+                raw_payload.update(args)
 
-            raw_json = json.dumps({"tool": tool_name, **args}, ensure_ascii=False)
+            raw_json = json.dumps(raw_payload, ensure_ascii=False)
             normalized_calls.append(
                 ToolCall(tool_name=tool_name, arguments=args, raw_json=raw_json)
             )
@@ -2522,12 +2660,12 @@ class BaseAgent:
             ):
                 loop_mode = LoopMode.AUTO_MULTI_TURN
 
-            if (
-                loop_mode in (LoopMode.RECOVERY_MULTI_TURN, LoopMode.AUTO_MULTI_TURN)
-                and self._should_use_native_tool_fast_path_for_runtime(
-                    runtime_policy=resolved_policy,
-                    task_intent_text=resolved_task_intent_text,
-                )
+            if loop_mode in (
+                LoopMode.RECOVERY_MULTI_TURN,
+                LoopMode.AUTO_MULTI_TURN,
+            ) and self._should_use_native_tool_fast_path_for_runtime(
+                runtime_policy=resolved_policy,
+                task_intent_text=resolved_task_intent_text,
             ):
                 loop_mode = LoopMode.SINGLE_TURN
                 used_native_tool_fast_path = True
@@ -3954,12 +4092,14 @@ class BaseAgent:
 
         results = []
         runtime_tool_registry = tool_registry if tool_registry is not None else self.tools_by_name
-        tool_timeout_cap = max(1, int(self.config.tool_timeout_seconds))
+        default_tool_timeout_seconds = max(1, int(self.config.tool_timeout_seconds))
 
         for tool_call in tool_calls:
             tool_name = tool_call.tool_name
             tool = runtime_tool_registry.get(tool_name)
             tool_arguments = tool_call.arguments
+            tool_timeout_cap = default_tool_timeout_seconds
+            timeout_message_seconds = default_tool_timeout_seconds
 
             # Check retry count for this specific tool
             retry_key = f"tool_{tool_name}"
@@ -4012,6 +4152,9 @@ class BaseAgent:
                 )
                 if tool_name == "bash":
                     requested_timeout = tool_arguments.get("timeout")
+                    tool_timeout_cap = self._resolve_bash_timeout_cap(
+                        str(tool_arguments.get("command") or "")
+                    )
                     try:
                         normalized_timeout = (
                             int(requested_timeout)
@@ -4023,6 +4166,12 @@ class BaseAgent:
                     if normalized_timeout <= 0 or normalized_timeout > tool_timeout_cap:
                         normalized_timeout = tool_timeout_cap
                     tool_arguments["timeout"] = normalized_timeout
+                    timeout_message_seconds = normalized_timeout
+                tool_arguments = self._prevalidate_tool_arguments_for_execution(
+                    tool_name,
+                    tool,
+                    tool_arguments,
+                )
 
                 args_summary = self._summarize_tool_arguments_for_stream(tool_name, tool_arguments)
                 # Send "calling tool" message
@@ -4051,14 +4200,15 @@ class BaseAgent:
                 if tool_name == "bash" and self._is_simple_langchain_tool_instance(tool):
                     # Single-input Tool cannot accept extra keys via ainvoke();
                     # call func directly so timeout/pty/workdir/background kwargs remain valid.
-                    timeout_window_seconds = float(tool_timeout_cap) + 1.0
+                    timeout_window_seconds = float(timeout_message_seconds) + 1.0
                     result = await asyncio.wait_for(
                         asyncio.to_thread(tool.func, **tool_arguments),
                         timeout=timeout_window_seconds,
                     )
                 else:
                     result = await asyncio.wait_for(
-                        tool.ainvoke(tool_arguments), timeout=self.config.tool_timeout_seconds
+                        tool.ainvoke(tool_arguments),
+                        timeout=float(timeout_message_seconds),
                     )
 
                 runtime_error = self._extract_tool_runtime_error(result)
@@ -4071,6 +4221,7 @@ class BaseAgent:
                         tool_name=tool_name,
                         status="success",
                         result=result,
+                        arguments=tool_arguments,
                         retry_count=retry_count,
                     )
                 )
@@ -4100,10 +4251,10 @@ class BaseAgent:
                     extra={"agent_id": str(self.config.agent_id), "tool_name": tool_name},
                 )
 
-            except asyncio.TimeoutError:
-                # Timeout error
-                error_msg = (
-                    f"Tool execution timed out after {self.config.tool_timeout_seconds} seconds"
+            except ToolArgumentValidationError as exc:
+                error_msg = str(exc)
+                malformed_input = tool_call.raw_json or self._serialize_tool_call_payload(
+                    tool_name, exc.arguments
                 )
 
                 results.append(
@@ -4111,7 +4262,47 @@ class BaseAgent:
                         tool_name=tool_name,
                         status="error",
                         error=error_msg,
+                        error_type="validation_error",
+                        arguments=exc.arguments,
+                        malformed_input=malformed_input,
+                        expected_format=exc.expected_format,
+                        retry_count=retry_count,
+                    )
+                )
+
+                state.retry_counts[retry_key] = retry_count + 1
+
+                if stream_callback:
+                    stream_callback((f"⚠️ **参数错误**: {error_msg}\n", "tool_error"))
+
+                state.tool_calls_made.append(
+                    ToolCallRecord(
+                        round_number=state.round_number,
+                        tool_name=tool_name,
+                        arguments=exc.arguments,
+                        status="validation_error",
+                        error=error_msg,
+                        retry_number=retry_count,
+                    )
+                )
+
+                logger.warning(
+                    "[RECOVERY] Tool argument validation failed: %s",
+                    error_msg,
+                    extra={"agent_id": str(self.config.agent_id), "tool_name": tool_name},
+                )
+
+            except asyncio.TimeoutError:
+                # Timeout error
+                error_msg = f"Tool execution timed out after {timeout_message_seconds} seconds"
+
+                results.append(
+                    ToolResult(
+                        tool_name=tool_name,
+                        status="error",
+                        error=error_msg,
                         error_type="timeout",
+                        arguments=tool_arguments,
                         retry_count=retry_count,
                     )
                 )
@@ -4140,7 +4331,7 @@ class BaseAgent:
                     extra={
                         "agent_id": str(self.config.agent_id),
                         "tool_name": tool_name,
-                        "timeout": self.config.tool_timeout_seconds,
+                        "timeout": timeout_message_seconds,
                     },
                 )
 
@@ -4154,6 +4345,7 @@ class BaseAgent:
                         status="error",
                         error=error_msg,
                         error_type="execution_error",
+                        arguments=tool_arguments,
                         retry_count=retry_count,
                     )
                 )
@@ -4344,11 +4536,21 @@ class BaseAgent:
         for idx, tr in enumerate(tool_results):
             raw_value = tr.result if tr.status == "success" else f"错误 - {tr.error}"
             value_text = str(raw_value)
+            if not value_text.strip():
+                value_text = "(无输出，命令已成功执行)"
             if len(value_text) > per_item_limit:
                 value_text = self._truncate_text_for_context(value_text, per_item_limit)
                 truncated_items += 1
 
-            line = f"- {tr.tool_name}: {value_text}\n"
+            args_summary = self._truncate_stream_preview(
+                self._summarize_tool_arguments_for_stream(tr.tool_name, tr.arguments or {}),
+                max_chars=160,
+            )
+            tool_label = tr.tool_name
+            if args_summary:
+                tool_label = f"{tool_label} [{args_summary}]"
+
+            line = f"- {tool_label}: {value_text}\n"
             if used_chars + len(line) > total_limit:
                 omitted_items = len(tool_results) - idx
                 result_lines.append(f"- 其余 {omitted_items} 条工具结果省略（超出上下文预算）\n")
@@ -5102,6 +5304,19 @@ class BaseAgent:
         raw_error = failed_result.error or ""
         error_text = raw_error.lower()
 
+        if failed_result.error_type == "validation_error":
+            suggestions = [
+                "Rebuild the tool call as valid JSON and include every required field",
+                "If a large string field was truncated, continue generation or split the write into smaller chunks before retrying",
+                "Keep only schema-supported keys and retry the same step",
+            ]
+            if failed_result.tool_name in _FILE_WRITE_TOOL_NAMES:
+                suggestions.insert(
+                    1,
+                    "For file-write tools, keep the same file_path and provide the full content or replacement text",
+                )
+            return suggestions
+
         if "command not found" in error_text:
             return [
                 "Verify command availability in current runtime before retrying",
@@ -5183,17 +5398,29 @@ class BaseAgent:
                 error_type=failed_result.error_type or "execution_error",
                 error_message=failed_result.error or "Unknown error",
                 tool_name=failed_result.tool_name,
+                malformed_input=failed_result.malformed_input,
                 is_recoverable=True,
                 retry_count=retry_count,
             )
         )
 
         # Generate feedback based on error type
+        if failed_result.error_type == "validation_error":
+            return ErrorFeedback(
+                error_type="Validation Error",
+                error_message=failed_result.error or "Tool arguments did not match schema",
+                malformed_input=failed_result.malformed_input,
+                expected_format=failed_result.expected_format
+                or '{"tool": "<same_tool>", "...": "required_arguments"}',
+                retry_count=retry_count,
+                max_retries=self.config.max_execution_retries,
+                suggestions=self._build_execution_error_suggestions(failed_result),
+            )
         if failed_result.error_type == "timeout":
             return ErrorFeedback(
                 error_type="Timeout Error",
                 error_message=failed_result.error or "Tool execution timed out",
-                malformed_input=None,
+                malformed_input=failed_result.malformed_input,
                 expected_format='{"tool": "<same_tool>", "...": "retry_with_smaller_scope"}',
                 retry_count=retry_count,
                 max_retries=self.config.max_execution_retries,
@@ -5208,8 +5435,9 @@ class BaseAgent:
             return ErrorFeedback(
                 error_type="Execution Error",
                 error_message=failed_result.error or "Tool execution failed",
-                malformed_input=None,
-                expected_format='{"tool": "<same_tool>", "...": "corrected_arguments"}',
+                malformed_input=failed_result.malformed_input,
+                expected_format=failed_result.expected_format
+                or '{"tool": "<same_tool>", "...": "corrected_arguments"}',
                 retry_count=retry_count,
                 max_retries=self.config.max_execution_retries,
                 suggestions=self._build_execution_error_suggestions(failed_result),

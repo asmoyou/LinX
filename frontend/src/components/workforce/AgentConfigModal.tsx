@@ -1359,7 +1359,7 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
                           })
                         }
                         min={1}
-                        max={modelMetadata?.max_output_tokens ?? 8000}
+                        max={modelMetadata?.max_output_tokens}
                         className="w-full px-4 py-3 bg-zinc-500/5 border border-zinc-500/10 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500/20 text-zinc-800 dark:text-zinc-200"
                         placeholder="4096"
                       />

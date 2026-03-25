@@ -120,6 +120,7 @@ async def test_create_registered_mission_agent_uses_actor_execution_access(monke
         captured["agent_config"] = kwargs["agent_config"]
         captured["llm_provider"] = kwargs["llm_provider"]
         captured["llm_model"] = kwargs["llm_model"]
+        captured["max_tokens"] = kwargs["max_tokens"]
         return SimpleNamespace(config=kwargs["agent_config"])
 
     def _fake_load_accessible_agent_or_raise(session, agent_id, current_user, *, access_type):
@@ -141,7 +142,9 @@ async def test_create_registered_mission_agent_uses_actor_execution_access(monke
             system_prompt="Be precise.",
         )
 
-    monkeypatch.setattr("mission_system.agent_factory.get_db_session", lambda: _FakeSessionContext())
+    monkeypatch.setattr(
+        "mission_system.agent_factory.get_db_session", lambda: _FakeSessionContext()
+    )
     monkeypatch.setattr(
         "mission_system.agent_factory.load_accessible_agent_or_raise",
         _fake_load_accessible_agent_or_raise,
@@ -165,3 +168,4 @@ async def test_create_registered_mission_agent_uses_actor_execution_access(monke
     assert captured["agent_config"].access_level == "department"
     assert captured["agent_config"].allowed_knowledge == ["kb-1"]
     assert captured["agent_config"].max_iterations == 9
+    assert captured["max_tokens"] == 2048

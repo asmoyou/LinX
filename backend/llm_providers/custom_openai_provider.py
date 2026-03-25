@@ -10,7 +10,13 @@ from typing import Any, Callable, Dict, Iterator, List, Optional, Sequence
 
 import httpx
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage, HumanMessage, SystemMessage
+from langchain_core.messages import (
+    AIMessage,
+    AIMessageChunk,
+    BaseMessage,
+    HumanMessage,
+    SystemMessage,
+)
 from langchain_core.messages.tool import ToolCallChunk
 from langchain_core.outputs import ChatGeneration, ChatGenerationChunk, ChatResult
 from langchain_core.runnables import Runnable
@@ -29,16 +35,16 @@ class StreamCancelledError(RuntimeError):
 
 class CustomOpenAIChat(BaseChatModel):
     """Custom chat model for non-standard OpenAI-compatible APIs.
-    
+
     This handles APIs that return responses in format:
     {"output": "...", "request_tokens": ..., "response_tokens": ..., "cost": ...}
-    
+
     Instead of standard OpenAI format:
     {"choices": [{"message": {"content": "..."}}]}
-    
+
     Supports both streaming and non-streaming modes.
     """
-    
+
     base_url: str = Field(..., description="Base URL for the API")
     model: str = Field(..., description="Model name")
     api_key: Optional[str] = Field(default=None, description="API key")
@@ -310,7 +316,12 @@ class CustomOpenAIChat(BaseChatModel):
                 if isinstance(parsed, dict):
                     return parsed
             except json.JSONDecodeError:
+                stripped = arguments.strip()
+                if stripped:
+                    return {"__raw_arguments__": stripped}
                 return {}
+            if arguments.strip():
+                return {"__raw_arguments__": arguments.strip()}
         return {}
 
     @classmethod
@@ -440,11 +451,13 @@ class CustomOpenAIChat(BaseChatModel):
         content_type = "content"
         usage_data = chunk_data.get("usage")
         tool_call_chunks: List[ToolCallChunk] = []
+        finish_reason = str(chunk_data.get("finish_reason") or "").strip()
 
         if "output" in chunk_data:
             content = chunk_data.get("output", "")
         elif "choices" in chunk_data and len(chunk_data["choices"]) > 0:
             choice = chunk_data["choices"][0]
+            finish_reason = str(choice.get("finish_reason") or finish_reason).strip()
             delta = choice.get("delta")
 
             # Streaming delta format.
@@ -475,9 +488,11 @@ class CustomOpenAIChat(BaseChatModel):
                     tool_calls = self._extract_tool_calls_from_message(message_data)
                     tool_call_chunks = self._tool_calls_to_chunks(tool_calls)
 
-        if content or tool_call_chunks or usage_data:
+        if content or tool_call_chunks or usage_data or finish_reason:
             additional_kwargs = {"content_type": content_type} if content else {}
-            response_metadata = {"usage": usage_data} if usage_data else {}
+            response_metadata: Dict[str, Any] = {"usage": usage_data} if usage_data else {}
+            if finish_reason:
+                response_metadata["finish_reason"] = finish_reason
             return ChatGenerationChunk(
                 message=AIMessageChunk(
                     content=content,
@@ -511,13 +526,19 @@ class CustomOpenAIChat(BaseChatModel):
         tool_call_chunks = self._tool_calls_to_chunks(tool_calls)
 
         usage_data: Dict[str, Any] = {}
+        finish_reason = ""
         if isinstance(getattr(message, "response_metadata", None), dict):
             usage_data = message.response_metadata.get("usage") or {}
+            finish_reason = str(message.response_metadata.get("finish_reason") or "").strip()
         if not usage_data and isinstance(chat_result.llm_output, dict):
             usage_data = chat_result.llm_output.get("token_usage") or {}
+        if not finish_reason and isinstance(chat_result.llm_output, dict):
+            finish_reason = str(chat_result.llm_output.get("finish_reason") or "").strip()
 
         additional_kwargs = {"content_type": "content"} if content else {}
-        response_metadata = {"usage": usage_data} if usage_data else {}
+        response_metadata: Dict[str, Any] = {"usage": usage_data} if usage_data else {}
+        if finish_reason:
+            response_metadata["finish_reason"] = finish_reason
 
         return ChatGenerationChunk(
             message=AIMessageChunk(
@@ -708,6 +729,7 @@ class CustomOpenAIChat(BaseChatModel):
             self._track_active_request(result)
 
             # Handle custom response format
+            finish_reason = str(result.get("finish_reason") or "").strip()
             if "output" in result:
                 # Custom format: {"output": "...", "request_tokens": ..., ...}
                 content = result["output"]
@@ -722,6 +744,7 @@ class CustomOpenAIChat(BaseChatModel):
             elif "choices" in result and len(result["choices"]) > 0:
                 # Standard OpenAI format
                 choice = result["choices"][0]
+                finish_reason = str(choice.get("finish_reason") or finish_reason).strip()
                 message_data = choice.get("message", {})
                 final_content = message_data.get("content") or ""
                 reasoning_content = (
@@ -739,7 +762,7 @@ class CustomOpenAIChat(BaseChatModel):
                     additional_kwargs["final_content"] = final_content
                 if reasoning_content:
                     additional_kwargs["reasoning_content"] = reasoning_content
-                
+
                 # If content is still empty but we have completion_tokens, log warning
                 token_usage = result.get("usage", {})
                 if not content and token_usage.get("completion_tokens", 0) > 0:
@@ -756,18 +779,21 @@ class CustomOpenAIChat(BaseChatModel):
                 raise ValueError(f"Unexpected response format: {result}")
 
             # Create generation
+            response_metadata: Dict[str, Any] = {"usage": token_usage} if token_usage else {}
+            if finish_reason:
+                response_metadata["finish_reason"] = finish_reason
             message = AIMessage(
                 content=content,
                 tool_calls=tool_calls,
                 additional_kwargs=additional_kwargs,
-                response_metadata={"usage": token_usage} if token_usage else {},
+                response_metadata=response_metadata,
             )
             generation = ChatGeneration(message=message)
 
-            return ChatResult(
-                generations=[generation],
-                llm_output={"token_usage": token_usage, "model_name": self.model},
-            )
+            llm_output: Dict[str, Any] = {"token_usage": token_usage, "model_name": self.model}
+            if finish_reason:
+                llm_output["finish_reason"] = finish_reason
+            return ChatResult(generations=[generation], llm_output=llm_output)
         except StreamCancelledError:
             logger.info("Stopped non-streaming LLM request due to cancellation request")
             raise
@@ -822,6 +848,7 @@ class CustomOpenAIChat(BaseChatModel):
             self._track_active_request(result)
 
             # Handle custom response format
+            finish_reason = str(result.get("finish_reason") or "").strip()
             if "output" in result:
                 content = result["output"]
                 tool_calls = []
@@ -834,6 +861,7 @@ class CustomOpenAIChat(BaseChatModel):
                 }
             elif "choices" in result and len(result["choices"]) > 0:
                 choice = result["choices"][0]
+                finish_reason = str(choice.get("finish_reason") or finish_reason).strip()
                 message_data = choice.get("message", {})
                 final_content = message_data.get("content") or ""
                 reasoning_content = (
@@ -853,18 +881,21 @@ class CustomOpenAIChat(BaseChatModel):
             else:
                 raise ValueError(f"Unexpected response format: {result}")
 
+            response_metadata: Dict[str, Any] = {"usage": token_usage} if token_usage else {}
+            if finish_reason:
+                response_metadata["finish_reason"] = finish_reason
             message = AIMessage(
                 content=content,
                 tool_calls=tool_calls,
                 additional_kwargs=additional_kwargs,
-                response_metadata={"usage": token_usage} if token_usage else {},
+                response_metadata=response_metadata,
             )
             generation = ChatGeneration(message=message)
 
-            return ChatResult(
-                generations=[generation],
-                llm_output={"token_usage": token_usage, "model_name": self.model},
-            )
+            llm_output: Dict[str, Any] = {"token_usage": token_usage, "model_name": self.model}
+            if finish_reason:
+                llm_output["finish_reason"] = finish_reason
+            return ChatResult(generations=[generation], llm_output=llm_output)
         except StreamCancelledError:
             logger.info("Stopped async LLM request due to cancellation request")
             raise
