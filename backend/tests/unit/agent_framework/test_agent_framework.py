@@ -1498,6 +1498,102 @@ class TestBaseAgent:
         agent.agent.invoke.assert_not_called()
         assert result["output"] == "已按技能流程完成。"
 
+    def test_execute_task_mission_task_switches_to_single_turn_for_direct_tool_request(self):
+        """MISSION_TASK should also use native fast path when raw task intent is a direct tool request."""
+        config = AgentConfig(
+            agent_id=uuid4(),
+            name="Test Agent",
+            agent_type="test",
+            owner_user_id=uuid4(),
+            capabilities=[],
+        )
+
+        agent = BaseAgent(config=config)
+        agent.status = AgentStatus.ACTIVE
+        agent.agent = Mock()
+        agent.agent.invoke.return_value = {"messages": [AIMessage(content="16696.53125")]}
+        agent.execute_task_with_recovery = AsyncMock(  # type: ignore[method-assign]
+            side_effect=AssertionError("recovery loop should not run")
+        )
+        agent.llm = Mock()
+        agent.tools = [Mock()]
+        agent.tools_by_name = {"calculator": Mock()}
+        agent.native_tool_calling_enabled = True
+        agent.loaded_langchain_tool_skill_count = 2
+        agent.loaded_agent_skill_count = 1
+        agent.agent_skill_names = {"legal_agent_skill"}
+
+        runtime_policy = RuntimePolicy(
+            profile=ExecutionProfile.MISSION_TASK,
+            loop_mode=LoopMode.RECOVERY_MULTI_TURN,
+            max_rounds=20,
+            enable_error_recovery=True,
+            stream_output=False,
+            file_delivery_guard_mode=FileDeliveryGuardMode.STRICT,
+        )
+
+        result = agent.execute_task(
+            task_description=(
+                "Execute the following mission task.\n\n"
+                "## Task\nUse available tools and report the result.\n"
+            ),
+            context={"task_intent_text": "23223*23/32=?"},
+            runtime_policy=runtime_policy,
+        )
+
+        assert result["success"] is True
+        agent.agent.invoke.assert_called_once()
+        agent.execute_task_with_recovery.assert_not_called()
+        assert result["output"] == "16696.53125"
+
+    def test_execute_task_mission_task_keeps_recovery_for_file_deliverables(self):
+        """MISSION_TASK should stay on guarded multi-turn path when file delivery is required."""
+        config = AgentConfig(
+            agent_id=uuid4(),
+            name="Test Agent",
+            agent_type="test",
+            owner_user_id=uuid4(),
+            capabilities=[],
+        )
+
+        agent = BaseAgent(config=config)
+        agent.status = AgentStatus.ACTIVE
+        agent.agent = Mock()
+        agent.agent.invoke.return_value = {"messages": [AIMessage(content="fallback")]}
+        agent.llm = Mock()
+        agent.tools = [Mock()]
+        agent.tools_by_name = {"calculator": Mock()}
+        agent.native_tool_calling_enabled = True
+        agent.loaded_langchain_tool_skill_count = 2
+        agent.loaded_agent_skill_count = 0
+
+        captured = {}
+
+        async def _fake_recovery(*_args, **kwargs):
+            captured["kwargs"] = kwargs
+            return {"success": True, "output": "saved", "messages": []}
+
+        agent.execute_task_with_recovery = _fake_recovery  # type: ignore[method-assign]
+
+        runtime_policy = RuntimePolicy(
+            profile=ExecutionProfile.MISSION_TASK,
+            loop_mode=LoopMode.RECOVERY_MULTI_TURN,
+            max_rounds=20,
+            enable_error_recovery=True,
+            stream_output=False,
+            file_delivery_guard_mode=FileDeliveryGuardMode.STRICT,
+        )
+
+        result = agent.execute_task(
+            task_description="Execute mission task and save the result.",
+            context={"task_intent_text": "计算 1+1 并保存成 md 文件"},
+            runtime_policy=runtime_policy,
+        )
+
+        assert result["success"] is True
+        agent.agent.invoke.assert_not_called()
+        assert captured["kwargs"]["task_intent_text"] == "计算 1+1 并保存成 md 文件"
+
     def test_execute_task_single_turn_native_tools_uses_graph_recursion_limit(self):
         """Single-turn graph invoke should cap recursion when native tool-calling is enabled."""
         config = AgentConfig(

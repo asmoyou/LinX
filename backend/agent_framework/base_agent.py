@@ -2226,6 +2226,34 @@ class BaseAgent:
             return False
         return self._is_direct_tool_request(task_description)
 
+    def _should_use_native_tool_fast_path_for_runtime(
+        self,
+        *,
+        runtime_policy: RuntimePolicy,
+        task_intent_text: str,
+    ) -> bool:
+        """Enable native tool fast path only for safe runtime/profile combinations."""
+        if runtime_policy.profile not in {
+            ExecutionProfile.DEBUG_CHAT,
+            ExecutionProfile.MISSION_TASK,
+        }:
+            return False
+
+        if not self._should_use_native_tool_fast_path(task_intent_text):
+            return False
+
+        # Mission tasks often require durable deliverables and reviewer handoff.
+        # Keep those on the guarded multi-turn path so file delivery is still enforced.
+        if runtime_policy.profile == ExecutionProfile.MISSION_TASK:
+            file_delivery_guard_mode = self._resolve_file_delivery_guard_mode(runtime_policy)
+            if (
+                file_delivery_guard_mode == FileDeliveryGuardMode.STRICT
+                and self._requires_file_delivery(task_intent_text)
+            ):
+                return False
+
+        return True
+
     @staticmethod
     def _resolve_task_intent_text(
         task_description: str,
@@ -2496,8 +2524,10 @@ class BaseAgent:
 
             if (
                 loop_mode in (LoopMode.RECOVERY_MULTI_TURN, LoopMode.AUTO_MULTI_TURN)
-                and resolved_policy.profile == ExecutionProfile.DEBUG_CHAT
-                and self._should_use_native_tool_fast_path(resolved_task_intent_text)
+                and self._should_use_native_tool_fast_path_for_runtime(
+                    runtime_policy=resolved_policy,
+                    task_intent_text=resolved_task_intent_text,
+                )
             ):
                 loop_mode = LoopMode.SINGLE_TURN
                 used_native_tool_fast_path = True

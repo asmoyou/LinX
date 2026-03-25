@@ -1281,6 +1281,116 @@ async def test_execute_task_with_retry_persists_delivery_handoff(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_execute_task_with_retry_passes_task_intent_text_to_runtime_context(monkeypatch):
+    mission_id = uuid4()
+    owner_user_id = uuid4()
+    assigned_agent_id = uuid4()
+    task_id = uuid4()
+
+    orchestrator = MissionOrchestrator.__new__(MissionOrchestrator)
+    orchestrator._emitter = SimpleNamespace(emit=lambda **kwargs: None)
+
+    mission = SimpleNamespace(
+        created_by_user_id=owner_user_id,
+        mission_config={
+            "leader_config": {
+                "llm_provider": "ollama",
+                "llm_model": "qwen2.5:14b",
+            }
+        },
+    )
+    task_obj = SimpleNamespace(
+        task_id=task_id,
+        goal_text="23223*23/32=?",
+        acceptance_criteria="Return the computed result.",
+        task_metadata={"title": "Compute value"},
+        assigned_agent_id=assigned_agent_id,
+    )
+
+    class _FakeQuery:
+        def __init__(self, task):
+            self._task = task
+
+        def filter(self, *args, **kwargs):
+            return self
+
+        def first(self):
+            return self._task
+
+    class _FakeSession:
+        def __init__(self, task):
+            self._task = task
+
+        def query(self, *args, **kwargs):
+            return _FakeQuery(self._task)
+
+    class _FakeSessionContext:
+        def __init__(self, task):
+            self._task = task
+
+        def __enter__(self):
+            return _FakeSession(self._task)
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    db_task = SimpleNamespace(
+        status="pending",
+        assigned_agent_id=assigned_agent_id,
+        result=None,
+        completed_at=None,
+    )
+    captured = {}
+
+    async def _fake_create_registered(agent_id, actor_user_id):
+        _ = actor_user_id
+        return SimpleNamespace(agent_id=agent_id, name="worker-agent")
+
+    async def _fake_execute_agent_task(agent, prompt, container_id=None, **kwargs):
+        _ = agent, prompt, container_id
+        captured["kwargs"] = kwargs
+        return {"success": True, "output": "16696.53125", "messages": []}
+
+    monkeypatch.setattr(
+        "mission_system.orchestrator.create_registered_mission_agent",
+        _fake_create_registered,
+    )
+    monkeypatch.setattr(
+        MissionOrchestrator,
+        "_execute_agent_task",
+        staticmethod(_fake_execute_agent_task),
+    )
+    monkeypatch.setattr(
+        "database.connection.get_db_session",
+        lambda: _FakeSessionContext(db_task),
+    )
+    monkeypatch.setattr(
+        "mission_system.orchestrator.update_mission_agent_status",
+        lambda mission_id, agent_id, status: None,
+    )
+    monkeypatch.setattr(
+        MissionOrchestrator,
+        "_safe_sync_mission_task_counters",
+        lambda self, mission_id, fallback_total=0: {},
+    )
+
+    success = await MissionOrchestrator._execute_task_with_retry(
+        orchestrator,
+        mission_id=mission_id,
+        mission=mission,
+        task_obj=task_obj,
+        max_retries=0,
+    )
+
+    assert success is True
+    assert captured["kwargs"]["execution_profile"] == ExecutionProfile.MISSION_TASK
+    assert captured["kwargs"]["execution_context"]["task_intent_text"] == "23223*23/32=?"
+    assert (
+        captured["kwargs"]["execution_context"]["execution_context_tag"] == "mission_run"
+    )
+
+
+@pytest.mark.asyncio
 async def test_execute_task_with_retry_marks_unsuccessful_agent_response_as_failed(monkeypatch):
     mission_id = uuid4()
     owner_user_id = uuid4()

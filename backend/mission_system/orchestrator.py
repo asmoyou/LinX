@@ -4175,7 +4175,7 @@ class MissionOrchestrator:
                     "Produce the deliverable and confirm completion."
                 )
 
-                execution_context_payload: Optional[Dict[str, Any]] = None
+                execution_context_payload: Dict[str, Any] = {}
                 try:
                     from agent_framework.agent_executor import ExecutionContext, get_agent_executor
 
@@ -4201,6 +4201,17 @@ class MissionOrchestrator:
                         "Failed to build execution context for mission task (continuing): %s",
                         context_error,
                     )
+                    execution_context_payload = {}
+
+                execution_context_payload = dict(execution_context_payload or {})
+                execution_context_payload.setdefault(
+                    "task_intent_text",
+                    str(task_obj.goal_text or task_title or "").strip(),
+                )
+                execution_context_payload.setdefault(
+                    "execution_context_tag",
+                    MISSION_RUNTIME_CONTEXT_TAG,
+                )
 
                 workspace_container_id: Optional[str] = None
                 workspace_host_path: Optional[str] = None
@@ -4226,11 +4237,6 @@ class MissionOrchestrator:
                 if workspace_host_path:
                     execute_kwargs["session_workdir"] = Path(workspace_host_path)
                 if execution_context_payload:
-                    execution_context_payload = dict(execution_context_payload)
-                    execution_context_payload.setdefault(
-                        "execution_context_tag",
-                        MISSION_RUNTIME_CONTEXT_TAG,
-                    )
                     execute_kwargs["execution_context"] = execution_context_payload
                 if task_timeout_s > 0:
                     result = await asyncio.wait_for(
