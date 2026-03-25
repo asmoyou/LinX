@@ -7,6 +7,62 @@ from sqlalchemy.orm import Session
 from database.models import PlatformSetting
 
 PLATFORM_BOOTSTRAP_SETTINGS_KEY = "platform_bootstrap"
+PLATFORM_UI_EXPERIENCE_SETTINGS_KEY = "ui_experience"
+
+MOTION_PREFERENCES = {"auto", "full", "reduced", "off"}
+DEFAULT_UI_EXPERIENCE_SETTINGS: dict[str, Any] = {
+    "default_motion_preference": "auto",
+    "emergency_disable_motion": False,
+    "telemetry_sample_rate": 0.2,
+}
+
+
+def _coerce_bool(value: Any, default: bool = False) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off"}:
+            return False
+        return default
+    if value is None:
+        return default
+    return bool(value)
+
+
+def normalize_motion_preference(value: Any, default: str = "auto") -> str:
+    candidate = str(value or "").strip().lower()
+    if candidate in MOTION_PREFERENCES:
+        return candidate
+    return default
+
+
+def clamp_telemetry_sample_rate(value: Any, default: float = 0.2) -> float:
+    try:
+        candidate = float(value)
+    except (TypeError, ValueError):
+        return default
+    return min(max(candidate, 0.0), 1.0)
+
+
+def merge_ui_experience_settings(value: dict[str, Any] | None) -> dict[str, Any]:
+    payload = value if isinstance(value, dict) else {}
+    return {
+        "default_motion_preference": normalize_motion_preference(
+            payload.get("default_motion_preference"),
+            default=str(DEFAULT_UI_EXPERIENCE_SETTINGS["default_motion_preference"]),
+        ),
+        "emergency_disable_motion": _coerce_bool(
+            payload.get("emergency_disable_motion"),
+            default=bool(DEFAULT_UI_EXPERIENCE_SETTINGS["emergency_disable_motion"]),
+        ),
+        "telemetry_sample_rate": clamp_telemetry_sample_rate(
+            payload.get("telemetry_sample_rate"),
+            default=float(DEFAULT_UI_EXPERIENCE_SETTINGS["telemetry_sample_rate"]),
+        ),
+    }
 
 
 def get_platform_setting(session: Session, key: str) -> dict[str, Any] | None:
@@ -44,3 +100,20 @@ def upsert_platform_setting(
 
     session.flush()
     return record
+
+
+def get_ui_experience_settings(session: Session) -> dict[str, Any]:
+    return merge_ui_experience_settings(
+        get_platform_setting(session, PLATFORM_UI_EXPERIENCE_SETTINGS_KEY)
+    )
+
+
+def upsert_ui_experience_settings(
+    session: Session,
+    value: dict[str, Any],
+) -> PlatformSetting:
+    return upsert_platform_setting(
+        session=session,
+        key=PLATFORM_UI_EXPERIENCE_SETTINGS_KEY,
+        value=merge_ui_experience_settings(value),
+    )

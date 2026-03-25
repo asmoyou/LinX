@@ -1,106 +1,136 @@
 import {
   BrowserRouter as Router,
-  Routes,
-  Route,
-  useLocation,
   Navigate,
-} from "react-router-dom";
-import { AnimatePresence, motion } from "framer-motion";
-import { lazy, Suspense, useCallback, useEffect, useState } from "react";
-import { Layout } from "./components/layout/Layout";
-import { ProtectedRoute } from "./components/ProtectedRoute";
-import { LoadingSpinner } from "./components/LoadingSpinner";
-import { Toast } from "./components/Toast";
-import { useAuthStore } from "./stores";
-import ErrorBoundary from "./components/error/ErrorBoundary";
-import PageErrorBoundary from "./components/error/PageErrorBoundary";
-import { useUserInitialization } from "./hooks";
-import { authApi, type SetupStatusResponse } from "./api";
+  Route,
+  Routes,
+  useLocation,
+} from 'react-router-dom';
+import { AnimatePresence } from 'framer-motion';
+import {
+  lazy,
+  Suspense,
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+  type ReactNode,
+} from 'react';
 
-// Lazy load pages for better performance (6.9.6)
+import { authApi, type SetupStatusResponse } from './api';
+import { ProtectedRoute } from './components/ProtectedRoute';
+import ErrorBoundary from './components/error/ErrorBoundary';
+import PageErrorBoundary from './components/error/PageErrorBoundary';
+import { Layout } from './components/layout/Layout';
+import { LoadingSpinner } from './components/LoadingSpinner';
+import { Toast } from './components/Toast';
+import { useUserInitialization } from './hooks';
+import {
+  DEFAULT_UI_EXPERIENCE_SETTINGS,
+  MotionProvider,
+  PageTransition,
+  useMotionPolicy,
+  useMotionTelemetry,
+} from './motion';
+import { useAuthStore } from './stores';
+
 const Dashboard = lazy(() =>
-  import("./pages/Dashboard").then((m) => ({ default: m.Dashboard })),
+  import('./pages/Dashboard').then((module) => ({ default: module.Dashboard })),
 );
 const Workforce = lazy(() =>
-  import("./pages/Workforce").then((m) => ({ default: m.Workforce })),
+  import('./pages/Workforce').then((module) => ({ default: module.Workforce })),
 );
 const AgentConversation = lazy(() =>
-  import("./pages/AgentConversation").then((m) => ({
-    default: m.AgentConversation,
+  import('./pages/AgentConversation').then((module) => ({
+    default: module.AgentConversation,
   })),
 );
 const Tasks = lazy(() =>
-  import("./pages/Missions").then((m) => ({ default: m.Missions })),
+  import('./pages/Missions').then((module) => ({ default: module.Missions })),
 );
 const Schedules = lazy(() =>
-  import("./pages/Schedules").then((m) => ({ default: m.Schedules })),
+  import('./pages/Schedules').then((module) => ({ default: module.Schedules })),
 );
 const ScheduleDetail = lazy(() =>
-  import("./pages/ScheduleDetail").then((m) => ({ default: m.ScheduleDetail })),
+  import('./pages/ScheduleDetail').then((module) => ({
+    default: module.ScheduleDetail,
+  })),
 );
 const Knowledge = lazy(() =>
-  import("./pages/Knowledge").then((m) => ({ default: m.Knowledge })),
+  import('./pages/Knowledge').then((module) => ({ default: module.Knowledge })),
 );
 const Memory = lazy(() =>
-  import("./pages/Memory").then((m) => ({ default: m.Memory })),
+  import('./pages/Memory').then((module) => ({ default: module.Memory })),
 );
 const Robots = lazy(() =>
-  import("./pages/Robots").then((m) => ({ default: m.Robots })),
+  import('./pages/Robots').then((module) => ({ default: module.Robots })),
 );
-const Skills = lazy(() => import("./pages/Skills"));
+const Skills = lazy(() => import('./pages/Skills'));
 const Departments = lazy(() =>
-  import("./pages/Departments").then((m) => ({ default: m.Departments })),
+  import('./pages/Departments').then((module) => ({ default: module.Departments })),
 );
 const UserManagement = lazy(() =>
-  import("./pages/UserManagement").then((m) => ({ default: m.UserManagement })),
+  import('./pages/UserManagement').then((module) => ({
+    default: module.UserManagement,
+  })),
 );
 const RoleManagement = lazy(() =>
-  import("./pages/RoleManagement").then((m) => ({ default: m.RoleManagement })),
+  import('./pages/RoleManagement').then((module) => ({
+    default: module.RoleManagement,
+  })),
 );
 const Settings = lazy(() =>
-  import("./pages/Settings").then((m) => ({ default: m.Settings })),
+  import('./pages/Settings').then((module) => ({ default: module.Settings })),
 );
 const Profile = lazy(() =>
-  import("./pages/Profile").then((m) => ({ default: m.Profile })),
+  import('./pages/Profile').then((module) => ({ default: module.Profile })),
 );
 const Notifications = lazy(() =>
-  import("./pages/Notifications").then((m) => ({ default: m.Notifications })),
+  import('./pages/Notifications').then((module) => ({
+    default: module.Notifications,
+  })),
 );
-const Login = lazy(() => import("./pages/Login"));
-const Register = lazy(() => import("./pages/Register"));
-const Setup = lazy(() => import("./pages/Setup"));
+const Login = lazy(() => import('./pages/Login'));
+const Register = lazy(() => import('./pages/Register'));
+const Setup = lazy(() => import('./pages/Setup'));
 
-// Loading fallback component
 const PageLoader = () => (
-  <div className="flex items-center justify-center min-h-screen">
+  <div className="flex min-h-screen items-center justify-center">
     <LoadingSpinner size="lg" />
   </div>
 );
 
-const buildRouteAnimationKey = (pathname: string): string => {
-  return pathname.replace(
+const buildRouteAnimationKey = (pathname: string): string =>
+  pathname.replace(
     /^\/workforce\/([^/]+)\/conversations(?:\/[^/]+)?$/,
-    "/workforce/$1/conversations",
+    '/workforce/$1/conversations',
   );
-};
+
+const wrapPage = (pageName: string, node: ReactNode) => (
+  <PageErrorBoundary pageName={pageName}>
+    <Suspense fallback={<PageLoader />}>
+      <PageTransition>{node}</PageTransition>
+    </Suspense>
+  </PageErrorBoundary>
+);
 
 interface AnimatedRoutesProps {
   setupStatus: SetupStatusResponse | null;
   onSetupStatusRefresh: () => Promise<void>;
 }
 
-const AnimatedRoutes = ({
-  setupStatus,
-  onSetupStatusRefresh,
-}: AnimatedRoutesProps) => {
+const AnimatedRoutes = ({ setupStatus, onSetupStatusRefresh }: AnimatedRoutesProps) => {
   const location = useLocation();
   const { isAuthenticated } = useAuthStore();
+  const { effectiveTier } = useMotionPolicy();
+
+  useMotionTelemetry();
+
   const requiresSetup = setupStatus?.requires_setup ?? false;
-  const defaultAdminUsername = setupStatus?.default_admin_username ?? "admin";
+  const defaultAdminUsername = setupStatus?.default_admin_username ?? 'admin';
   const routeAnimationKey = buildRouteAnimationKey(location.pathname);
 
   return (
-    <AnimatePresence mode="wait">
+    <AnimatePresence initial={effectiveTier !== 'off'} mode="wait">
       <Routes location={location} key={routeAnimationKey}>
         <Route
           path="/setup"
@@ -119,8 +149,6 @@ const AnimatedRoutes = ({
             )
           }
         />
-
-        {/* Public routes */}
         <Route
           path="/login"
           element={
@@ -150,7 +178,6 @@ const AnimatedRoutes = ({
           }
         />
 
-        {/* Protected routes */}
         <Route
           path="/"
           element={
@@ -164,298 +191,41 @@ const AnimatedRoutes = ({
           }
         >
           <Route index element={<Navigate to="/dashboard" replace />} />
-          <Route
-            path="dashboard"
-            element={
-              <PageErrorBoundary pageName="仪表盘">
-                <Suspense fallback={<PageLoader />}>
-                  <motion.div
-                    initial={{ opacity: 0, y: 20 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    exit={{ opacity: 0, y: -20 }}
-                    transition={{ duration: 0.3 }}
-                  >
-                    <Dashboard />
-                  </motion.div>
-                </Suspense>
-              </PageErrorBoundary>
-            }
-          />
-          <Route
-            path="workforce"
-            element={
-              <PageErrorBoundary pageName="智能体">
-                <Suspense fallback={<PageLoader />}>
-                  <motion.div
-                    initial={{ opacity: 0, y: 20 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    exit={{ opacity: 0, y: -20 }}
-                    transition={{ duration: 0.3 }}
-                  >
-                    <Workforce />
-                  </motion.div>
-                </Suspense>
-              </PageErrorBoundary>
-            }
-          />
+          <Route path="dashboard" element={wrapPage('仪表盘', <Dashboard />)} />
+          <Route path="workforce" element={wrapPage('智能体', <Workforce />)} />
           <Route
             path="workforce/:agentId/conversations"
-            element={
-              <PageErrorBoundary pageName="持久化对话">
-                <Suspense fallback={<PageLoader />}>
-                  <motion.div
-                    initial={{ opacity: 0, y: 20 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    exit={{ opacity: 0, y: -20 }}
-                    transition={{ duration: 0.3 }}
-                  >
-                    <AgentConversation />
-                  </motion.div>
-                </Suspense>
-              </PageErrorBoundary>
-            }
+            element={wrapPage('持久化对话', <AgentConversation />)}
           />
           <Route
             path="workforce/:agentId/conversations/:conversationId"
-            element={
-              <PageErrorBoundary pageName="持久化对话">
-                <Suspense fallback={<PageLoader />}>
-                  <motion.div
-                    initial={{ opacity: 0, y: 20 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    exit={{ opacity: 0, y: -20 }}
-                    transition={{ duration: 0.3 }}
-                  >
-                    <AgentConversation />
-                  </motion.div>
-                </Suspense>
-              </PageErrorBoundary>
-            }
+            element={wrapPage('持久化对话', <AgentConversation />)}
           />
-          <Route
-            path="tasks"
-            element={
-              <PageErrorBoundary pageName="任务">
-                <Suspense fallback={<PageLoader />}>
-                  <motion.div
-                    initial={{ opacity: 0, y: 20 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    exit={{ opacity: 0, y: -20 }}
-                    transition={{ duration: 0.3 }}
-                  >
-                    <Tasks />
-                  </motion.div>
-                </Suspense>
-              </PageErrorBoundary>
-            }
-          />
-          <Route
-            path="schedules"
-            element={
-              <PageErrorBoundary pageName="定时任务">
-                <Suspense fallback={<PageLoader />}>
-                  <motion.div
-                    initial={{ opacity: 0, y: 20 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    exit={{ opacity: 0, y: -20 }}
-                    transition={{ duration: 0.3 }}
-                  >
-                    <Schedules />
-                  </motion.div>
-                </Suspense>
-              </PageErrorBoundary>
-            }
-          />
+          <Route path="tasks" element={wrapPage('任务', <Tasks />)} />
+          <Route path="schedules" element={wrapPage('定时任务', <Schedules />)} />
           <Route
             path="schedules/:scheduleId"
-            element={
-              <PageErrorBoundary pageName="定时任务详情">
-                <Suspense fallback={<PageLoader />}>
-                  <motion.div
-                    initial={{ opacity: 0, y: 20 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    exit={{ opacity: 0, y: -20 }}
-                    transition={{ duration: 0.3 }}
-                  >
-                    <ScheduleDetail />
-                  </motion.div>
-                </Suspense>
-              </PageErrorBoundary>
-            }
+            element={wrapPage('定时任务详情', <ScheduleDetail />)}
           />
-          <Route
-            path="knowledge"
-            element={
-              <PageErrorBoundary pageName="知识库">
-                <Suspense fallback={<PageLoader />}>
-                  <motion.div
-                    initial={{ opacity: 0, y: 20 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    exit={{ opacity: 0, y: -20 }}
-                    transition={{ duration: 0.3 }}
-                  >
-                    <Knowledge />
-                  </motion.div>
-                </Suspense>
-              </PageErrorBoundary>
-            }
-          />
-          <Route
-            path="memory"
-            element={
-              <PageErrorBoundary pageName="记忆">
-                <Suspense fallback={<PageLoader />}>
-                  <motion.div
-                    initial={{ opacity: 0, y: 20 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    exit={{ opacity: 0, y: -20 }}
-                    transition={{ duration: 0.3 }}
-                  >
-                    <Memory />
-                  </motion.div>
-                </Suspense>
-              </PageErrorBoundary>
-            }
-          />
-          <Route
-            path="memory/user-memory"
-            element={<Navigate to="/memory" replace />}
-          />
-          <Route
-            path="skills"
-            element={
-              <PageErrorBoundary pageName="技能库">
-                <Suspense fallback={<PageLoader />}>
-                  <motion.div
-                    initial={{ opacity: 0, y: 20 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    exit={{ opacity: 0, y: -20 }}
-                    transition={{ duration: 0.3 }}
-                  >
-                    <Skills />
-                  </motion.div>
-                </Suspense>
-              </PageErrorBoundary>
-            }
-          />
-          <Route
-            path="robots"
-            element={
-              <PageErrorBoundary pageName="机器人">
-                <Suspense fallback={<PageLoader />}>
-                  <motion.div
-                    initial={{ opacity: 0, y: 20 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    exit={{ opacity: 0, y: -20 }}
-                    transition={{ duration: 0.3 }}
-                  >
-                    <Robots />
-                  </motion.div>
-                </Suspense>
-              </PageErrorBoundary>
-            }
-          />
-          <Route
-            path="departments"
-            element={
-              <PageErrorBoundary pageName="部门">
-                <Suspense fallback={<PageLoader />}>
-                  <motion.div
-                    initial={{ opacity: 0, y: 20 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    exit={{ opacity: 0, y: -20 }}
-                    transition={{ duration: 0.3 }}
-                  >
-                    <Departments />
-                  </motion.div>
-                </Suspense>
-              </PageErrorBoundary>
-            }
-          />
+          <Route path="knowledge" element={wrapPage('知识库', <Knowledge />)} />
+          <Route path="memory" element={wrapPage('记忆', <Memory />)} />
+          <Route path="memory/user-memory" element={<Navigate to="/memory" replace />} />
+          <Route path="skills" element={wrapPage('技能库', <Skills />)} />
+          <Route path="robots" element={wrapPage('机器人', <Robots />)} />
+          <Route path="departments" element={wrapPage('部门', <Departments />)} />
           <Route
             path="user-management"
-            element={
-              <PageErrorBoundary pageName="用户管理">
-                <Suspense fallback={<PageLoader />}>
-                  <motion.div
-                    initial={{ opacity: 0, y: 20 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    exit={{ opacity: 0, y: -20 }}
-                    transition={{ duration: 0.3 }}
-                  >
-                    <UserManagement />
-                  </motion.div>
-                </Suspense>
-              </PageErrorBoundary>
-            }
+            element={wrapPage('用户管理', <UserManagement />)}
           />
           <Route
             path="role-management"
-            element={
-              <PageErrorBoundary pageName="角色权限">
-                <Suspense fallback={<PageLoader />}>
-                  <motion.div
-                    initial={{ opacity: 0, y: 20 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    exit={{ opacity: 0, y: -20 }}
-                    transition={{ duration: 0.3 }}
-                  >
-                    <RoleManagement />
-                  </motion.div>
-                </Suspense>
-              </PageErrorBoundary>
-            }
+            element={wrapPage('角色权限', <RoleManagement />)}
           />
-          <Route
-            path="settings"
-            element={
-              <PageErrorBoundary pageName="设置">
-                <Suspense fallback={<PageLoader />}>
-                  <motion.div
-                    initial={{ opacity: 0, y: 20 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    exit={{ opacity: 0, y: -20 }}
-                    transition={{ duration: 0.3 }}
-                  >
-                    <Settings />
-                  </motion.div>
-                </Suspense>
-              </PageErrorBoundary>
-            }
-          />
-          <Route
-            path="profile"
-            element={
-              <PageErrorBoundary pageName="个人资料">
-                <Suspense fallback={<PageLoader />}>
-                  <motion.div
-                    initial={{ opacity: 0, y: 20 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    exit={{ opacity: 0, y: -20 }}
-                    transition={{ duration: 0.3 }}
-                  >
-                    <Profile />
-                  </motion.div>
-                </Suspense>
-              </PageErrorBoundary>
-            }
-          />
+          <Route path="settings" element={wrapPage('设置', <Settings />)} />
+          <Route path="profile" element={wrapPage('个人资料', <Profile />)} />
           <Route
             path="notifications"
-            element={
-              <PageErrorBoundary pageName="通知中心">
-                <Suspense fallback={<PageLoader />}>
-                  <motion.div
-                    initial={{ opacity: 0, y: 20 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    exit={{ opacity: 0, y: -20 }}
-                    transition={{ duration: 0.3 }}
-                  >
-                    <Notifications />
-                  </motion.div>
-                </Suspense>
-              </PageErrorBoundary>
-            }
+            element={wrapPage('通知中心', <Notifications />)}
           />
         </Route>
       </Routes>
@@ -463,12 +233,32 @@ const AnimatedRoutes = ({
   );
 };
 
-function App() {
-  // Initialize user data when authenticated
-  useUserInitialization();
-  const [setupStatus, setSetupStatus] = useState<SetupStatusResponse | null>(
-    null,
+const AppShell = ({
+  setupStatus,
+  onSetupStatusRefresh,
+}: AnimatedRoutesProps) => {
+  const { isAuthenticated } = useAuthStore();
+  const { hasInitialized, isInitializing } = useUserInitialization();
+
+  const shouldHoldProtectedUi = isAuthenticated && (!hasInitialized || isInitializing);
+
+  if (shouldHoldProtectedUi) {
+    return <PageLoader />;
+  }
+
+  return (
+    <Router>
+      <Toast />
+      <AnimatedRoutes
+        setupStatus={setupStatus}
+        onSetupStatusRefresh={onSetupStatusRefresh}
+      />
+    </Router>
   );
+};
+
+function App() {
+  const [setupStatus, setSetupStatus] = useState<SetupStatusResponse | null>(null);
   const [isSetupStatusLoading, setIsSetupStatusLoading] = useState(true);
 
   const refreshSetupStatus = useCallback(async () => {
@@ -478,11 +268,12 @@ function App() {
       const nextStatus = await authApi.getSetupStatus();
       setSetupStatus(nextStatus);
     } catch (error) {
-      console.error("Failed to load setup status:", error);
+      console.error('Failed to load setup status:', error);
       setSetupStatus({
         requires_setup: false,
         has_admin_account: true,
-        default_admin_username: "admin",
+        default_admin_username: 'admin',
+        ui_experience: DEFAULT_UI_EXPERIENCE_SETTINGS,
       });
     } finally {
       setIsSetupStatusLoading(false);
@@ -493,19 +284,23 @@ function App() {
     void refreshSetupStatus();
   }, [refreshSetupStatus]);
 
+  const platformSettings = useMemo(
+    () => setupStatus?.ui_experience ?? DEFAULT_UI_EXPERIENCE_SETTINGS,
+    [setupStatus?.ui_experience],
+  );
+
   return (
     <ErrorBoundary>
-      <Router>
-        <Toast />
-        {isSetupStatusLoading ? (
-          <PageLoader />
-        ) : (
-          <AnimatedRoutes
+      {isSetupStatusLoading ? (
+        <PageLoader />
+      ) : (
+        <MotionProvider platformSettings={platformSettings}>
+          <AppShell
             setupStatus={setupStatus}
             onSetupStatusRefresh={refreshSetupStatus}
           />
-        )}
-      </Router>
+        </MotionProvider>
+      )}
     </ErrorBoundary>
   );
 }

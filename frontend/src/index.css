@@ -70,11 +70,24 @@
     -moz-osx-font-smoothing: grayscale;
   }
 
+  html[data-motion-tier='reduced'],
+  html[data-motion-tier='off'] {
+    scroll-behavior: auto;
+  }
+
   body {
     background-color: var(--bg-primary);
     color: var(--text-primary);
     transition: background-color 0.4s cubic-bezier(0.4, 0, 0.2, 1), color 0.4s cubic-bezier(0.4, 0, 0.2, 1);
     font-feature-settings: "cv11", "ss01";
+  }
+
+  html[data-motion-tier='reduced'] body {
+    transition-duration: 0.15s;
+  }
+
+  html[data-motion-tier='off'] body {
+    transition: none;
   }
 
   /* Focus indicators for accessibility */
@@ -101,6 +114,22 @@
 
   .dark .glass {
     background: rgba(28, 28, 30, 0.5);
+  }
+
+  html[data-motion-tier='reduced'] .glass,
+  html[data-motion-tier='reduced'] .glass-panel,
+  html[data-motion-tier='reduced'] .modal-panel {
+    backdrop-filter: saturate(180%) blur(8px);
+    -webkit-backdrop-filter: saturate(180%) blur(8px);
+    transition-duration: 0.12s;
+  }
+
+  html[data-motion-tier='off'] .glass,
+  html[data-motion-tier='off'] .glass-panel,
+  html[data-motion-tier='off'] .modal-panel {
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+    transition: none;
   }
 
   /* Glass Panel Effect - For cards and containers */
@@ -271,6 +300,41 @@
 
   .animate-float {
     animation: float 8s ease-in-out infinite;
+  }
+
+  html[data-motion-tier='reduced'] .animate-pulse-slow,
+  html[data-motion-tier='reduced'] .animate-float,
+  html[data-motion-tier='reduced'] .motion-decorative {
+    animation: none !important;
+  }
+
+  html[data-motion-tier='reduced'] .hover-lift:hover {
+    transform: none !important;
+  }
+
+  html[data-motion-tier='off'] .animate-in,
+  html[data-motion-tier='off'] .fade-in,
+  html[data-motion-tier='off'] .slide-in-from-bottom-6,
+  html[data-motion-tier='off'] .animate-pulse-slow,
+  html[data-motion-tier='off'] .animate-slide-in-right,
+  html[data-motion-tier='off'] .animate-slide-in-left,
+  html[data-motion-tier='off'] .animate-float,
+  html[data-motion-tier='off'] .motion-decorative {
+    animation: none !important;
+  }
+
+  html[data-motion-tier='off'] .glass,
+  html[data-motion-tier='off'] .glass-panel,
+  html[data-motion-tier='off'] .modal-panel,
+  html[data-motion-tier='off'] .hover-lift,
+  html[data-motion-tier='off'] .hover-glow {
+    transition: none !important;
+  }
+
+  html[data-motion-tier='off'] .hover-lift:hover,
+  html[data-motion-tier='off'] .hover-glow:hover {
+    transform: none !important;
+    box-shadow: inherit !important;
   }
 
   /* Unified markdown typography for ReactMarkdown output */

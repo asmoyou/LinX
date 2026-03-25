@@ -35,11 +35,13 @@ from api_gateway.routers import (
     missions,
     monitoring,
     notifications,
+    platform_settings,
     roles,
     schedules,
     skill_bindings,
     skill_candidates,
     skills,
+    telemetry,
     user_memory,
     users,
 )
@@ -625,6 +627,12 @@ def create_app() -> FastAPI:
     app.include_router(schedules.router, prefix="/api/v1/schedules", tags=["Schedules"])
     app.include_router(notifications.router, prefix="/api/v1/notifications", tags=["Notifications"])
     app.include_router(skills.router, prefix="/api/v1/skills", tags=["Skills"])
+    app.include_router(
+        platform_settings.router,
+        prefix="/api/v1/platform",
+        tags=["Platform Settings"],
+    )
+    app.include_router(telemetry.router, prefix="/api/v1/telemetry", tags=["Telemetry"])
     app.include_router(
         mcp_servers.router, prefix="/api/v1/mcp-servers", tags=["MCP Servers"]
     )

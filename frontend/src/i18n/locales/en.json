@@ -1404,9 +1404,43 @@
     "comingSoon": "Coming soon...",
     "tabs": {
       "baseline": "Business Baseline",
+      "experience": "UI Experience",
       "llm": "LLM Providers",
       "envVars": "Environment Variables",
-      "missionPolicy": "Mission Policy"
+      "missionPolicy": "Mission Policy",
+      "ariaLabel": "Settings tabs"
+    },
+    "experience": {
+      "title": "UI Experience",
+      "subtitle": "Define the default motion policy, emergency kill switch, and telemetry sampling rate.",
+      "loading": "Loading UI experience settings...",
+      "loadFailed": "Failed to load platform UI experience settings.",
+      "liveTier": "Live tier",
+      "saved": "Platform UI experience settings saved.",
+      "saveFailed": "Failed to save platform UI experience settings.",
+      "permissionHint": "Only admin and manager roles can manage the platform motion policy.",
+      "defaultMotion": "Default Motion Policy",
+      "emergencyDisable": "Emergency Disable Motion",
+      "emergencyDisableHint": "Force the entire app into off mode without shipping a new frontend build.",
+      "sampleRate": "Telemetry Sample Rate",
+      "sampleRateHint": "Use a value between 0 and 1. Example: 0.2 means 20% of authenticated sessions.",
+      "save": "Save UI Experience",
+      "option": {
+        "auto": "Auto",
+        "autoDescription": "Start from device class and allow runtime downgrades.",
+        "full": "Full",
+        "fullDescription": "Keep the richest motion profile when accessibility allows it.",
+        "reduced": "Reduced",
+        "reducedDescription": "Prefer lightweight fades and lower-cost visual effects.",
+        "off": "Off",
+        "offDescription": "Disable decorative motion and keep the UI static."
+      },
+      "source": {
+        "platformDefault": "Platform default",
+        "userPreference": "User preference",
+        "systemReducedMotion": "System reduced motion",
+        "emergencyOverride": "Emergency override"
+      }
     },
     "llm": {
       "title": "LLM Providers",
@@ -1437,6 +1471,8 @@
       "title": "Business Platform Baseline",
       "subtitle": "Validate and complete the core platform setup before scaling collaboration.",
       "loading": "Checking baseline configuration...",
+      "uiExperience": "UI Motion Policy",
+      "uiExperienceSummary": "Default {{preference}} · emergency {{status}}",
       "llm": "LLM Providers",
       "llmSummary": "{{healthy}}/{{total}} healthy, default provider ready",
       "secrets": "Skill Secrets",

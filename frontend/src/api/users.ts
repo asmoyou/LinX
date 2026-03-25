@@ -1,5 +1,6 @@
 import apiClient from './client';
 import type { UserProfile, ResourceQuota } from '../stores/userStore';
+import type { MotionPreference } from '@/motion';
 
 export interface UpdateProfileRequest {
   username?: string;
@@ -11,6 +12,7 @@ export interface UpdateProfileRequest {
 export interface UserPreferences {
   language: string;
   theme: string;
+  motion_preference: MotionPreference;
   sidebar_collapsed: boolean;
   dashboard_layout: string;
   notifications_enabled: boolean;

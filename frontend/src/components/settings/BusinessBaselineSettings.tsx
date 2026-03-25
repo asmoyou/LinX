@@ -10,14 +10,16 @@ import {
   Loader2,
   ShieldCheck,
   SlidersHorizontal,
+  Sparkles,
   Users,
 } from 'lucide-react';
 import { llmApi } from '@/api/llm';
 import { skillsApi } from '@/api/skills';
 import { missionsApi } from '@/api/missions';
+import { platformApi } from '@/api/platform';
 import { useAuthStore } from '@/stores';
 
-type PlatformTab = 'llm' | 'envVars' | 'missionPolicy';
+type PlatformTab = 'experience' | 'llm' | 'envVars' | 'missionPolicy';
 
 interface BusinessBaselineSettingsProps {
   onOpenTab: (tab: PlatformTab) => void;
@@ -29,6 +31,9 @@ interface BaselineSummary {
   hasDefaultProvider: boolean;
   envVarCount: number;
   hasMissionPolicy: boolean;
+  hasUiExperiencePolicy: boolean;
+  defaultMotionPreference: string;
+  emergencyMotionDisabled: boolean;
 }
 
 const INITIAL_SUMMARY: BaselineSummary = {
@@ -37,6 +42,9 @@ const INITIAL_SUMMARY: BaselineSummary = {
   hasDefaultProvider: false,
   envVarCount: 0,
   hasMissionPolicy: false,
+  hasUiExperiencePolicy: false,
+  defaultMotionPreference: 'auto',
+  emergencyMotionDisabled: false,
 };
 
 export const BusinessBaselineSettings = ({ onOpenTab }: BusinessBaselineSettingsProps) => {
@@ -47,6 +55,13 @@ export const BusinessBaselineSettings = ({ onOpenTab }: BusinessBaselineSettings
   const [summary, setSummary] = useState<BaselineSummary>(INITIAL_SUMMARY);
 
   const canManageAccess = ['admin', 'manager'].includes(user?.role || '');
+  const translatedMotionPreference = t(
+    `settings.experience.option.${summary.defaultMotionPreference}`,
+    summary.defaultMotionPreference,
+  );
+  const translatedEmergencyState = summary.emergencyMotionDisabled
+    ? t('settings.enabled', 'Enabled')
+    : t('settings.disabled', 'Disabled');
 
   useEffect(() => {
     let active = true;
@@ -54,10 +69,12 @@ export const BusinessBaselineSettings = ({ onOpenTab }: BusinessBaselineSettings
     const loadBaseline = async () => {
       setLoading(true);
       try {
-        const [llmResult, envResult, missionResult] = await Promise.allSettled([
+        const [llmResult, envResult, missionResult, experienceResult] =
+          await Promise.allSettled([
           llmApi.getProvidersConfig(),
           skillsApi.listEnvVars(),
           missionsApi.getSettings(),
+          platformApi.getUiExperience(),
         ]);
 
         if (!active) return;
@@ -77,6 +94,14 @@ export const BusinessBaselineSettings = ({ onOpenTab }: BusinessBaselineSettings
 
         if (missionResult.status === 'fulfilled') {
           nextSummary.hasMissionPolicy = Boolean(missionResult.value.execution_config);
+        }
+
+        if (experienceResult.status === 'fulfilled') {
+          nextSummary.hasUiExperiencePolicy = true;
+          nextSummary.defaultMotionPreference =
+            experienceResult.value.default_motion_preference;
+          nextSummary.emergencyMotionDisabled =
+            experienceResult.value.emergency_disable_motion;
         }
 
         setSummary(nextSummary);
@@ -122,7 +147,36 @@ export const BusinessBaselineSettings = ({ onOpenTab }: BusinessBaselineSettings
         </div>
       )}
 
-      <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+      <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
+        <div className="rounded-xl border border-zinc-200 dark:border-zinc-700 p-4 bg-white dark:bg-zinc-900/40">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <Sparkles className="w-4 h-4 text-emerald-500" />
+              <p className="text-sm font-medium text-zinc-800 dark:text-zinc-100">
+                {t('settings.baseline.uiExperience', 'UI Motion Policy')}
+              </p>
+            </div>
+            {statusIcon(summary.hasUiExperiencePolicy)}
+          </div>
+          <p className="mt-2 text-xs text-zinc-600 dark:text-zinc-400">
+            {t(
+              'settings.baseline.uiExperienceSummary',
+              'Default {{preference}} · emergency {{status}}',
+              {
+                preference: translatedMotionPreference,
+                status: translatedEmergencyState,
+              },
+            )}
+          </p>
+          <button
+            onClick={() => onOpenTab('experience')}
+            className="mt-3 inline-flex items-center gap-1 text-xs font-medium text-emerald-600 dark:text-emerald-400 hover:underline"
+          >
+            {t('settings.baseline.configure', 'Configure')}
+            <ArrowRight className="w-3.5 h-3.5" />
+          </button>
+        </div>
+
         <div className="rounded-xl border border-zinc-200 dark:border-zinc-700 p-4 bg-white dark:bg-zinc-900/40">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2">

@@ -1,4 +1,6 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useMemo, useRef } from 'react';
+
+import { useMotionPolicy } from '@/motion';
 
 interface ParticleBackgroundProps {
   isDark?: boolean;
@@ -16,8 +18,34 @@ export const ParticleBackground: React.FC<ParticleBackgroundProps> = ({ isDark =
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const particlesRef = useRef<Particle[]>([]);
   const animationFrameRef = useRef<number | undefined>(undefined);
+  const { deviceClass, effectiveTier, saveData } = useMotionPolicy();
+
+  const shouldAnimateCanvas = effectiveTier === 'full';
+  const staticOrbOpacity = effectiveTier === 'off' ? '0.16' : '0.2';
+  const particleCount = useMemo(() => {
+    if (!shouldAnimateCanvas) {
+      return 0;
+    }
+
+    if (typeof window === 'undefined') {
+      return 24;
+    }
+
+    const estimatedCount = Math.round((window.innerWidth * window.innerHeight) / 45_000);
+    const clampedCount = Math.min(Math.max(estimatedCount, 24), 64);
+
+    if (deviceClass === 'low' || saveData) {
+      return Math.min(clampedCount, 36);
+    }
+
+    return clampedCount;
+  }, [deviceClass, saveData, shouldAnimateCanvas]);
 
   useEffect(() => {
+    if (!shouldAnimateCanvas || typeof window === 'undefined') {
+      return undefined;
+    }
+
     const canvas = canvasRef.current;
     if (!canvas) return;
 
@@ -26,14 +54,17 @@ export const ParticleBackground: React.FC<ParticleBackgroundProps> = ({ isDark =
 
     // Set canvas size
     const resizeCanvas = () => {
-      canvas.width = window.innerWidth;
-      canvas.height = window.innerHeight;
+      const pixelRatio = Math.min(window.devicePixelRatio || 1, 1.5);
+      canvas.width = window.innerWidth * pixelRatio;
+      canvas.height = window.innerHeight * pixelRatio;
+      canvas.style.width = `${window.innerWidth}px`;
+      canvas.style.height = `${window.innerHeight}px`;
+      ctx.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
       
       // Reinitialize particles when window resizes
-      const particleCount = 80;
       particlesRef.current = Array.from({ length: particleCount }, () => ({
-        x: Math.random() * canvas.width,
-        y: Math.random() * canvas.height,
+        x: Math.random() * window.innerWidth,
+        y: Math.random() * window.innerHeight,
         vx: (Math.random() - 0.5) * 0.5,
         vy: (Math.random() - 0.5) * 0.5,
         size: Math.random() * 2 + 1,
@@ -42,12 +73,26 @@ export const ParticleBackground: React.FC<ParticleBackgroundProps> = ({ isDark =
     resizeCanvas();
     window.addEventListener('resize', resizeCanvas);
 
+    const startLoop = () => {
+      animationFrameRef.current = requestAnimationFrame(animate);
+    };
+
+    const stopLoop = () => {
+      if (animationFrameRef.current) {
+        cancelAnimationFrame(animationFrameRef.current);
+        animationFrameRef.current = undefined;
+      }
+    };
+
     // Animation loop
     const animate = () => {
       if (!ctx || !canvas) return;
+      if (document.visibilityState !== 'visible') {
+        return;
+      }
 
       // Clear canvas
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.clearRect(0, 0, window.innerWidth, window.innerHeight);
 
       // Update and draw particles
       const particles = particlesRef.current;
@@ -64,12 +109,12 @@ export const ParticleBackground: React.FC<ParticleBackgroundProps> = ({ isDark =
         particle.y += particle.vy;
 
         // Bounce off edges
-        if (particle.x < 0 || particle.x > canvas.width) particle.vx *= -1;
-        if (particle.y < 0 || particle.y > canvas.height) particle.vy *= -1;
+        if (particle.x < 0 || particle.x > window.innerWidth) particle.vx *= -1;
+        if (particle.y < 0 || particle.y > window.innerHeight) particle.vy *= -1;
 
         // Keep particles in bounds
-        particle.x = Math.max(0, Math.min(canvas.width, particle.x));
-        particle.y = Math.max(0, Math.min(canvas.height, particle.y));
+        particle.x = Math.max(0, Math.min(window.innerWidth, particle.x));
+        particle.y = Math.max(0, Math.min(window.innerHeight, particle.y));
 
         // Draw connections to nearby particles
         for (let j = i + 1; j < particles.length; j++) {
@@ -102,43 +147,56 @@ export const ParticleBackground: React.FC<ParticleBackgroundProps> = ({ isDark =
       animationFrameRef.current = requestAnimationFrame(animate);
     };
 
-    animate();
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        stopLoop();
+        startLoop();
+      } else {
+        stopLoop();
+      }
+    };
+
+    startLoop();
+    document.addEventListener('visibilitychange', handleVisibilityChange);
 
     return () => {
       window.removeEventListener('resize', resizeCanvas);
-      if (animationFrameRef.current) {
-        cancelAnimationFrame(animationFrameRef.current);
-      }
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      stopLoop();
     };
-  }, [isDark]); // Re-run when theme changes
+  }, [isDark, particleCount, shouldAnimateCanvas]);
 
   return (
     <>
-      <canvas
-        ref={canvasRef}
-        className="fixed inset-0 pointer-events-none"
-        style={{ zIndex: 0 }}
-      />
+      {shouldAnimateCanvas ? (
+        <canvas
+          ref={canvasRef}
+          className="fixed inset-0 pointer-events-none"
+          style={{ zIndex: 0 }}
+        />
+      ) : null}
       
       {/* Gradient orbs */}
       <div className="fixed inset-0 overflow-hidden pointer-events-none" style={{ zIndex: 1 }}>
         <div
-          className="absolute top-1/4 left-1/4 w-96 h-96 rounded-full blur-3xl opacity-20 animate-pulse"
+          className={`absolute top-1/4 left-1/4 w-96 h-96 rounded-full blur-3xl ${shouldAnimateCanvas ? 'animate-pulse motion-decorative' : ''}`}
           style={{
             background: isDark
               ? 'radial-gradient(circle, rgba(16, 185, 129, 0.3) 0%, transparent 70%)'
               : 'radial-gradient(circle, rgba(5, 150, 105, 0.2) 0%, transparent 70%)',
-            animationDuration: '8s',
+            opacity: staticOrbOpacity,
+            animationDuration: shouldAnimateCanvas ? '8s' : undefined,
           }}
         />
         <div
-          className="absolute bottom-1/4 right-1/4 w-96 h-96 rounded-full blur-3xl opacity-20 animate-pulse"
+          className={`absolute bottom-1/4 right-1/4 w-96 h-96 rounded-full blur-3xl ${shouldAnimateCanvas ? 'animate-pulse motion-decorative' : ''}`}
           style={{
             background: isDark
               ? 'radial-gradient(circle, rgba(16, 185, 129, 0.3) 0%, transparent 70%)'
               : 'radial-gradient(circle, rgba(5, 150, 105, 0.2) 0%, transparent 70%)',
-            animationDuration: '10s',
-            animationDelay: '2s',
+            opacity: staticOrbOpacity,
+            animationDuration: shouldAnimateCanvas ? '10s' : undefined,
+            animationDelay: shouldAnimateCanvas ? '2s' : undefined,
           }}
         />
       </div>

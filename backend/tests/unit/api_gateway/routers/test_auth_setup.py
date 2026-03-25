@@ -86,7 +86,15 @@ def test_build_setup_status_uses_bootstrap_metadata():
                 "timezone": "Asia/Shanghai",
             },
         ):
-            response = _build_setup_status(session=object())
+            with patch(
+                "api_gateway.routers.auth.get_ui_experience_settings",
+                return_value={
+                    "default_motion_preference": "reduced",
+                    "emergency_disable_motion": False,
+                    "telemetry_sample_rate": 0.35,
+                },
+            ):
+                response = _build_setup_status(session=object())
 
     assert response.requires_setup is False
     assert response.has_admin_account is True
@@ -94,6 +102,8 @@ def test_build_setup_status_uses_bootstrap_metadata():
     assert response.organization_name == "Acme Labs"
     assert response.language == "zh"
     assert response.timezone == "Asia/Shanghai"
+    assert response.ui_experience.default_motion_preference == "reduced"
+    assert response.ui_experience.telemetry_sample_rate == pytest.approx(0.35)
 
 
 @pytest.mark.asyncio

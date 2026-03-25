@@ -7,12 +7,14 @@ import { LayoutModal } from '../LayoutModal';
 import { ModalPanel } from '../ModalPanel';
 import { useNotificationStore } from '../../stores/notificationStore';
 import { usersApi, type PrivacySettings } from '@/api/users';
+import { usePrivacyStore } from '@/stores/privacyStore';
 import { clearClientSession } from '@/utils/clientSession';
 
 export const PrivacySection = () => {
   const { t } = useTranslation();
   const navigate = useNavigate();
   const { addNotification } = useNotificationStore();
+  const setAllowTelemetry = usePrivacyStore((state) => state.setAllowTelemetry);
   const [showDeleteModal, setShowDeleteModal] = useState(false);
   const [deleteConfirmation, setDeleteConfirmation] = useState('');
   const [currentPassword, setCurrentPassword] = useState('');
@@ -33,6 +35,7 @@ export const PrivacySection = () => {
     try {
       const data = await usersApi.getPrivacySettings();
       setPrivacySettings(data);
+      setAllowTelemetry(data.allow_telemetry);
     } catch (error: any) {
       addNotification({
         type: 'error',
@@ -56,6 +59,7 @@ export const PrivacySection = () => {
     try {
       const saved = await usersApi.updatePrivacySettings(privacySettings);
       setPrivacySettings(saved);
+      setAllowTelemetry(saved.allow_telemetry);
       addNotification({
         type: 'success',
         title: t('profileSettings.privacy.savedTitle', 'Privacy Settings Updated'),

@@ -1,8 +1,8 @@
 import React, { useEffect } from 'react';
 import { createPortal } from 'react-dom';
 import { AnimatePresence, motion } from 'framer-motion';
-import type { Variants } from 'framer-motion';
 import { X } from 'lucide-react';
+import { getModalMotionPreset, useMotionPolicy } from '@/motion';
 
 type ModalSize = 'xs' | 'sm' | 'md' | 'lg' | 'xl' | '2xl' | '3xl' | '4xl' | '5xl' | '6xl' | '7xl' | 'full';
 
@@ -105,6 +105,8 @@ export const LayoutModal: React.FC<LayoutModalProps> & {
   maxHeight = 'calc(100vh - 140px)',
   isRaw,
 }) => {
+  const { effectiveTier } = useMotionPolicy();
+
   useEffect(() => {
     if (!isOpen || !closeOnEscape || !onClose) return;
 
@@ -139,25 +141,10 @@ export const LayoutModal: React.FC<LayoutModalProps> & {
   );
 
   const useRawLayout = isRaw !== undefined ? isRaw : (!title && !footer && !hasCompoundComponents);
-
-  const modalVariants: Variants = {
-    hidden: { opacity: 0, scale: 0.96, y: 8 },
-    visible: { 
-      opacity: 1, 
-      scale: 1, 
-      y: 0,
-      transition: { type: 'spring', stiffness: 450, damping: 32, mass: 1 }
-    },
-    exit: { 
-      opacity: 0, 
-      scale: 0.98, 
-      y: 4,
-      transition: { duration: 0.15, ease: 'easeOut' }
-    }
-  };
+  const modalMotionPreset = getModalMotionPreset(effectiveTier);
 
   return createPortal(
-    <AnimatePresence>
+    <AnimatePresence initial={effectiveTier !== 'off'}>
       {isOpen && (
         <div 
           className={`fixed inset-0 flex items-center justify-center ${zIndexClassName} ${containerClassName}`}
@@ -180,10 +167,10 @@ export const LayoutModal: React.FC<LayoutModalProps> & {
           <style>{scrollbarStyles}</style>
           
           <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            transition={{ duration: 0.2 }}
+            initial={modalMotionPreset.backdrop.initial}
+            animate={modalMotionPreset.backdrop.animate}
+            exit={modalMotionPreset.backdrop.exit}
+            transition={modalMotionPreset.backdrop.transition}
             className={`absolute inset-0 ${backdropClassName}`}
             onClick={closeOnBackdropClick ? onClose : undefined}
           />
@@ -193,7 +180,7 @@ export const LayoutModal: React.FC<LayoutModalProps> & {
               <div className="w-full h-full overflow-y-auto overscroll-contain pointer-events-auto custom-scrollbar p-4 sm:p-8">
                 <div className="min-h-full w-full flex items-start sm:items-center justify-center">
                   <motion.div
-                    variants={modalVariants}
+                    variants={modalMotionPreset.variants}
                     initial="hidden"
                     animate="visible"
                     exit="exit"
@@ -206,7 +193,7 @@ export const LayoutModal: React.FC<LayoutModalProps> & {
             ) : (
               <div className="w-full h-full flex items-center justify-center p-4 sm:p-8">
                 <motion.div
-                  variants={modalVariants}
+                  variants={modalMotionPreset.variants}
                   initial="hidden"
                   animate="visible"
                   exit="exit"

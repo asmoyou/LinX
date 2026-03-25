@@ -1,10 +1,12 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
+import type { MotionPreference } from '@/motion';
 
 export type Language = 'en' | 'zh';
 
 export interface Preferences {
   language: Language;
+  motionPreference: MotionPreference;
   sidebarCollapsed: boolean;
   dashboardLayout: 'default' | 'compact' | 'detailed';
   notificationsEnabled: boolean;
@@ -16,6 +18,7 @@ export interface Preferences {
 interface PreferencesState extends Preferences {
   // Actions
   setLanguage: (language: Language) => void;
+  setMotionPreference: (preference: MotionPreference) => void;
   setSidebarCollapsed: (collapsed: boolean) => void;
   toggleSidebar: () => void;
   setDashboardLayout: (layout: Preferences['dashboardLayout']) => void;
@@ -29,6 +32,7 @@ interface PreferencesState extends Preferences {
 
 const defaultPreferences: Preferences = {
   language: 'en',
+  motionPreference: 'auto',
   sidebarCollapsed: false,
   dashboardLayout: 'default',
   notificationsEnabled: true,
@@ -43,6 +47,8 @@ export const usePreferencesStore = create<PreferencesState>()(
       ...defaultPreferences,
       
       setLanguage: (language) => set({ language }),
+
+      setMotionPreference: (motionPreference) => set({ motionPreference }),
       
       setSidebarCollapsed: (collapsed) => set({ sidebarCollapsed: collapsed }),
       

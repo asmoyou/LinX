@@ -16,6 +16,7 @@ import { useMemoryWorkbenchStore } from './memoryWorkbenchStore';
 import { useMissionStore } from './missionStore';
 import { useHealthStore } from './healthStore';
 import { usePreferencesStore } from './preferencesStore';
+import { usePrivacyStore } from './privacyStore';
 import { useNotificationStore } from './notificationStore';
 import { useScheduleStore } from './scheduleStore';
 
@@ -42,6 +43,7 @@ export { useScheduleStore } from './scheduleStore';
 export { useThemeStore } from './themeStore';
 export { usePreferencesStore } from './preferencesStore';
 export type { Language, Preferences } from './preferencesStore';
+export { usePrivacyStore } from './privacyStore';
 
 export { useNotificationStore } from './notificationStore';
 export type { Notification, NotificationType } from './notificationStore';
@@ -108,6 +110,7 @@ export const resetAllStores = () => {
   const missionStore = useMissionStore.getState();
   const healthStore = useHealthStore.getState();
   const preferencesStore = usePreferencesStore.getState();
+  const privacyStore = usePrivacyStore.getState();
   const notificationStore = useNotificationStore.getState();
   const scheduleStore = useScheduleStore.getState();
 
@@ -121,6 +124,7 @@ export const resetAllStores = () => {
   missionStore.reset();
   healthStore.reset();
   preferencesStore.reset();
+  privacyStore.reset();
   notificationStore.reset();
   scheduleStore.reset();
   // Note: Theme is intentionally not reset

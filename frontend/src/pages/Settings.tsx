@@ -1,12 +1,14 @@
-import React, { useState } from 'react';
+import React from 'react';
 import { useTranslation } from 'react-i18next';
-import { Settings as SettingsIcon, Cpu, KeyRound, SlidersHorizontal, Building2 } from 'lucide-react';
+import { useSearchParams } from 'react-router-dom';
+import { Settings as SettingsIcon, Cpu, KeyRound, SlidersHorizontal, Building2, Sparkles } from 'lucide-react';
 import { LLMSettings } from '../components/settings/LLMSettings';
 import { EnvVarsSettings } from '../components/settings/EnvVarsSettings';
 import { MissionPolicySettings } from '../components/settings/MissionPolicySettings';
 import { BusinessBaselineSettings } from '../components/settings/BusinessBaselineSettings';
+import { ExperienceSettings } from '../components/settings/ExperienceSettings';
 
-export type SettingsTab = 'baseline' | 'llm' | 'envVars' | 'missionPolicy';
+export type SettingsTab = 'baseline' | 'experience' | 'llm' | 'envVars' | 'missionPolicy';
 
 interface TabConfig {
   id: SettingsTab;
@@ -15,16 +17,42 @@ interface TabConfig {
   component: React.ReactNode;
 }
 
+const DEFAULT_TAB: SettingsTab = 'baseline';
+const TAB_PARAM = 'tab';
+const VALID_TABS: SettingsTab[] = ['baseline', 'experience', 'llm', 'envVars', 'missionPolicy'];
+
+const getSettingsTab = (value: string | null): SettingsTab =>
+  VALID_TABS.includes(value as SettingsTab) ? (value as SettingsTab) : DEFAULT_TAB;
+
 export const Settings: React.FC = () => {
   const { t } = useTranslation();
-  const [activeTab, setActiveTab] = useState<SettingsTab>('baseline');
+  const [searchParams, setSearchParams] = useSearchParams();
+  const activeTab = getSettingsTab(searchParams.get(TAB_PARAM));
+
+  const handleTabChange = (tab: SettingsTab) => {
+    const nextSearchParams = new URLSearchParams(searchParams);
+
+    if (tab === DEFAULT_TAB) {
+      nextSearchParams.delete(TAB_PARAM);
+    } else {
+      nextSearchParams.set(TAB_PARAM, tab);
+    }
+
+    setSearchParams(nextSearchParams, { replace: true });
+  };
 
   const tabs: TabConfig[] = [
     {
       id: 'baseline',
       label: t('settings.tabs.baseline', 'Business Baseline'),
       icon: <Building2 className="w-5 h-5" />,
-      component: <BusinessBaselineSettings onOpenTab={setActiveTab} />,
+      component: <BusinessBaselineSettings onOpenTab={handleTabChange} />,
+    },
+    {
+      id: 'experience',
+      label: t('settings.tabs.experience', 'UI Experience'),
+      icon: <Sparkles className="w-5 h-5" />,
+      component: <ExperienceSettings />,
     },
     {
       id: 'llm',
@@ -67,13 +95,18 @@ export const Settings: React.FC = () => {
 
       {/* Tabs */}
       <div className="border-b border-zinc-200 dark:border-zinc-700">
-        <nav className="flex space-x-8" aria-label="Tabs">
+        <nav
+          className="flex w-full flex-wrap gap-2 pb-2"
+          aria-label={t('settings.tabs.ariaLabel', 'Settings tabs')}
+        >
           {tabs.map((tab) => (
             <button
               key={tab.id}
-              onClick={() => setActiveTab(tab.id)}
+              type="button"
+              onClick={() => handleTabChange(tab.id)}
+              aria-current={activeTab === tab.id ? 'page' : undefined}
               className={`
-                flex items-center gap-2 py-4 px-1 border-b-2 font-medium text-sm transition-colors
+                flex shrink-0 items-center gap-2 whitespace-nowrap rounded-t-lg border-b-2 px-3 py-4 text-sm font-medium transition-colors
                 ${
                   activeTab === tab.id
                     ? 'border-emerald-500 text-emerald-600 dark:text-emerald-400'

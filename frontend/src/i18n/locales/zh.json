@@ -1404,9 +1404,43 @@
     "comingSoon": "即将推出...",
     "tabs": {
       "baseline": "平台基线",
+      "experience": "界面体验",
       "llm": "大模型提供商",
       "envVars": "环境变量",
-      "missionPolicy": "任务策略"
+      "missionPolicy": "任务策略",
+      "ariaLabel": "设置标签"
+    },
+    "experience": {
+      "title": "界面体验",
+      "subtitle": "配置默认动画策略、紧急停用开关和遥测采样率。",
+      "loading": "正在加载界面体验设置...",
+      "loadFailed": "加载平台界面体验设置失败。",
+      "liveTier": "当前档位",
+      "saved": "平台界面体验设置已保存。",
+      "saveFailed": "保存平台界面体验设置失败。",
+      "permissionHint": "只有管理员和经理角色可以管理平台动画策略。",
+      "defaultMotion": "默认动画策略",
+      "emergencyDisable": "紧急停用动画",
+      "emergencyDisableHint": "无需重新发布前端，即可强制整站进入关闭动画模式。",
+      "sampleRate": "遥测采样率",
+      "sampleRateHint": "请输入 0 到 1 之间的数值，例如 0.2 表示对 20% 的已登录会话采样。",
+      "save": "保存界面体验设置",
+      "option": {
+        "auto": "自动",
+        "autoDescription": "基于设备等级启动，并允许在运行时自动降级。",
+        "full": "完整",
+        "fullDescription": "在无障碍条件允许时保留最完整的动画效果。",
+        "reduced": "精简",
+        "reducedDescription": "优先使用轻量淡入和更低成本的视觉效果。",
+        "off": "关闭",
+        "offDescription": "关闭装饰性动画，让界面保持静态。"
+      },
+      "source": {
+        "platformDefault": "平台默认",
+        "userPreference": "用户偏好",
+        "systemReducedMotion": "系统减少动态效果",
+        "emergencyOverride": "紧急覆盖"
+      }
     },
     "llm": {
       "title": "大模型提供商",
@@ -1437,6 +1471,8 @@
       "title": "商业平台基线配置",
       "subtitle": "在扩大协作规模前，先完成核心平台配置检查。",
       "loading": "正在检查基线配置...",
+      "uiExperience": "界面动画策略",
+      "uiExperienceSummary": "默认 {{preference}} · 紧急开关 {{status}}",
       "llm": "大模型提供商",
       "llmSummary": "{{healthy}}/{{total}} 个健康，默认提供商已就绪",
       "secrets": "技能密钥",

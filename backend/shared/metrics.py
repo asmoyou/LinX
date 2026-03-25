@@ -378,6 +378,44 @@ quota_exceeded_total = Counter(
     registry=registry,
 )
 
+# Frontend motion telemetry
+frontend_motion_reports_total = Counter(
+    "frontend_motion_reports_total",
+    "Aggregated frontend motion telemetry reports",
+    ["route_group", "effective_tier", "device_class"],
+    registry=registry,
+)
+
+frontend_motion_downgrades_total = Counter(
+    "frontend_motion_downgrades_total",
+    "Total frontend motion downgrade events reported by clients",
+    ["route_group", "effective_tier"],
+    registry=registry,
+)
+
+frontend_motion_long_tasks_total = Counter(
+    "frontend_motion_long_tasks_total",
+    "Total frontend long tasks reported by clients",
+    ["route_group", "effective_tier"],
+    registry=registry,
+)
+
+frontend_motion_avg_fps = Histogram(
+    "frontend_motion_avg_fps",
+    "Average frontend FPS reported by clients",
+    ["route_group", "effective_tier"],
+    buckets=(10, 20, 30, 40, 50, 60, 90, 120),
+    registry=registry,
+)
+
+frontend_motion_p95_frame_ms = Histogram(
+    "frontend_motion_p95_frame_ms",
+    "P95 frontend frame time in milliseconds reported by clients",
+    ["route_group", "effective_tier"],
+    buckets=(8, 12, 16, 20, 28, 35, 45, 60, 90, 120),
+    registry=registry,
+)
+
 
 # ============================================================================
 # Metrics Collection Functions

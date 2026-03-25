@@ -1,5 +1,6 @@
 import apiClient from './client';
 import type { User } from '../stores/authStore';
+import type { UiExperienceSettings } from '@/motion';
 
 export interface LoginRequest {
   username: string;
@@ -29,6 +30,7 @@ export interface SetupStatusResponse {
   organization_name?: string | null;
   language?: string | null;
   timezone?: string | null;
+  ui_experience?: UiExperienceSettings;
 }
 
 export interface InitializePlatformRequest {

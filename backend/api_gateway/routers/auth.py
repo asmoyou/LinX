@@ -40,8 +40,10 @@ from shared.logging import get_logger
 from shared.platform_settings import (
     PLATFORM_BOOTSTRAP_SETTINGS_KEY,
     get_platform_setting,
+    get_ui_experience_settings,
     upsert_platform_setting,
 )
+from api_gateway.ui_experience import UiExperienceSettings
 
 logger = get_logger(__name__)
 
@@ -158,6 +160,7 @@ class SetupStatusResponse(BaseModel):
     organization_name: str | None = None
     language: str | None = None
     timezone: str | None = None
+    ui_experience: UiExperienceSettings = Field(default_factory=UiExperienceSettings)
 
 
 class InitializePlatformRequest(BaseModel):
@@ -266,6 +269,7 @@ def _build_setup_status(session) -> SetupStatusResponse:
         organization_name=bootstrap_settings.get("organization_name"),
         language=bootstrap_settings.get("language"),
         timezone=bootstrap_settings.get("timezone"),
+        ui_experience=UiExperienceSettings.from_mapping(get_ui_experience_settings(session)),
     )
 
 
