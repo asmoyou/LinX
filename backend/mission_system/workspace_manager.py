@@ -20,6 +20,7 @@ from uuid import UUID
 
 from object_storage.minio_client import get_minio_client
 from shared.datetime_utils import utcnow
+from shared.sandbox_images import resolve_mission_sandbox_image
 from virtualization.container_manager import (
     ContainerConfig,
     ContainerManager,
@@ -44,11 +45,7 @@ RUNTIME_ARTIFACT_NAME_PATTERNS = (
 RUNTIME_ARTIFACT_EXACT_NAMES = {
     "runtime_requirements.txt",
 }
-DEFAULT_MISSION_SANDBOX_IMAGE = (
-    os.getenv("LINX_MISSION_SANDBOX_IMAGE")
-    or os.getenv("LINX_SANDBOX_PYTHON_IMAGE")
-    or "python:3.11-bookworm"
-)
+DEFAULT_MISSION_SANDBOX_IMAGE = resolve_mission_sandbox_image()
 DEFAULT_SANDBOX_TMPFS_SIZE = os.getenv("LINX_SANDBOX_TMPFS_SIZE", "1G").strip() or "1G"
 
 

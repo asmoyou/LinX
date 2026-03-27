@@ -25,6 +25,14 @@ const PERSISTENT_IGNORED_ARTIFACT_NAMES = new Set([
   ".pytest_cache",
   ".mypy_cache",
 ]);
+const PERSISTENT_NON_DELIVERABLE_EXTENSIONS = new Set([
+  '.ttf',
+  '.otf',
+  '.ttc',
+  '.woff',
+  '.woff2',
+  '.eot',
+]);
 
 export type PersistentConversationPhase =
   | "thinking"
@@ -153,6 +161,20 @@ function isOutputWorkspacePath(path: string): boolean {
   return path === "/workspace/output" || path.startsWith("/workspace/output/");
 }
 
+function isDeliverableWorkspacePath(path: string): boolean {
+  const normalized = normalizeWorkspaceFilePath(path);
+  if (!normalized || !isOutputWorkspacePath(normalized) || normalized === '/workspace/output') {
+    return false;
+  }
+
+  const suffix = normalized.slice(normalized.lastIndexOf('.')).toLowerCase();
+  if (PERSISTENT_NON_DELIVERABLE_EXTENSIONS.has(suffix)) {
+    return false;
+  }
+
+  return true;
+}
+
 function isUserVisibleArtifactPath(path: string): boolean {
   const normalized = normalizeWorkspaceFilePath(path);
   if (!normalized) return false;
@@ -200,7 +222,11 @@ function addArtifactItem(
   path: string,
   name?: unknown,
 ): void {
-  if (!isUserVisibleArtifactPath(path) || target.has(path)) {
+  if (
+    !isUserVisibleArtifactPath(path) ||
+    !isDeliverableWorkspacePath(path) ||
+    target.has(path)
+  ) {
     return;
   }
 
@@ -212,7 +238,12 @@ function addArtifactItem(
 
 function normalizeArtifactEntry(rawEntry: any): PersistentConversationArtifactItem | null {
   const path = normalizeArtifactEntryPath(rawEntry);
-  if (!path || isDirectoryArtifactEntry(rawEntry) || !isUserVisibleArtifactPath(path)) {
+  if (
+    !path ||
+    isDirectoryArtifactEntry(rawEntry) ||
+    !isUserVisibleArtifactPath(path) ||
+    !isDeliverableWorkspacePath(path)
+  ) {
     return null;
   }
 

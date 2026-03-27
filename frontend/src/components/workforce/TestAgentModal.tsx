@@ -194,7 +194,15 @@ function extractWorkspacePathsFromText(text: string): string[] {
 }
 
 function extractRoundArtifacts(round: ConversationRound): ConversationRoundArtifact[] {
-  const paths = extractWorkspacePathsFromText(round.content || '');
+  const paths = extractWorkspacePathsFromText(round.content || '').filter(
+    (path) => {
+      if (!(path === '/workspace/output' || path.startsWith('/workspace/output/'))) {
+        return false;
+      }
+      const suffix = path.slice(path.lastIndexOf('.')).toLowerCase();
+      return !['.ttf', '.otf', '.ttc', '.woff', '.woff2', '.eot'].includes(suffix);
+    },
+  );
   return paths.sort((a, b) => a.localeCompare(b)).map((path) => ({ path, confirmed: true }));
 }
 

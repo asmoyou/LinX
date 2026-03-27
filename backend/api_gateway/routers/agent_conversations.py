@@ -320,8 +320,10 @@ def _serialize_message(message: AgentConversationMessage) -> AgentConversationMe
     if isinstance(content_json, dict):
         for key in ("artifacts", "artifactDelta", "artifact_delta"):
             if isinstance(content_json.get(key), list):
-                content_json[key] = agents_router._filter_workspace_entries_for_exposure(
-                    list(content_json.get(key) or [])
+                content_json[key] = agents_router._filter_workspace_entries_for_output_deliverables(
+                    agents_router._filter_workspace_entries_for_exposure(
+                        list(content_json.get(key) or [])
+                    )
                 )
     attachments = (
         list(message.attachments_json or []) if isinstance(message.attachments_json, list) else []

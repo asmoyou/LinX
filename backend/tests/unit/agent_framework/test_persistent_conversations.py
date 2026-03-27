@@ -246,6 +246,22 @@ def test_cleanup_orphaned_persistent_sandboxes_force_remove_ignores_age(
     assert recent.removed is True
 
 
+def test_persistent_runtime_uses_shared_runtime_image_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("LINX_PERSISTENT_CONVERSATION_SANDBOX_IMAGE", "")
+    monkeypatch.setenv("LINX_MISSION_SANDBOX_IMAGE", "")
+    monkeypatch.setenv("LINX_SANDBOX_PYTHON_IMAGE", "linx/sandbox-runtime:py312-office")
+
+    from importlib import reload
+    import agent_framework.persistent_conversations as persistent_conversations
+
+    reloaded = reload(persistent_conversations)
+
+    assert (
+        reloaded.DEFAULT_PERSISTENT_CONVERSATION_SANDBOX_IMAGE
+        == "linx/sandbox-runtime:py312-office"
+    )
+
+
 @pytest.mark.asyncio
 async def test_persistent_runtime_creation_fails_closed_when_sandbox_required(
     monkeypatch: pytest.MonkeyPatch,

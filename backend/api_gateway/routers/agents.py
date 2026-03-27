@@ -875,6 +875,14 @@ _WORKSPACE_INTERNAL_NAME_PATTERNS = (
     re.compile(r"^code(?:_[0-9a-f]{8})?\.(?:py|sh|js|ts|tsx|jsx|bash|zsh|txt)$", re.IGNORECASE),
     re.compile(r"^requirements(?:\.[a-z0-9_-]+)?\.txt$", re.IGNORECASE),
 )
+_WORKSPACE_NON_DELIVERABLE_EXTENSIONS = {
+    ".ttf",
+    ".otf",
+    ".ttc",
+    ".woff",
+    ".woff2",
+    ".eot",
+}
 
 
 def _resolve_safe_workspace_path(workdir: Path, requested_path: str = "") -> Tuple[Path, str]:
@@ -926,6 +934,37 @@ def _filter_workspace_entries_for_exposure(entries: List[Dict[str, Any]]) -> Lis
         if not isinstance(entry, dict):
             continue
         if _is_internal_workspace_path(entry.get("path")):
+            continue
+        filtered.append(entry)
+    return filtered
+
+
+def _is_output_workspace_path(value: Any) -> bool:
+    normalized = _normalize_workspace_relative_path(value)
+    return normalized == "output" or normalized.startswith("output/")
+
+
+def _is_output_deliverable_workspace_path(value: Any) -> bool:
+    normalized = _normalize_workspace_relative_path(value)
+    if not normalized or not _is_output_workspace_path(normalized) or normalized == "output":
+        return False
+
+    suffix = Path(normalized).suffix.lower()
+    if suffix in _WORKSPACE_NON_DELIVERABLE_EXTENSIONS:
+        return False
+    return True
+
+
+def _filter_workspace_entries_for_output_deliverables(
+    entries: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    filtered: List[Dict[str, Any]] = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        if bool(entry.get("is_directory") or entry.get("is_dir")):
+            continue
+        if not _is_output_deliverable_workspace_path(entry.get("path")):
             continue
         filtered.append(entry)
     return filtered

@@ -21,12 +21,16 @@ from database.connection import get_db_session
 from database.models import AgentConversation, AgentConversationSnapshot
 from object_storage.minio_client import get_minio_client
 from shared.config import get_config
+from shared.sandbox_images import resolve_persistent_conversation_sandbox_image
 from shared.secret_crypto import sha256_text
 
 logger = logging.getLogger(__name__)
 
 _PERSISTENT_CONVERSATION_SANDBOX_SCOPE = "persistent_conversation"
 _PERSISTENT_CONVERSATION_CONTAINER_PREFIX = "conversation-"
+DEFAULT_PERSISTENT_CONVERSATION_SANDBOX_IMAGE = (
+    resolve_persistent_conversation_sandbox_image()
+)
 
 _WORKSPACE_INLINE_PREVIEW_EXTENSIONS = {
     ".txt",
@@ -680,7 +684,7 @@ class PersistentConversationRuntimeService:
                 agent_id=agent_id,
                 name=container_name,
                 sandbox_type=container_manager.default_sandbox,
-                image="python:3.11-bookworm",
+                image=DEFAULT_PERSISTENT_CONVERSATION_SANDBOX_IMAGE,
                 read_only_root=False,
                 tmpfs_mounts={"/tmp": "size=1G,mode=1777"},
                 volume_mounts={str(workdir): "/workspace"},

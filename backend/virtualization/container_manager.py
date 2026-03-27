@@ -22,14 +22,13 @@ from uuid import UUID, uuid4
 import docker
 from docker.errors import DockerException, NotFound
 
+from shared.sandbox_images import resolve_shared_sandbox_image
 from shared.datetime_utils import utcnow
 from virtualization.resource_limits import ResourceLimits, ResourceUsage, get_default_limits
 from virtualization.sandbox_selector import SandboxType, get_sandbox_selector
 
 logger = logging.getLogger(__name__)
-DEFAULT_SANDBOX_PYTHON_IMAGE = (
-    os.getenv("LINX_SANDBOX_PYTHON_IMAGE", "python:3.11-bookworm").strip() or "python:3.11-bookworm"
-)
+DEFAULT_SANDBOX_PYTHON_IMAGE = resolve_shared_sandbox_image()
 
 
 class ContainerStatus(Enum):

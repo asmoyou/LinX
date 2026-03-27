@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from uuid import uuid4
 
+from shared.sandbox_images import resolve_shared_sandbox_image
 from shared.datetime_utils import utcnow
 from virtualization.code_validator import ValidationResult, get_code_validator
 from virtualization.container_manager import ContainerConfig, ContainerStatus, get_container_manager
@@ -31,9 +32,7 @@ from virtualization.sandbox_selector import SandboxType, get_sandbox_selector
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_SANDBOX_PYTHON_IMAGE = (
-    os.getenv("LINX_SANDBOX_PYTHON_IMAGE", "python:3.11-bookworm").strip() or "python:3.11-bookworm"
-)
+DEFAULT_SANDBOX_PYTHON_IMAGE = resolve_shared_sandbox_image()
 DEFAULT_SANDBOX_TMPFS_SIZE = os.getenv("LINX_SANDBOX_TMPFS_SIZE", "1G").strip() or "1G"
 DEFAULT_INTERNAL_PIP_CACHE_DIR = "/opt/linx_pip_cache"
 DEFAULT_INTERNAL_PYTHON_DEPS_DIR = "/opt/linx_python_deps"

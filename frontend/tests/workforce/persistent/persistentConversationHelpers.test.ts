@@ -103,6 +103,54 @@ describe('persistentConversationHelpers', () => {
     expect(derivePersistentArtifacts(message)).toEqual([]);
   });
 
+  it('only surfaces output deliverables, not downloaded font files or root artifacts', () => {
+    const message: ConversationMessage = {
+      ...baseMessage,
+      contentText: '已生成 /workspace/output/final.md',
+      contentJson: {
+        artifactDelta: [
+          {
+            path: 'SourceHanSansSC-Regular.otf',
+            name: 'SourceHanSansSC-Regular.otf',
+          },
+          {
+            path: 'tlwg-miner.ttf',
+            name: 'tlwg-miner.ttf',
+          },
+          {
+            path: 'output/tlwgmono.ttf',
+            name: 'tlwgmono.ttf',
+          },
+          {
+            path: 'output/final.md',
+            name: 'final.md',
+          },
+        ],
+        artifacts: [
+          {
+            path: 'SourceHanSansSC-Regular.otf',
+            name: 'SourceHanSansSC-Regular.otf',
+          },
+          {
+            path: 'output/final.md',
+            name: 'final.md',
+          },
+          {
+            path: 'output/final.pdf',
+            name: 'final.pdf',
+          },
+        ],
+      },
+    };
+
+    expect(derivePersistentArtifacts(message)).toEqual([
+      {
+        path: '/workspace/output/final.md',
+        name: 'final.md',
+      },
+    ]);
+  });
+
   it('derives richer one-line process descriptors for retrieval and tool chunks', () => {
     expect(
       derivePersistentProcessDescriptor({

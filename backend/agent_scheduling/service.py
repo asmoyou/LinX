@@ -1115,15 +1115,18 @@ async def _deliver_to_feishu_if_needed(
 
     from api_gateway.routers.integrations import (
         _build_feishu_reply_text,
+        _select_feishu_deliverable_artifacts,
         _send_feishu_markdown_card_message,
     )
+
+    pending_artifacts = _select_feishu_deliverable_artifacts(result.get("artifact_delta") or [])
 
     reply_text = _build_feishu_reply_text(
         agent=schedule.agent,
         conversation=conversation,
         output_text=str(result.get("output") or ""),
         delivered_artifacts=[],
-        pending_artifacts=list(result.get("artifact_delta") or []),
+        pending_artifacts=pending_artifacts,
         base_url=None,
     )
     await asyncio.to_thread(

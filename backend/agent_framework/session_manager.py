@@ -27,13 +27,11 @@ from typing import Dict, Optional
 from uuid import UUID, uuid4
 
 from agent_framework.sandbox_policy import allow_host_execution_fallback
+from shared.sandbox_images import resolve_shared_sandbox_image
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_SESSION_SANDBOX_IMAGE = (
-    os.getenv("LINX_SANDBOX_PYTHON_IMAGE", "python:3.11-bookworm").strip()
-    or "python:3.11-bookworm"
-)
+DEFAULT_SESSION_SANDBOX_IMAGE = resolve_shared_sandbox_image()
 DEFAULT_SANDBOX_TMPFS_SIZE = (
     os.getenv("LINX_SANDBOX_TMPFS_SIZE", "1G").strip() or "1G"
 )
