@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from uuid import uuid4
 
 from api_gateway.routers.agent_conversations import (
+    _build_execution_cancelled_reply,
     _build_execution_failure_reply,
     _build_runtime_chunk,
     _is_conversation_execution_active,
@@ -232,3 +233,15 @@ async def test_release_agent_conversation_runtime_skips_active_execution(monkeyp
 
     assert response.success is True
     assert released == []
+
+
+
+def test_build_execution_cancelled_reply_preserves_reason_and_recovery_hint() -> None:
+    reply = _build_execution_cancelled_reply(
+        "client stream cancelled",
+        partial_output="partial draft",
+    )
+
+    assert "任务已中断" in reply
+    assert "客户端连接已中断" in reply
+    assert "已保留你的输入" in reply

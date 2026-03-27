@@ -369,6 +369,18 @@ def _build_execution_failure_reply(error_text: Any, *, partial_output: str = "")
         )
     return f"任务未完成。最后一次执行失败：{summary}"
 
+def _build_execution_cancelled_reply(reason_text: Any, *, partial_output: str = "") -> str:
+    summary = _summarize_conversation_execution_error(reason_text)
+    if summary == "client stream cancelled":
+        summary = "客户端连接已中断，当前回合被取消"
+    if str(partial_output or "").strip():
+        return (
+            f"任务已中断：{summary}\n\n"
+            "已保留你的输入和当前工作区内容，可以直接继续提问或重试。"
+        )
+    return f"任务已中断：{summary}"
+
+
 def _serialize_history_summary(
     summary: AgentConversationHistorySummary,
 ) -> AgentConversationHistorySummaryResponse:
@@ -1776,16 +1788,45 @@ async def execute_persistent_conversation_turn(
                     break
                 continue
     except asyncio.CancelledError:
+        cancellation_reason = "client stream cancelled"
         if hasattr(agent, "request_cancellation"):
             try:
-                agent.request_cancellation("client stream cancelled")
+                agent.request_cancellation(cancellation_reason)
             except Exception as cancel_error:
                 logger.warning(
                     "Failed to signal persistent conversation cancellation: %s",
                     cancel_error,
                     extra={"conversation_id": str(conversation.conversation_id)},
                 )
-        cleanup_incomplete_turn()
+        artifact_entries = agents_router._list_session_workspace_entries(
+            runtime.workdir,
+            recursive=True,
+        )
+        artifact_delta_entries = _diff_workspace_entries(baseline_artifact_entries, artifact_entries)
+        if has_round_activity(current_round_data):
+            persisted_rounds.append(build_round_snapshot(current_round_data, current_round_number))
+        cancellation_partial_output = str(segment_response[0] or "").strip()
+        assistant_message_row = _persist_message(
+            conversation_id=conversation.conversation_id,
+            role="assistant",
+            content_text=_build_execution_cancelled_reply(
+                cancellation_reason,
+                partial_output=cancellation_partial_output,
+            ),
+            content_json={
+                "executionStatus": "cancelled",
+                "errorSummary": _summarize_conversation_execution_error(cancellation_reason),
+                "hasPartialOutput": bool(cancellation_partial_output),
+                "stats": current_round_data.get("stats") or None,
+                "rounds": persisted_rounds,
+                "artifacts": artifact_entries,
+                "artifactDelta": artifact_delta_entries,
+                "scheduleEvents": list(created_schedule_events[0] or []),
+            },
+            attachments=None,
+            source=source,
+        )
+        cleanup_incomplete_turn(remove_input_message=False)
         raise
     finally:
         await asyncio.to_thread(exec_thread.join, 5)
