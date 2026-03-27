@@ -58,6 +58,8 @@ from agent_framework.persistent_conversations import (
 )
 from agent_framework.runtime_policy import (
     ExecutionProfile,
+    RuntimePolicy,
+    get_runtime_policy_registry,
     is_agent_test_chat_unified_runtime_enabled,
 )
 from agent_framework.tools.manage_schedule_tool import (
@@ -84,6 +86,30 @@ from shared.secret_crypto import encrypt_text
 
 logger = get_logger(__name__)
 router = APIRouter()
+_ACTIVE_CONVERSATION_EXECUTIONS: dict[str, int] = {}
+_ACTIVE_CONVERSATION_EXECUTIONS_LOCK = threading.Lock()
+
+
+def _mark_conversation_execution_active(conversation_id: UUID) -> None:
+    key = str(conversation_id)
+    with _ACTIVE_CONVERSATION_EXECUTIONS_LOCK:
+        _ACTIVE_CONVERSATION_EXECUTIONS[key] = _ACTIVE_CONVERSATION_EXECUTIONS.get(key, 0) + 1
+
+
+def _mark_conversation_execution_inactive(conversation_id: UUID) -> None:
+    key = str(conversation_id)
+    with _ACTIVE_CONVERSATION_EXECUTIONS_LOCK:
+        remaining = int(_ACTIVE_CONVERSATION_EXECUTIONS.get(key, 0)) - 1
+        if remaining > 0:
+            _ACTIVE_CONVERSATION_EXECUTIONS[key] = remaining
+        else:
+            _ACTIVE_CONVERSATION_EXECUTIONS.pop(key, None)
+
+
+def _is_conversation_execution_active(conversation_id: UUID | str) -> bool:
+    key = str(conversation_id)
+    with _ACTIVE_CONVERSATION_EXECUTIONS_LOCK:
+        return int(_ACTIVE_CONVERSATION_EXECUTIONS.get(key, 0)) > 0
 
 
 ConversationChunkCallback = Callable[[Dict[str, Any]], Awaitable[None] | None]
@@ -291,6 +317,12 @@ def _serialize_message(message: AgentConversationMessage) -> AgentConversationMe
     content_json = (
         dict(message.content_json or {}) if isinstance(message.content_json, dict) else None
     )
+    if isinstance(content_json, dict):
+        for key in ("artifacts", "artifactDelta", "artifact_delta"):
+            if isinstance(content_json.get(key), list):
+                content_json[key] = agents_router._filter_workspace_entries_for_exposure(
+                    list(content_json.get(key) or [])
+                )
     attachments = (
         list(message.attachments_json or []) if isinstance(message.attachments_json, list) else []
     )
@@ -306,6 +338,36 @@ def _serialize_message(message: AgentConversationMessage) -> AgentConversationMe
         createdAt=message.created_at,
     )
 
+
+def _summarize_conversation_execution_error(value: Any, *, max_chars: int = 240) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return "Unknown execution error"
+
+    candidate = raw
+    if "\nError:\n" in raw:
+        candidate = raw.rsplit("\nError:\n", 1)[-1].strip() or raw
+    elif "Traceback" in raw:
+        lines = [line.strip() for line in raw.splitlines() if line.strip()]
+        if lines:
+            candidate = lines[-1]
+
+    normalized = " ".join(candidate.split()).strip()
+    if not normalized:
+        normalized = "Unknown execution error"
+    if len(normalized) <= max_chars:
+        return normalized
+    return f"{normalized[: max_chars - 1].rstrip()}…"
+
+
+def _build_execution_failure_reply(error_text: Any, *, partial_output: str = "") -> str:
+    summary = _summarize_conversation_execution_error(error_text)
+    if str(partial_output or "").strip():
+        return (
+            f"任务未完成。最后一次执行失败：{summary}\n\n"
+            "已生成部分中间结果，但未能完成最终回复或文件交付。"
+        )
+    return f"任务未完成。最后一次执行失败：{summary}"
 
 def _serialize_history_summary(
     summary: AgentConversationHistorySummary,
@@ -1066,6 +1128,18 @@ def _conversation_context_origin_surface(
     return "feishu" if _message_source_label(source) == "feishu" else "persistent_chat"
 
 
+def _resolve_conversation_runtime_policy(source: str) -> RuntimePolicy | None:
+    if _message_source_label(source) != "feishu":
+        return None
+
+    # Feishu conversations frequently ask for actual file delivery. Use strict guarding
+    # so the agent keeps working until the requested file is durably produced.
+    return get_runtime_policy_registry().resolve(
+        ExecutionProfile.DEBUG_CHAT,
+        overrides={"file_delivery_guard_mode": "strict"},
+    )
+
+
 def _build_runtime_chunk(
     runtime: Any,
     *,
@@ -1336,6 +1410,7 @@ async def execute_persistent_conversation_turn(
             remove_input_message=remove_input_message,
         )
 
+    _mark_conversation_execution_active(conversation.conversation_id)
     try:
         from agent_framework.conversation_workspace_decay import (
             ConversationWorkspaceLimitExceeded,
@@ -1516,6 +1591,7 @@ async def execute_persistent_conversation_turn(
     persisted_rounds: List[Dict[str, Any]] = []
     current_round_data = create_empty_round_data()
     current_round_number = 1
+    runtime_policy_override = _resolve_conversation_runtime_policy(source)
 
     def stream_callback(token_data):
         token_queue.put(token_data)
@@ -1571,6 +1647,7 @@ async def execute_persistent_conversation_turn(
                     run_exec_context,
                     conversation_history=history or None,
                     execution_profile=ExecutionProfile.DEBUG_CHAT,
+                    runtime_policy=runtime_policy_override,
                     stream_callback=stream_callback,
                     session_workdir=runtime.workdir,
                     container_id=runtime.sandbox_id,
@@ -1582,6 +1659,7 @@ async def execute_persistent_conversation_turn(
                     task_description=user_message,
                     context=run_context,
                     conversation_history=history or None,
+                    runtime_policy=runtime_policy_override,
                     stream_callback=stream_callback,
                     session_workdir=runtime.workdir,
                     container_id=runtime.sandbox_id,
@@ -1716,8 +1794,40 @@ async def execute_persistent_conversation_turn(
                 "Persistent conversation execution thread still running after cancellation",
                 extra={"conversation_id": str(conversation.conversation_id)},
             )
+        _mark_conversation_execution_inactive(conversation.conversation_id)
 
     if error_holder[0]:
+        artifact_entries = agents_router._list_session_workspace_entries(
+            runtime.workdir,
+            recursive=True,
+        )
+        artifact_delta_entries = _diff_workspace_entries(baseline_artifact_entries, artifact_entries)
+        if has_round_activity(current_round_data):
+            persisted_rounds.append(build_round_snapshot(current_round_data, current_round_number))
+
+        failure_partial_output = str(segment_response[0] or "").strip()
+        failure_summary = _summarize_conversation_execution_error(error_holder[0])
+        failure_text = _build_execution_failure_reply(
+            error_holder[0],
+            partial_output=failure_partial_output,
+        )
+        assistant_message_row = _persist_message(
+            conversation_id=conversation.conversation_id,
+            role="assistant",
+            content_text=failure_text,
+            content_json={
+                "executionStatus": "failed",
+                "errorSummary": failure_summary,
+                "hasPartialOutput": bool(failure_partial_output),
+                "stats": current_round_data.get("stats") or None,
+                "rounds": persisted_rounds,
+                "artifacts": artifact_entries,
+                "artifactDelta": artifact_delta_entries,
+                "scheduleEvents": list(created_schedule_events[0] or []),
+            },
+            attachments=None,
+            source=source,
+        )
         cleanup_incomplete_turn(remove_input_message=False)
         await _emit_chunk(chunk_callback, {"type": "error", "content": f"Error: {error_holder[0]}"})
         raise RuntimeError(error_holder[0])
@@ -2199,18 +2309,29 @@ async def release_agent_conversation_runtime(
     current_user: CurrentUser = Depends(get_current_user),
 ):
     agents_router._get_accessible_agent_or_raise(agent_id, current_user, access_type="read")
+    conversation_uuid = _parse_conversation_uuid(conversation_id)
     with get_db_session() as session:
         row = (
             session.query(AgentConversation.conversation_id)
-            .filter(AgentConversation.conversation_id == _parse_conversation_uuid(conversation_id))
+            .filter(AgentConversation.conversation_id == conversation_uuid)
             .filter(AgentConversation.agent_id == UUID(agent_id))
             .filter(AgentConversation.owner_user_id == UUID(current_user.user_id))
             .first()
         )
         if row is None:
             return ReleaseConversationRuntimeResponse(success=True)
+    if _is_conversation_execution_active(conversation_uuid):
+        logger.warning(
+            "Skipped persistent runtime release during active execution",
+            extra={
+                "conversation_id": str(conversation_uuid),
+                "agent_id": str(agent_id),
+                "user_id": str(current_user.user_id),
+            },
+        )
+        return ReleaseConversationRuntimeResponse(success=True)
     await get_persistent_conversation_runtime_service().release_runtime(
-        UUID(conversation_id),
+        conversation_uuid,
         reason="user",
     )
     return ReleaseConversationRuntimeResponse(success=True)
@@ -2336,6 +2457,8 @@ async def download_conversation_workspace_file(
         conversation=conversation
     )
     file_path, relative_path = agents_router._resolve_safe_workspace_path(runtime.workdir, path)
+    if agents_router._is_internal_workspace_path(relative_path):
+        raise HTTPException(status_code=404, detail="Workspace file not found")
     if not file_path.exists() or not file_path.is_file():
         raise HTTPException(status_code=404, detail="Workspace file not found")
     filename = file_path.name or (relative_path.rsplit("/", 1)[-1] if relative_path else "download")

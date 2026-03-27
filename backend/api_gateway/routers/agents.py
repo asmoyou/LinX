@@ -865,6 +865,16 @@ _WORKSPACE_INLINE_PREVIEW_EXTENSIONS = {
     ".sql",
     ".log",
 }
+_WORKSPACE_INTERNAL_EXACT_NAMES = {
+    "context.json",
+    "runtime_requirements.txt",
+    "task_plan.json",
+    "team_blueprint.json",
+}
+_WORKSPACE_INTERNAL_NAME_PATTERNS = (
+    re.compile(r"^code(?:_[0-9a-f]{8})?\.(?:py|sh|js|ts|tsx|jsx|bash|zsh|txt)$", re.IGNORECASE),
+    re.compile(r"^requirements(?:\.[a-z0-9_-]+)?\.txt$", re.IGNORECASE),
+)
 
 
 def _resolve_safe_workspace_path(workdir: Path, requested_path: str = "") -> Tuple[Path, str]:
@@ -885,10 +895,48 @@ def _resolve_safe_workspace_path(workdir: Path, requested_path: str = "") -> Tup
     return candidate, relative
 
 
+def _normalize_workspace_relative_path(value: Any) -> str:
+    normalized = str(value or "").replace("\\", "/").strip().lstrip("/")
+    if normalized.startswith("workspace/"):
+        normalized = normalized[len("workspace/") :]
+    return normalized.strip("/")
+
+
+def _is_internal_workspace_path(value: Any) -> bool:
+    normalized = _normalize_workspace_relative_path(value)
+    if not normalized:
+        return False
+
+    parts = [part for part in normalized.split("/") if part]
+    if not parts:
+        return False
+
+    if any(part.startswith(".") for part in parts):
+        return True
+
+    basename = parts[-1].lower()
+    if basename in _WORKSPACE_INTERNAL_EXACT_NAMES:
+        return True
+    return any(pattern.match(basename) for pattern in _WORKSPACE_INTERNAL_NAME_PATTERNS)
+
+
+def _filter_workspace_entries_for_exposure(entries: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    filtered: List[Dict[str, Any]] = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        if _is_internal_workspace_path(entry.get("path")):
+            continue
+        filtered.append(entry)
+    return filtered
+
+
 def _list_session_workspace_entries(
     workdir: Path,
     path: str = "",
     recursive: bool = False,
+    *,
+    include_internal: bool = False,
 ) -> List[Dict[str, Any]]:
     """List files/directories from a session workspace."""
     target, _ = _resolve_safe_workspace_path(workdir, path)
@@ -933,6 +981,9 @@ def _list_session_workspace_entries(
                 ),
             }
         )
+
+    if not include_internal:
+        entries = _filter_workspace_entries_for_exposure(entries)
 
     entries.sort(key=lambda e: (e["path"].count("/"), e["path"]))
     return entries
@@ -4943,6 +4994,8 @@ async def download_agent_session_workspace_file(
             )
 
         file_path, relative_path = _resolve_safe_workspace_path(session.workdir, path)
+        if _is_internal_workspace_path(relative_path):
+            raise HTTPException(status_code=404, detail="Workspace file not found")
         if not file_path.exists() or not file_path.is_file():
             raise HTTPException(status_code=404, detail="Workspace file not found")
 

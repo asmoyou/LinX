@@ -26,9 +26,11 @@ from api_gateway.routers.agents import (
     _extract_skill_candidates,
     _extract_token_usage_from_metadata,
     _extract_user_preference_signals,
+    _filter_workspace_entries_for_exposure,
     _get_cached_agent_status_value,
     _infer_attachment_bucket_type,
     _infer_attachment_type,
+    _is_internal_workspace_path,
     _list_session_workspace_entries,
     _materialize_attachment_files_to_workspace,
     _normalize_llm_agent_candidates,
@@ -355,6 +357,41 @@ def test_list_session_workspace_entries_reports_previewable_files(tmp_path: Path
     assert by_name["b.bin"]["previewable_inline"] is False
     assert by_name["a.txt"]["is_directory"] is False
     assert isinstance(by_name["a.txt"]["modified_at"], str)
+
+
+def test_list_session_workspace_entries_filters_internal_runtime_files(tmp_path: Path) -> None:
+    (tmp_path / "output").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "output" / "report.pdf").write_bytes(b"%PDF")
+    (tmp_path / "code.py").write_text("print('secret')", encoding="utf-8")
+    (tmp_path / "context.json").write_text('{"environment":{"API_KEY":"secret"}}', encoding="utf-8")
+    (tmp_path / ".linx_runtime" / "pip_cache").mkdir(parents=True, exist_ok=True)
+    (tmp_path / ".linx_runtime" / "pip_cache" / "cache.bin").write_bytes(b"cache")
+
+    entries = _list_session_workspace_entries(tmp_path, recursive=True)
+    paths = {item["path"] for item in entries}
+
+    assert "output/report.pdf" in paths
+    assert "code.py" not in paths
+    assert "context.json" not in paths
+    assert ".linx_runtime/pip_cache/cache.bin" not in paths
+
+
+def test_filter_workspace_entries_for_exposure_strips_internal_paths() -> None:
+    entries = [
+        {"path": "output/report.pdf"},
+        {"path": "code.py"},
+        {"path": "context.json"},
+        {"path": ".linx_runtime/pip_cache/cache.bin"},
+    ]
+
+    assert _filter_workspace_entries_for_exposure(entries) == [{"path": "output/report.pdf"}]
+
+
+def test_is_internal_workspace_path_flags_hidden_runtime_files() -> None:
+    assert _is_internal_workspace_path("code.py") is True
+    assert _is_internal_workspace_path("context.json") is True
+    assert _is_internal_workspace_path(".linx_runtime/pip_cache/cache.bin") is True
+    assert _is_internal_workspace_path("output/report.pdf") is False
 
 
 def test_build_download_content_disposition_handles_non_ascii_filename() -> None:

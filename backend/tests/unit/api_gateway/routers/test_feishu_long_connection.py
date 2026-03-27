@@ -843,9 +843,10 @@ def test_send_feishu_markdown_card_message_retries_with_flattened_tables_on_limi
     assert captured_markdowns[1] == "## 今日金价\n\n- 足金: 800 元/克\n- 金条: 760 元/克"
 
 
-def test_select_feishu_deliverable_artifacts_filters_runtime_and_directories() -> None:
+def test_select_feishu_deliverable_artifacts_keeps_only_top_level_output_files() -> None:
     artifacts = [
         {"path": "output/report.md", "is_directory": False},
+        {"path": "output/nested/final.pdf", "is_directory": False},
         {"path": ".linx_runtime/python_deps", "is_directory": True},
         {"path": ".linx_runtime/pip_cache/wheel.whl", "is_directory": False},
         {"path": "input/source.pdf", "is_directory": False},
@@ -856,7 +857,6 @@ def test_select_feishu_deliverable_artifacts_filters_runtime_and_directories() -
 
     assert filtered == [
         {"path": "output/report.md", "is_directory": False},
-        {"path": "shared/summary.pdf", "is_directory": False},
     ]
 
 
@@ -1094,6 +1094,38 @@ def test_select_feishu_explicitly_requested_artifacts_matches_unique_basename() 
     )
 
     assert matched == [{"path": "output/fuzhou-travel-guide.md", "is_directory": False}]
+
+
+def test_select_feishu_explicitly_requested_artifacts_allows_nested_or_process_files() -> None:
+    artifacts = [
+        {"path": "output/OpenClaw/final.pdf", "is_directory": False},
+        {"path": "shared/plan.txt", "is_directory": False},
+    ]
+
+    matched = _select_feishu_explicitly_requested_artifacts(
+        artifacts,
+        "请把 output/OpenClaw/final.pdf 和 shared/plan.txt 发给我",
+    )
+
+    assert matched == [
+        {"path": "output/OpenClaw/final.pdf", "is_directory": False},
+        {"path": "shared/plan.txt", "is_directory": False},
+    ]
+
+
+def test_select_feishu_explicitly_requested_artifacts_blocks_internal_runtime_files() -> None:
+    artifacts = [
+        {"path": "output/report.pdf", "is_directory": False},
+        {"path": "code.py", "is_directory": False},
+        {"path": "context.json", "is_directory": False},
+    ]
+
+    matched = _select_feishu_explicitly_requested_artifacts(
+        artifacts,
+        "请把 output/report.pdf、code.py、context.json 发给我",
+    )
+
+    assert matched == [{"path": "output/report.pdf", "is_directory": False}]
 
 
 def test_looks_like_feishu_file_send_request_detects_intent() -> None:

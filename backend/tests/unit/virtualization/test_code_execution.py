@@ -6,6 +6,7 @@ References:
 """
 
 import asyncio
+import json
 from unittest.mock import MagicMock
 
 import pytest
@@ -277,6 +278,41 @@ class TestCodeExecutionSandbox:
         config = kwargs["config"]
         assert config.network_disabled is False
         assert config.network_mode == "bridge"
+
+    @pytest.mark.asyncio
+    async def test_inject_code_uses_hidden_runtime_dir_and_redacts_environment(self):
+        sandbox = CodeExecutionSandbox()
+        sandbox.container_manager = MagicMock()
+
+        code_path, execution_workdir = await sandbox._inject_code(
+            sandbox_id="sandbox-1",
+            code="print('ok')",
+            context={
+                "agent_id": "agent-1",
+                "user_id": "user-1",
+                "workspace_root": "/tmp/session",
+                "network_access": True,
+                "existing_sandbox_id": "sandbox-1",
+                "environment": {"API_KEY": "secret-value"},
+            },
+            language="python",
+        )
+
+        assert code_path == "/workspace/.linx_runtime/code_execution/code.py"
+        assert execution_workdir == "/workspace"
+
+        writes = sandbox.container_manager.write_file_to_container.call_args_list
+        assert len(writes) == 2
+        assert writes[0].kwargs["file_path"] == "/workspace/.linx_runtime/code_execution/code.py"
+        assert writes[1].kwargs["file_path"] == "/workspace/.linx_runtime/code_execution/context.json"
+
+        serialized_context = json.loads(writes[1].kwargs["content"])
+        assert serialized_context == {
+            "agent_id": "agent-1",
+            "user_id": "user-1",
+            "workspace_root": "/tmp/session",
+            "network_access": True,
+        }
 
     @pytest.mark.asyncio
     async def test_create_sandbox_uses_dependency_base_image(self):

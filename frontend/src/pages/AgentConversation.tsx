@@ -421,6 +421,7 @@ export const AgentConversation: React.FC = () => {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
+  const isSendingRef = useRef(false);
   const attachedFilesRef = useRef<AttachedFile[]>([]);
   const activeConversationRef = useRef<{
     agentId?: string;
@@ -701,6 +702,10 @@ export const AgentConversation: React.FC = () => {
   }, [attachedFiles]);
 
   useEffect(() => {
+    isSendingRef.current = isSending;
+  }, [isSending]);
+
+  useEffect(() => {
     conversationListStateRef.current = conversationListState;
   }, [conversationListState]);
 
@@ -724,6 +729,9 @@ export const AgentConversation: React.FC = () => {
 
   useEffect(() => {
     const releaseRuntime = () => {
+      if (isSendingRef.current || abortControllerRef.current) {
+        return;
+      }
       const currentAgentId = activeConversationRef.current.agentId;
       const currentConversationId =
         activeConversationRef.current.conversationId;
@@ -738,18 +746,11 @@ export const AgentConversation: React.FC = () => {
     const handlePageHide = () => {
       releaseRuntime();
     };
-    const handleVisibilityChange = () => {
-      if (document.visibilityState === "hidden") {
-        releaseRuntime();
-      }
-    };
 
     window.addEventListener("pagehide", handlePageHide);
-    document.addEventListener("visibilitychange", handleVisibilityChange);
 
     return () => {
       window.removeEventListener("pagehide", handlePageHide);
-      document.removeEventListener("visibilitychange", handleVisibilityChange);
       releaseRuntime();
     };
   }, []);

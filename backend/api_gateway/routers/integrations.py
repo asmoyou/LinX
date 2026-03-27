@@ -1119,7 +1119,15 @@ def _conversation_already_processed(
 
 
 def _is_feishu_deliverable_artifact(entry: dict[str, Any]) -> bool:
-    return _is_feishu_sendable_artifact(entry, allow_input=False)
+    if not _is_feishu_sendable_artifact(entry, allow_input=False):
+        return False
+
+    path = str(entry.get("path") or "").strip().strip("/")
+    parts = [part for part in path.split("/") if part]
+
+    # Default auto-delivery should only send direct final files from /workspace/output.
+    # Nested output trees often contain process artifacts (repos, temp assets, exports).
+    return len(parts) == 2 and parts[0] == "output"
 
 
 def _is_feishu_sendable_artifact(
@@ -1132,6 +1140,8 @@ def _is_feishu_sendable_artifact(
 
     path = str(entry.get("path") or "").strip().strip("/")
     if not path:
+        return False
+    if agents_router._is_internal_workspace_path(path):
         return False
 
     parts = [part for part in path.split("/") if part]

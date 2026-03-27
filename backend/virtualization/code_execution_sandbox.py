@@ -38,6 +38,8 @@ DEFAULT_SANDBOX_TMPFS_SIZE = os.getenv("LINX_SANDBOX_TMPFS_SIZE", "1G").strip() 
 DEFAULT_INTERNAL_PIP_CACHE_DIR = "/opt/linx_pip_cache"
 DEFAULT_INTERNAL_PYTHON_DEPS_DIR = "/opt/linx_python_deps"
 DEFAULT_INTERNAL_DEP_WORKDIR = "/opt/linx_runtime"
+DEFAULT_INTERNAL_CODE_WORKDIR = "/workspace/.linx_runtime/code_execution"
+DEFAULT_TMP_CODE_WORKDIR = "/tmp/linx_code_execution"
 
 
 class ExecutionStatus(Enum):
@@ -110,6 +112,17 @@ class MemoryExceededException(Exception):
 
 class CodeExecutionSandbox:
     """Secure sandbox for executing agent-generated code."""
+
+    @staticmethod
+    def _build_serialized_context_snapshot(context: Dict[str, Any]) -> Dict[str, Any]:
+        """Persist only minimal, non-secret execution context for debugging."""
+        snapshot: Dict[str, Any] = {}
+        for key in ("agent_id", "user_id", "network_access", "workspace_root"):
+            value = context.get(key)
+            if value is None:
+                continue
+            snapshot[key] = value
+        return snapshot
 
     @staticmethod
     def _normalize_language(language: str) -> str:
@@ -855,14 +868,20 @@ class CodeExecutionSandbox:
         }
 
         ext = extensions.get(self._normalize_language(language), ".txt")
-        execution_workdir = "/workspace" if context.get("workspace_root") else "/tmp"
-        code_file = f"{execution_workdir}/code{ext}"
-        context_file = f"{execution_workdir}/context.json"
+        if context.get("workspace_root"):
+            code_workdir = DEFAULT_INTERNAL_CODE_WORKDIR
+            execution_workdir = "/workspace"
+        else:
+            code_workdir = DEFAULT_TMP_CODE_WORKDIR
+            execution_workdir = code_workdir
+
+        code_file = f"{code_workdir}/code{ext}"
+        context_file = f"{code_workdir}/context.json"
 
         try:
             self.container_manager.exec_in_container(
                 container_id=sandbox_id,
-                command=f"mkdir -p {execution_workdir}",
+                command=f"mkdir -p {code_workdir}",
             )
 
             # 1. Write code to container
@@ -876,7 +895,7 @@ class CodeExecutionSandbox:
             # 2. Write context as JSON
             import json
 
-            context_json = json.dumps(context, indent=2)
+            context_json = json.dumps(self._build_serialized_context_snapshot(context), indent=2)
             self.container_manager.write_file_to_container(
                 container_id=sandbox_id,
                 file_path=context_file,

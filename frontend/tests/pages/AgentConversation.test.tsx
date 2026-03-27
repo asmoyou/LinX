@@ -378,4 +378,74 @@ describe("AgentConversation", () => {
 
     await screen.findByText("Conversation 31");
   });
+
+  it("does not release runtime when the page becomes hidden", async () => {
+    agentsApi.getConversations.mockResolvedValue({
+      items: [],
+      total: 1,
+      hasMore: false,
+      nextCursor: null,
+    });
+    agentsApi.getConversationMessages.mockResolvedValue({
+      items: [],
+      total: 0,
+      historySummary: null,
+      compactedMessageCount: 0,
+      archivedSegmentCount: 0,
+      recentWindowSize: 40,
+      hasOlderLiveMessages: false,
+      olderCursor: null,
+    });
+
+    renderPage();
+    await screen.findAllByText("Deep link current");
+
+    Object.defineProperty(document, "visibilityState", {
+      configurable: true,
+      value: "hidden",
+    });
+    document.dispatchEvent(new Event("visibilitychange"));
+
+    expect(agentsApi.releaseConversationRuntime).not.toHaveBeenCalled();
+  });
+
+  it("does not release runtime while a message send is still in progress", async () => {
+    agentsApi.getConversations.mockResolvedValue({
+      items: [],
+      total: 1,
+      hasMore: false,
+      nextCursor: null,
+    });
+    agentsApi.getConversationMessages.mockResolvedValue({
+      items: [],
+      total: 0,
+      historySummary: null,
+      compactedMessageCount: 0,
+      archivedSegmentCount: 0,
+      recentWindowSize: 40,
+      hasOlderLiveMessages: false,
+      olderCursor: null,
+    });
+    agentsApi.sendConversationMessage.mockImplementation(
+      () => new Promise<void>(() => undefined),
+    );
+
+    const view = renderPage();
+    const textarea = await screen.findByPlaceholderText(
+      "Send a message to this agent",
+    );
+
+    fireEvent.change(textarea, { target: { value: "hello" } });
+    fireEvent.keyDown(textarea, { key: "Enter", code: "Enter" });
+
+    await waitFor(() => {
+      expect(agentsApi.sendConversationMessage).toHaveBeenCalled();
+    });
+    await screen.findByPlaceholderText("Thinking...");
+
+    view.unmount();
+
+    expect(agentsApi.releaseConversationRuntime).not.toHaveBeenCalled();
+  });
+
 });
