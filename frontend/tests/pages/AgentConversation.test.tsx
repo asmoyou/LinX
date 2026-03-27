@@ -54,8 +54,17 @@ vi.mock("@/components/workforce/CodeBlock", () => ({
 }));
 
 vi.mock("@/components/workforce/persistent/PersistentConversationAssistantMessage", () => ({
-  PersistentConversationAssistantMessage: ({ content }: { content: string }) => (
-    <div>{content}</div>
+  PersistentConversationAssistantMessage: ({
+    content,
+    errorText,
+  }: {
+    content: string;
+    errorText?: string | null;
+  }) => (
+    <div>
+      <div>{content}</div>
+      {errorText ? <div>{errorText}</div> : null}
+    </div>
   ),
 }));
 

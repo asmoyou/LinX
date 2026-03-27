@@ -1172,8 +1172,10 @@ export const AgentConversation: React.FC = () => {
           setMessageListState(nextMessageListState);
           setHistorySummary(messagesData.historySummary || null);
         }
+        return messagesData;
       } catch (syncError) {
         console.error("Failed to sync conversation state:", syncError);
+        return null;
       }
     },
     [agentId],
@@ -1911,7 +1913,11 @@ export const AgentConversation: React.FC = () => {
       }
     } finally {
       if (turnOutcome === "failed") {
-        commitFailedTurnToMessages();
+        const syncedMessages = await syncConversationState(targetConversationId);
+        const latestMessage = syncedMessages?.items?.[syncedMessages.items.length - 1];
+        if (!latestMessage || latestMessage.role !== "assistant") {
+          commitFailedTurnToMessages();
+        }
         resetStreamingState();
         setIsSending(false);
       } else if (turnOutcome !== "completed") {

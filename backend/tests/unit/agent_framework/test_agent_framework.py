@@ -27,6 +27,7 @@ from agent_framework.base_agent import (
     AgentStatus,
     BaseAgent,
     ConversationState,
+    ErrorRecord,
     ToolCall,
     ToolResult,
 )
@@ -1008,6 +1009,144 @@ class TestBaseAgent:
 
         assert feedback is not None
         assert feedback.error_type == "Execution Error"
+
+
+
+    def test_handle_execution_failures_redirects_shell_escape_to_bash(self):
+        config = AgentConfig(
+            agent_id=uuid4(),
+            name="Test Agent",
+            agent_type="test",
+            owner_user_id=uuid4(),
+            capabilities=[],
+        )
+        agent = BaseAgent(config=config)
+        state = ConversationState(round_number=1)
+        state.retry_counts["tool_code_execution"] = 1
+
+        feedback = agent._handle_execution_failures(
+            [
+                ToolResult(
+                    tool_name="code_execution",
+                    status="error",
+                    error=(
+                        "Code execution failed:\nSecurity validation failed: "
+                        "Dangerous pattern detected: Subprocess run (subprocess\\.run\\s*\\(), "
+                        "Dangerous operation: subprocess.run"
+                    ),
+                    error_type="execution_error",
+                    retry_count=1,
+                )
+            ],
+            state,
+        )
+
+        assert feedback is not None
+        assert feedback.expected_format == '{"tool": "bash", "command": "<shell_command>"}'
+        assert any("Use the bash tool" in suggestion for suggestion in feedback.suggestions)
+
+    def test_handle_execution_failures_environment_missing_prefers_install_then_retry(self):
+        config = AgentConfig(
+            agent_id=uuid4(),
+            name="Test Agent",
+            agent_type="test",
+            owner_user_id=uuid4(),
+            capabilities=[],
+        )
+        agent = BaseAgent(config=config)
+        state = ConversationState(round_number=1)
+        state.retry_counts["tool_code_execution"] = 1
+
+        feedback = agent._handle_execution_failures(
+            [
+                ToolResult(
+                    tool_name="code_execution",
+                    status="error",
+                    error="ModuleNotFoundError: No module named 'fpdf.font'",
+                    error_type="execution_error",
+                    retry_count=1,
+                )
+            ],
+            state,
+        )
+
+        assert feedback is not None
+        assert feedback.error_type == "Environment Error"
+        assert (
+            feedback.expected_format
+            == '{"tool": "<install_or_repair_step>", "...": "install_missing_dependency_then_retry"}'
+        )
+        assert any("Install missing runtime dependencies first" in suggestion for suggestion in feedback.suggestions)
+
+    def test_handle_execution_failures_path_missing_allows_small_correction(self):
+        config = AgentConfig(
+            agent_id=uuid4(),
+            name="Test Agent",
+            agent_type="test",
+            owner_user_id=uuid4(),
+            capabilities=[],
+        )
+        agent = BaseAgent(config=config)
+        state = ConversationState(round_number=1)
+        state.retry_counts["tool_bash"] = 1
+
+        feedback = agent._handle_execution_failures(
+            [
+                ToolResult(
+                    tool_name="bash",
+                    status="error",
+                    error="No such file or directory: /workspace/output/missing.pdf",
+                    error_type="execution_error",
+                    retry_count=1,
+                )
+            ],
+            state,
+        )
+
+        assert feedback is not None
+        assert feedback.error_type == "Missing Path Error"
+        assert feedback.expected_format == '{"tool": "<same_tool>", "...": "corrected_paths"}'
+        assert any("Re-check file paths" in suggestion for suggestion in feedback.suggestions)
+
+
+
+    def test_handle_execution_failures_repeated_blocker_escalates_strategy_change(self):
+        config = AgentConfig(
+            agent_id=uuid4(),
+            name="Test Agent",
+            agent_type="test",
+            owner_user_id=uuid4(),
+            capabilities=[],
+        )
+        agent = BaseAgent(config=config)
+        state = ConversationState(round_number=1)
+        state.retry_counts["tool_write_file"] = 2
+        state.errors.append(
+            ErrorRecord(
+                round_number=1,
+                error_type="execution_error",
+                error_message="write failed: disk full",
+                tool_name="write_file",
+            )
+        )
+
+        feedback = agent._handle_execution_failures(
+            [
+                ToolResult(
+                    tool_name="write_file",
+                    status="error",
+                    error="write failed: disk full",
+                    error_type="execution_error",
+                    retry_count=2,
+                )
+            ],
+            state,
+        )
+
+        assert feedback is not None
+        assert feedback.error_type == "Repeated Execution Error"
+        assert feedback.expected_format == '{"tool": "<different_tool_or_revised_plan>", "...": "changed_strategy"}'
+        assert any("same blocker has repeated" in suggestion for suggestion in feedback.suggestions)
 
     def test_recovery_bash_timeout_injected_for_single_input_tool(self):
         """Bash timeout cap should be applied without breaking single-input Tool invocation."""

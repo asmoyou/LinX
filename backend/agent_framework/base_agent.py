@@ -4102,8 +4102,8 @@ class BaseAgent:
             timeout_message_seconds = default_tool_timeout_seconds
 
             # Check retry count for this specific tool
-            retry_key = f"tool_{tool_name}"
-            retry_count = state.retry_counts.get(retry_key, 0)
+            retry_count = self._current_retry_count_for_tool(state, tool_name)
+            retry_key = self._build_tool_retry_key(tool_name)
 
             if tool is None:
                 available_tools = ", ".join(runtime_tool_registry.keys())
@@ -4227,7 +4227,7 @@ class BaseAgent:
                 )
 
                 # Reset retry count on success
-                state.retry_counts[retry_key] = 0
+                self._clear_tool_retry_counts(state, tool_name)
 
                 # Send success message
                 if stream_callback:
@@ -4270,7 +4270,12 @@ class BaseAgent:
                     )
                 )
 
-                state.retry_counts[retry_key] = retry_count + 1
+                validation_retry_key = self._build_tool_retry_key(
+                    tool_name,
+                    error_type="validation_error",
+                    error_message=error_msg,
+                )
+                state.retry_counts[validation_retry_key] = retry_count + 1
 
                 if stream_callback:
                     stream_callback((f"⚠️ **参数错误**: {error_msg}\n", "tool_error"))
@@ -4308,7 +4313,12 @@ class BaseAgent:
                 )
 
                 # Increment retry count
-                state.retry_counts[retry_key] = retry_count + 1
+                timeout_retry_key = self._build_tool_retry_key(
+                    tool_name,
+                    error_type="timeout",
+                    error_message=error_msg,
+                )
+                state.retry_counts[timeout_retry_key] = retry_count + 1
 
                 # Send error message
                 if stream_callback:
@@ -4351,7 +4361,12 @@ class BaseAgent:
                 )
 
                 # Increment retry count
-                state.retry_counts[retry_key] = retry_count + 1
+                execution_retry_key = self._build_tool_retry_key(
+                    tool_name,
+                    error_type="execution_error",
+                    error_message=error_msg,
+                )
+                state.retry_counts[execution_retry_key] = retry_count + 1
 
                 # Send error message
                 if stream_callback:
@@ -5192,8 +5207,15 @@ class BaseAgent:
 
                 # Send retry indicator to frontend
                 failed_tool = tool_results[0].tool_name
-                retry_key = f"tool_{failed_tool}"
-                retry_count = state.retry_counts.get(retry_key, 0)
+                retry_key = self._build_tool_retry_key(
+                    failed_tool,
+                    error_type=tool_results[0].error_type,
+                    error_message=tool_results[0].error,
+                )
+                retry_count = state.retry_counts.get(
+                    retry_key,
+                    self._current_retry_count_for_tool(state, failed_tool),
+                )
 
                 if stream_callback:
                     stream_callback(
@@ -5299,10 +5321,136 @@ class BaseAgent:
             },
         }
 
+    @staticmethod
+    def _is_shell_escape_blocked_execution_error(failed_result: ToolResult) -> bool:
+        raw_error = str(failed_result.error or "").lower()
+        if failed_result.tool_name != "code_execution":
+            return False
+        return (
+            "dangerous pattern detected: subprocess run" in raw_error
+            or "dangerous operation: subprocess.run" in raw_error
+            or "dangerous pattern detected: os system command execution" in raw_error
+            or "dangerous operation: os.system" in raw_error
+        )
+
+    @staticmethod
+    def _summarize_execution_error_for_recovery(error_message: str) -> str:
+        raw = str(error_message or "").strip()
+        if not raw:
+            return ""
+
+        candidate = raw
+        if "\nError:\n" in raw:
+            candidate = raw.rsplit("\nError:\n", 1)[-1].strip() or raw
+        elif "Traceback" in raw:
+            lines = [line.strip() for line in raw.splitlines() if line.strip()]
+            if lines:
+                candidate = lines[-1]
+
+        return " ".join(candidate.split()).strip().lower()[:240]
+
+    def _classify_execution_recovery_category(self, failed_result: ToolResult) -> str:
+        error_text = str(failed_result.error or "").lower()
+
+        if self._is_shell_escape_blocked_execution_error(failed_result):
+            return "security_policy"
+
+        if (
+            "command not found" in error_text
+            or "modulenotfounderror" in error_text
+            or "no module named" in error_text
+            or "not installed" in error_text
+            or "missing dependency" in error_text
+        ):
+            return "environment_missing"
+
+        if (
+            "file not found" in error_text
+            or "no such file" in error_text
+            or "can't open file" in error_text
+            or "path does not exist" in error_text
+        ):
+            return "path_missing"
+
+        if "timeout" in error_text:
+            return "timeout"
+
+        return "generic"
+
+    def _count_matching_execution_errors(
+        self,
+        state: ConversationState,
+        *,
+        tool_name: str,
+        error_type: str,
+        error_signature: str,
+    ) -> int:
+        if not error_signature:
+            return 0
+
+        count = 0
+        for error in reversed(state.errors):
+            if str(error.tool_name or "") != tool_name:
+                continue
+            if str(error.error_type or "") != error_type:
+                continue
+            if self._summarize_execution_error_for_recovery(error.error_message) != error_signature:
+                continue
+            count += 1
+        return count
+
+    def _build_tool_retry_key(
+        self,
+        tool_name: str,
+        *,
+        error_type: Optional[str] = None,
+        error_message: Optional[str] = None,
+    ) -> str:
+        normalized_tool = str(tool_name or "unknown").strip() or "unknown"
+        if not error_type:
+            return f"tool_{normalized_tool}"
+
+        normalized_type = str(error_type).strip().lower() or "execution_error"
+        if normalized_type == "execution_error":
+            category = self._classify_execution_recovery_category(
+                ToolResult(
+                    tool_name=normalized_tool,
+                    status="error",
+                    error=error_message,
+                    error_type=normalized_type,
+                )
+            )
+            return f"tool_{normalized_tool}_{category}"
+
+        return f"tool_{normalized_tool}_{normalized_type}"
+
+    @staticmethod
+    def _clear_tool_retry_counts(state: ConversationState, tool_name: str) -> None:
+        prefix = f"tool_{str(tool_name or '').strip()}"
+        for key in [item for item in state.retry_counts.keys() if item == prefix or item.startswith(f"{prefix}_")]:
+            state.retry_counts.pop(key, None)
+
+    @staticmethod
+    def _current_retry_count_for_tool(state: ConversationState, tool_name: str) -> int:
+        prefix = f"tool_{str(tool_name or '').strip()}"
+        counts = [
+            int(value or 0)
+            for key, value in state.retry_counts.items()
+            if key == prefix or key.startswith(f"{prefix}_")
+        ]
+        return max(counts, default=0)
+
     def _build_execution_error_suggestions(self, failed_result: ToolResult) -> List[str]:
         """Generate generic recovery hints for execution failures."""
-        raw_error = failed_result.error or ""
-        error_text = raw_error.lower()
+        category = self._classify_execution_recovery_category(failed_result)
+        error_text = str(failed_result.error or "").lower()
+
+        if category == "security_policy":
+            return [
+                "Do not call subprocess.run/os.system inside code_execution",
+                "Use the bash tool for system commands such as fc-list, pandoc, apt-get, wkhtmltopdf, or font utilities",
+                "Keep code_execution for pure Python logic and file generation only",
+            ]
 
         if failed_result.error_type == "validation_error":
             suggestions = [
@@ -5317,25 +5465,14 @@ class BaseAgent:
                 )
             return suggestions
 
-        if "command not found" in error_text:
-            return [
-                "Verify command availability in current runtime before retrying",
-                "Prefer runtime-native dependency installation paths (for Python, use pip first)",
-                "Retry the original step after minimal environment adjustments",
-            ]
-
-        if "modulenotfounderror" in error_text or "no module named" in error_text:
+        if category == "environment_missing":
             return [
                 "Install missing runtime dependencies first",
-                "Retry the original operation after dependency installation",
-                "Avoid unrelated rewrites until dependency issues are resolved",
+                "Retry the original operation only after the dependency or executable is confirmed available",
+                "Avoid changing the whole approach before fixing the missing environment requirement",
             ]
 
-        if (
-            "file not found" in error_text
-            or "no such file" in error_text
-            or "can't open file" in error_text
-        ):
+        if category == "path_missing":
             return [
                 "Re-check file paths and ensure required files are created before use",
                 "List workspace files and validate expected input/output locations",
@@ -5349,7 +5486,7 @@ class BaseAgent:
                 "Retry with least-privilege compatible commands",
             ]
 
-        if "timeout" in error_text:
+        if category == "timeout":
             return [
                 "Reduce task scope per execution step and retry incrementally",
                 "Split heavy operations into smaller deterministic steps",
@@ -5381,7 +5518,11 @@ class BaseAgent:
             return None
 
         # Check retry count
-        retry_key = f"tool_{failed_result.tool_name}"
+        retry_key = self._build_tool_retry_key(
+            failed_result.tool_name,
+            error_type=failed_result.error_type,
+            error_message=failed_result.error,
+        )
         retry_count = state.retry_counts.get(retry_key, 0)
 
         if retry_count >= self.config.max_execution_retries:
@@ -5402,6 +5543,18 @@ class BaseAgent:
                 is_recoverable=True,
                 retry_count=retry_count,
             )
+        )
+
+        error_type = failed_result.error_type or "execution_error"
+        error_category = self._classify_execution_recovery_category(failed_result)
+        error_signature = self._summarize_execution_error_for_recovery(
+            failed_result.error or ""
+        )
+        repeated_error_count = self._count_matching_execution_errors(
+            state,
+            tool_name=failed_result.tool_name,
+            error_type=error_type,
+            error_signature=error_signature,
         )
 
         # Generate feedback based on error type
@@ -5432,15 +5585,34 @@ class BaseAgent:
                 ],
             )
         else:
+            expected_format = failed_result.expected_format or '{"tool": "<same_tool>", "...": "corrected_arguments"}'
+            error_label = "Execution Error"
+            suggestions = self._build_execution_error_suggestions(failed_result)
+            if error_category == "security_policy":
+                error_label = "Security Policy Error"
+                expected_format = '{"tool": "bash", "command": "<shell_command>"}'
+            elif error_category == "environment_missing":
+                error_label = "Environment Error"
+                expected_format = '{"tool": "<install_or_repair_step>", "...": "install_missing_dependency_then_retry"}'
+            elif error_category == "path_missing":
+                error_label = "Missing Path Error"
+                expected_format = '{"tool": "<same_tool>", "...": "corrected_paths"}'
+            elif repeated_error_count >= 2:
+                error_label = "Repeated Execution Error"
+                expected_format = '{"tool": "<different_tool_or_revised_plan>", "...": "changed_strategy"}'
+                suggestions = [
+                    "The same blocker has repeated across retries",
+                    "Stop retrying the exact same path; switch tools or choose a materially different execution strategy",
+                    *suggestions,
+                ]
             return ErrorFeedback(
-                error_type="Execution Error",
+                error_type=error_label,
                 error_message=failed_result.error or "Tool execution failed",
                 malformed_input=failed_result.malformed_input,
-                expected_format=failed_result.expected_format
-                or '{"tool": "<same_tool>", "...": "corrected_arguments"}',
+                expected_format=expected_format,
                 retry_count=retry_count,
                 max_retries=self.config.max_execution_retries,
-                suggestions=self._build_execution_error_suggestions(failed_result),
+                suggestions=suggestions,
             )
 
     def _parse_and_execute_tools_sync(self, output: str) -> str:

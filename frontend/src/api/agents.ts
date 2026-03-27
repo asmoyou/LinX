@@ -652,6 +652,7 @@ export const agentsApi = {
       const decoder = new TextDecoder();
       let buffer = "";
       let completed = false;
+      let sawErrorChunk = false;
 
       try {
         while (true) {
@@ -677,6 +678,8 @@ export const agentsApi = {
                 if (parsed.type === "done") {
                   completed = true;
                   onComplete?.();
+                } else if (parsed.type === "error") {
+                  sawErrorChunk = true;
                 }
               } catch (parseError) {
                 console.error(
@@ -689,7 +692,12 @@ export const agentsApi = {
           }
         }
         if (!completed) {
-          onComplete?.();
+          if (sawErrorChunk) {
+            return;
+          }
+          const errorMessage = "Conversation stream ended unexpectedly";
+          onError?.(errorMessage);
+          throw new Error(errorMessage);
         }
       } finally {
         reader.releaseLock();
