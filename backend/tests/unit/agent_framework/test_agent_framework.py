@@ -831,8 +831,6 @@ class TestBaseAgent:
         assert decision["should_stop"] is False
         assert decision["reason"] == "latest output still looks like a tool call payload"
 
-<<<<<<< ours
-<<<<<<< ours
     def test_should_buffer_visible_stream_content_for_tool_call_prefix(self):
         config = AgentConfig(
             agent_id=uuid4(),
@@ -948,10 +946,6 @@ class TestBaseAgent:
         assert result["success"] is True
         assert result["output"] == "已全部完成。"
         assert responses == []
-=======
->>>>>>> theirs
-=======
->>>>>>> theirs
     def test_runtime_tool_registry_keeps_file_tools_available(self):
         config = AgentConfig(
             agent_id=uuid4(),
