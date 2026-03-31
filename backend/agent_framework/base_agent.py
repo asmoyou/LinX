@@ -37,6 +37,9 @@ from agent_framework.runtime_policy import (
     FileDeliveryGuardMode,
     LoopMode,
     RuntimePolicy,
+    compute_retry_iteration_cap,
+    get_default_agent_compaction_grace_seconds,
+    get_default_agent_timeout_seconds,
     get_runtime_policy_registry,
     parse_execution_profile,
 )
@@ -337,6 +340,14 @@ class ToolArgumentValidationError(ValueError):
         super().__init__(message)
         self.arguments = dict(arguments or {})
         self.expected_format = expected_format or ""
+
+
+class AgentRuntimeTimeout(RuntimeError):
+    """Raised when a multi-turn agent run exceeds its total runtime budget."""
+
+    def __init__(self, message: str, *, timeout_seconds: int) -> None:
+        super().__init__(message)
+        self.timeout_seconds = int(timeout_seconds)
 
 
 # ============================================================================
@@ -1392,7 +1403,7 @@ class BaseAgent:
             "任务尚未完成，请继续自主推进，不要在当前轮次结束。\n"
             f"自检原因：{reason}\n"
             f"建议下一步：{next_action}\n"
-            "请自行判断并执行下一步（必要时调用工具），仅在任务完全完成后再给最终答复。"
+            "请自行判断并执行下一步（必要时调用工具）；若下一步明显是长任务，优先用 bash 的 background 模式并配合 process 工具轮询。仅在任务完全完成后再给最终答复。"
         )
 
     @staticmethod
@@ -1465,16 +1476,8 @@ class BaseAgent:
         """Deterministic state-machine decision for autonomous continue vs stop."""
         _ = task_intent_text  # Keep API stable while using output/tools as primary signals.
         normalized_finish_reason = self._normalize_finish_reason(finish_reason)
-
-        # Hard cap: stop when max rounds reached.
-        if round_number >= max_rounds:
-            return {
-                "should_stop": True,
-                "confidence": 0.99,
-                "reason": "max rounds reached",
-                "next_action": "",
-                "feedback_prompt": "",
-            }
+        _ = round_number
+        _ = max_rounds
 
         # Provider hinted truncation: continue to let model finish.
         if normalized_finish_reason == "length":
@@ -2403,9 +2406,132 @@ class BaseAgent:
             profile=ExecutionProfile.LEGACY,
             loop_mode=loop_mode,
             max_rounds=int(self.config.max_iterations or 20),
+            retry_iteration_cap=0 if loop_mode != LoopMode.SINGLE_TURN else 1,
             enable_error_recovery=bool(self.config.enable_error_recovery),
+            timeout_seconds=get_default_agent_timeout_seconds(),
             stream_output=bool(stream_callback),
             file_delivery_guard_mode=FileDeliveryGuardMode.SOFT,
+        )
+
+    @staticmethod
+    def _resolve_runtime_profile_count(context: Any) -> int:
+        """Resolve how many runtime profiles are active for iteration-cap sizing."""
+
+        if not isinstance(context, dict):
+            return 1
+
+        for key in ("profile_count", "profileCount", "runtime_profile_count"):
+            value = context.get(key)
+            try:
+                parsed = int(value)
+            except (TypeError, ValueError):
+                continue
+            if parsed > 0:
+                return parsed
+
+        return 1
+
+    def _resolve_retry_iteration_cap(
+        self,
+        *,
+        runtime_policy: Optional[RuntimePolicy],
+        context: Any,
+    ) -> int:
+        """Resolve the outer retry-iteration cap for multi-turn loops."""
+
+        if runtime_policy and runtime_policy.loop_mode == LoopMode.SINGLE_TURN:
+            return 1
+
+        explicit_cap = 0
+        if runtime_policy is not None:
+            try:
+                explicit_cap = int(getattr(runtime_policy, "retry_iteration_cap", 0) or 0)
+            except (TypeError, ValueError):
+                explicit_cap = 0
+
+        if explicit_cap > 0:
+            return max(1, explicit_cap)
+
+        profile_count = self._resolve_runtime_profile_count(context)
+        return compute_retry_iteration_cap(profile_count)
+
+    @staticmethod
+    def _build_runtime_loop_budget(timeout_seconds: int) -> Dict[str, Any]:
+        """Build total runtime budget metadata for one execution."""
+
+        normalized_timeout_seconds = max(1, int(timeout_seconds or 1))
+        return {
+            "timeout_seconds": normalized_timeout_seconds,
+            "deadline_monotonic": time.monotonic() + float(normalized_timeout_seconds),
+            "compaction_grace_seconds": get_default_agent_compaction_grace_seconds(),
+            "compaction_recent_window_seconds": 5.0,
+            "last_compaction_at": None,
+            "grace_used": False,
+        }
+
+    @staticmethod
+    def _mark_runtime_compaction(loop_budget: Optional[Dict[str, Any]]) -> None:
+        """Record recent compaction activity for timeout grace handling."""
+
+        if isinstance(loop_budget, dict):
+            loop_budget["last_compaction_at"] = time.monotonic()
+
+    def _consume_runtime_timeout(
+        self,
+        *,
+        loop_budget: Optional[Dict[str, Any]],
+        stream_callback: Optional[Callable[..., Any]],
+        loop_label: str,
+    ) -> Optional[AgentRuntimeTimeout]:
+        """Return a timeout error once the total runtime budget is exhausted."""
+
+        if not isinstance(loop_budget, dict):
+            return None
+
+        now = time.monotonic()
+        deadline_monotonic = float(loop_budget.get("deadline_monotonic") or 0.0)
+        if now <= deadline_monotonic:
+            return None
+
+        last_compaction_at = loop_budget.get("last_compaction_at")
+        grace_used = bool(loop_budget.get("grace_used"))
+        grace_seconds = max(float(loop_budget.get("compaction_grace_seconds") or 0.0), 0.0)
+        recent_window_seconds = max(
+            float(loop_budget.get("compaction_recent_window_seconds") or 0.0),
+            0.0,
+        )
+
+        if (
+            not grace_used
+            and last_compaction_at is not None
+            and grace_seconds > 0.0
+            and (now - float(last_compaction_at)) <= recent_window_seconds
+        ):
+            loop_budget["grace_used"] = True
+            loop_budget["deadline_monotonic"] = now + grace_seconds
+            logger.warning(
+                "%s timeout reached during compaction; extending grace window",
+                loop_label,
+                extra={
+                    "agent_id": str(self.config.agent_id),
+                    "grace_seconds": grace_seconds,
+                    "timeout_seconds": int(loop_budget.get("timeout_seconds") or 0),
+                },
+            )
+            self._emit_stream_chunk(
+                stream_callback=stream_callback,
+                content=(
+                    f"\n\n⏳ 总运行时间已接近上限；检测到刚完成上下文压缩，"
+                    f"已追加 {int(grace_seconds)} 秒缓冲窗口。\n"
+                ),
+                content_type="warning",
+            )
+            return None
+
+        timeout_seconds = int(loop_budget.get("timeout_seconds") or 0)
+        return AgentRuntimeTimeout(
+            f"Total agent runtime exceeded {timeout_seconds} seconds",
+            timeout_seconds=timeout_seconds,
         )
 
     @staticmethod
@@ -2970,22 +3096,58 @@ class BaseAgent:
 
                 # Multi-round conversation loop for tool execution
                 tool_calls_made = []
-                max_iterations = max(1, int(resolved_policy.max_rounds or 20))
+                max_iterations = self._resolve_retry_iteration_cap(
+                    runtime_policy=resolved_policy,
+                    context=context,
+                )
+                loop_budget = self._build_runtime_loop_budget(resolved_policy.timeout_seconds)
                 iteration = 0
                 final_output = ""
                 conversation_completed = False
                 auto_loop_state = ConversationState(max_rounds=max_iterations)
 
                 logger.info(
-                    f"[TOOL-LOOP] Starting multi-round conversation (max {max_iterations} iterations)",
+                    f"[TOOL-LOOP] Starting multi-round conversation (iteration cap {max_iterations})",
                     extra={
                         "agent_id": str(self.config.agent_id),
                         "has_tools": len(runtime_tools_by_name) > 0,
+                        "iteration_cap": max_iterations,
+                        "soft_max_rounds": int(resolved_policy.max_rounds or 20),
+                        "timeout_seconds": int(resolved_policy.timeout_seconds or 0),
                     },
                 )
 
                 while iteration < max_iterations:
                     self._raise_if_cancelled()
+                    timeout_error = self._consume_runtime_timeout(
+                        loop_budget=loop_budget,
+                        stream_callback=stream_callback,
+                        loop_label="[TOOL-LOOP]",
+                    )
+                    if timeout_error is not None:
+                        logger.warning(
+                            "[TOOL-LOOP] Total runtime timeout reached before next iteration",
+                            extra={
+                                "agent_id": str(self.config.agent_id),
+                                "iteration": iteration,
+                                "iteration_cap": max_iterations,
+                                "timeout_seconds": timeout_error.timeout_seconds,
+                            },
+                        )
+                        final_output = (
+                            final_output
+                            or f"Total runtime timeout reached ({timeout_error.timeout_seconds} seconds)"
+                        )
+                        self._emit_stream_chunk(
+                            stream_callback=stream_callback,
+                            content=(
+                                f"\n\n⏱️ 已达到总运行时限（{timeout_error.timeout_seconds} 秒），"
+                                "停止后续自主迭代。\n"
+                            ),
+                            content_type="warning",
+                        )
+                        break
+
                     iteration += 1
 
                     logger.info(
@@ -3010,6 +3172,13 @@ class BaseAgent:
                     try:
                         for chunk in llm_for_round.stream(messages):
                             self._raise_if_cancelled()
+                            timeout_error = self._consume_runtime_timeout(
+                                loop_budget=loop_budget,
+                                stream_callback=stream_callback,
+                                loop_label="[TOOL-LOOP]",
+                            )
+                            if timeout_error is not None:
+                                raise timeout_error
                             merged_stream_message = self._merge_stream_message(
                                 merged_stream_message, chunk
                             )
@@ -3066,6 +3235,28 @@ class BaseAgent:
                             logger.warning("LLM streaming returned no chunks")
 
                     except Exception as stream_error:
+                        if isinstance(stream_error, AgentRuntimeTimeout):
+                            logger.warning(
+                                "[TOOL-LOOP] Total runtime timeout reached during streaming",
+                                extra={
+                                    "agent_id": str(self.config.agent_id),
+                                    "iteration": iteration,
+                                    "timeout_seconds": stream_error.timeout_seconds,
+                                },
+                            )
+                            final_output = (
+                                final_output
+                                or f"Total runtime timeout reached ({stream_error.timeout_seconds} seconds)"
+                            )
+                            self._emit_stream_chunk(
+                                stream_callback=stream_callback,
+                                content=(
+                                    f"\n\n⏱️ 已达到总运行时限（{stream_error.timeout_seconds} 秒），"
+                                    "停止当前轮次。\n"
+                                ),
+                                content_type="warning",
+                            )
+                            break
                         if self._is_cancellation_requested() or self._looks_like_cancellation_error(
                             stream_error
                         ):
@@ -3375,16 +3566,6 @@ class BaseAgent:
                             break
                     else:
                         # No tool calls in this round - use deterministic state machine.
-                        if iteration >= max_iterations:
-                            logger.info(
-                                "[TOOL-LOOP] Max round reached; accepting current output as final",
-                                extra={"agent_id": str(self.config.agent_id), "round": iteration},
-                            )
-                            messages.append(AIMessage(content=round_output))
-                            final_output = round_output
-                            conversation_completed = True
-                            break
-
                         completion_decision = self._assess_autonomous_completion(
                             task_intent_text=resolved_task_intent_text,
                             latest_output=round_output,
@@ -3399,7 +3580,32 @@ class BaseAgent:
                         )
                         should_stop = bool(completion_decision.get("should_stop"))
 
-                        if iteration < max_iterations and not should_stop:
+                        if not should_stop:
+                            if iteration >= max_iterations:
+                                logger.warning(
+                                    "[TOOL-LOOP] Retry iteration cap reached before autonomous completion",
+                                    extra={
+                                        "agent_id": str(self.config.agent_id),
+                                        "round": iteration,
+                                        "iteration_cap": max_iterations,
+                                        "reason": completion_decision.get("reason", ""),
+                                    },
+                                )
+                                messages.append(AIMessage(content=round_output))
+                                final_output = (
+                                    round_output
+                                    or "Retry iteration cap reached before completion"
+                                )
+                                self._emit_stream_chunk(
+                                    stream_callback=stream_callback,
+                                    content=(
+                                        f"\n\n⚠️ 已达到外层重试迭代上限 ({max_iterations})，"
+                                        "任务仍未确认完成。\n"
+                                    ),
+                                    content_type="warning",
+                                )
+                                break
+
                             logger.info(
                                 "[TOOL-LOOP] State-machine check: incomplete, continue iterating",
                                 extra={
@@ -3456,19 +3662,19 @@ class BaseAgent:
 
                 if not conversation_completed and iteration >= max_iterations:
                     logger.warning(
-                        "[TOOL-LOOP] Max rounds reached before autonomous completion",
+                        "[TOOL-LOOP] Retry iteration cap reached before autonomous completion",
                         extra={
                             "agent_id": str(self.config.agent_id),
                             "rounds": iteration,
-                            "max_rounds": max_iterations,
+                            "iteration_cap": max_iterations,
                         },
                     )
                     self._emit_stream_chunk(
                         stream_callback=stream_callback,
-                        content=f"\n\n⚠️ 已达到最大对话轮数 ({max_iterations})，任务未确认完成。\n",
+                        content=f"\n\n⚠️ 已达到外层重试迭代上限 ({max_iterations})，任务未确认完成。\n",
                         content_type="warning",
                     )
-                    final_output = final_output or "Max rounds reached before completion"
+                    final_output = final_output or "Retry iteration cap reached before completion"
 
                 logger.info(
                     f"[TOOL-LOOP] Conversation completed after {iteration} rounds",
@@ -4855,9 +5061,16 @@ class BaseAgent:
         """
         import asyncio
 
-        # Initialize conversation state (single source: runtime policy max_rounds)
-        resolved_max_rounds = int((runtime_policy.max_rounds if runtime_policy else None) or 20)
-        state = ConversationState(max_rounds=max(1, resolved_max_rounds))
+        # Initialize conversation state with an outer retry-iteration cap.
+        soft_max_rounds = int((runtime_policy.max_rounds if runtime_policy else None) or 20)
+        resolved_iteration_cap = self._resolve_retry_iteration_cap(
+            runtime_policy=runtime_policy,
+            context=context,
+        )
+        state = ConversationState(max_rounds=max(1, resolved_iteration_cap))
+        loop_budget = self._build_runtime_loop_budget(
+            int((runtime_policy.timeout_seconds if runtime_policy else None) or 0) or 1
+        )
         resolved_task_intent_text = self._resolve_task_intent_text(
             task_description=task_description,
             context=context,
@@ -4941,7 +5154,9 @@ class BaseAgent:
             f"[RECOVERY] Starting conversation with error recovery",
             extra={
                 "agent_id": str(self.config.agent_id),
-                "max_rounds": state.max_rounds,
+                "iteration_cap": state.max_rounds,
+                "soft_max_rounds": soft_max_rounds,
+                "timeout_seconds": int(loop_budget.get("timeout_seconds") or 0),
                 "runtime_profile": parse_execution_profile(execution_profile).value,
                 "runtime_loop_mode": (
                     runtime_policy.loop_mode.value
@@ -4961,6 +5176,25 @@ class BaseAgent:
             and not self._is_cancellation_requested()
         ):
             self._raise_if_cancelled()
+            timeout_error = self._consume_runtime_timeout(
+                loop_budget=loop_budget,
+                stream_callback=stream_callback,
+                loop_label="[RECOVERY]",
+            )
+            if timeout_error is not None:
+                logger.warning(
+                    "[RECOVERY] Total runtime timeout reached before next iteration",
+                    extra={
+                        "agent_id": str(self.config.agent_id),
+                        "round": state.round_number,
+                        "iteration_cap": state.max_rounds,
+                        "timeout_seconds": timeout_error.timeout_seconds,
+                    },
+                )
+                state.is_terminated = True
+                state.termination_reason = "runtime_timeout"
+                break
+
             state.round_number += 1
 
             # Track per-round timing
@@ -4982,6 +5216,7 @@ class BaseAgent:
             compressed_messages, compression_meta = self._compress_messages_if_needed(messages)
             if compression_meta:
                 messages = compressed_messages
+                self._mark_runtime_compaction(loop_budget)
                 logger.warning(
                     "[RECOVERY] Context pressure detected, compressed conversation history",
                     extra={
@@ -5022,6 +5257,13 @@ class BaseAgent:
             try:
                 for chunk in llm_for_round.stream(messages):
                     self._raise_if_cancelled()
+                    timeout_error = self._consume_runtime_timeout(
+                        loop_budget=loop_budget,
+                        stream_callback=stream_callback,
+                        loop_label="[RECOVERY]",
+                    )
+                    if timeout_error is not None:
+                        raise timeout_error
                     merged_stream_message = self._merge_stream_message(merged_stream_message, chunk)
                     if not round_finish_reason:
                         round_finish_reason = self._extract_finish_reason(chunk)
@@ -5091,6 +5333,18 @@ class BaseAgent:
                 )
                 if not round_finish_reason:
                     round_finish_reason = self._extract_finish_reason(merged_stream_message)
+            except AgentRuntimeTimeout as timeout_error:
+                logger.warning(
+                    "[RECOVERY] Total runtime timeout reached during streaming",
+                    extra={
+                        "agent_id": str(self.config.agent_id),
+                        "round": state.round_number,
+                        "timeout_seconds": timeout_error.timeout_seconds,
+                    },
+                )
+                state.is_terminated = True
+                state.termination_reason = "runtime_timeout"
+                break
             except Exception as e:
                 if self._is_cancellation_requested() or self._looks_like_cancellation_error(e):
                     raise AgentExecutionCancelled(
@@ -5354,16 +5608,6 @@ class BaseAgent:
 
             # 5. No tool calls -> run deterministic state-machine completion check
             if not tool_calls:
-                if state.round_number >= state.max_rounds:
-                    logger.info(
-                        "[RECOVERY] Max round reached; accepting current output as final",
-                        extra={"agent_id": str(self.config.agent_id), "round": state.round_number},
-                    )
-                    state.is_terminated = True
-                    state.termination_reason = "final_answer_provided"
-                    send_round_stats()
-                    break
-
                 completion_decision = self._assess_autonomous_completion(
                     task_intent_text=resolved_task_intent_text,
                     latest_output=round_output,
@@ -5378,7 +5622,22 @@ class BaseAgent:
                 )
                 should_stop = bool(completion_decision.get("should_stop"))
 
-                if state.round_number < state.max_rounds and not should_stop:
+                if not should_stop:
+                    if state.round_number >= state.max_rounds:
+                        logger.warning(
+                            "[RECOVERY] Retry iteration cap reached before autonomous completion",
+                            extra={
+                                "agent_id": str(self.config.agent_id),
+                                "round": state.round_number,
+                                "iteration_cap": state.max_rounds,
+                                "reason": completion_decision.get("reason", ""),
+                            },
+                        )
+                        state.is_terminated = True
+                        state.termination_reason = "retry_iteration_cap_reached"
+                        send_round_stats()
+                        break
+
                     logger.info(
                         "[RECOVERY] State-machine check: incomplete, continue iterating",
                         extra={
@@ -5503,19 +5762,30 @@ class BaseAgent:
             messages.append(AIMessage(content=round_output))
             messages.append(HumanMessage(content=self._format_tool_results(tool_results)))
 
-        # Handle max rounds reached (only when loop exits without an earlier terminal decision)
+        # Handle iteration-cap exhaustion (only when loop exits without an earlier terminal decision)
         if not state.is_terminated and state.round_number >= state.max_rounds:
             logger.warning(
-                f"[RECOVERY] Max rounds reached ({state.max_rounds})",
+                f"[RECOVERY] Retry iteration cap reached ({state.max_rounds})",
                 extra={"agent_id": str(self.config.agent_id)},
             )
             state.is_terminated = True
-            state.termination_reason = "max_rounds_reached"
+            state.termination_reason = "retry_iteration_cap_reached"
 
             if stream_callback:
                 stream_callback(
-                    (f"\n\n⚠️ 已达到最大对话轮数 ({state.max_rounds})，对话结束。\n", "warning")
+                    (
+                        f"\n\n⚠️ 已达到外层重试迭代上限 ({state.max_rounds})，对话结束。\n",
+                        "warning",
+                    )
                 )
+
+        if state.termination_reason == "runtime_timeout" and stream_callback:
+            stream_callback(
+                (
+                    f"\n\n⏱️ 已达到总运行时限（{int(loop_budget.get('timeout_seconds') or 0)} 秒），停止本次执行。\n",
+                    "warning",
+                )
+            )
 
         logger.info(
             f"[RECOVERY] Conversation completed: reason={state.termination_reason}, rounds={state.round_number}, errors={len(state.errors)}",
@@ -5539,8 +5809,12 @@ class BaseAgent:
                 error_message = "Tool execution failed after maximum retries"
             elif state.termination_reason == "max_parse_retries_exceeded":
                 error_message = "Tool call parsing failed after maximum retries"
-            elif state.termination_reason == "max_rounds_reached":
-                error_message = f"Max conversation rounds reached ({state.max_rounds})"
+            elif state.termination_reason == "retry_iteration_cap_reached":
+                error_message = f"Retry iteration cap reached ({state.max_rounds})"
+            elif state.termination_reason == "runtime_timeout":
+                error_message = (
+                    f"Total runtime timeout reached ({int(loop_budget.get('timeout_seconds') or 0)} seconds)"
+                )
             elif state.termination_reason == "llm_failure":
                 error_message = "LLM request failed during recovery conversation"
             elif state.termination_reason:
@@ -6076,6 +6350,12 @@ Always be professional, accurate, and helpful."""
 3. After installing dependencies, retry the original command with minimal changes.
 4. For PDF/Office files and Chinese text, avoid hardcoded font paths; use runtime-available fonts or portable fallbacks.
 """
+        long_running_task_policy = """
+**Long-running task strategy**:
+1. Do not force long builds, servers, watchers, crawls, or batch jobs into one blocking synchronous turn.
+2. For commands that may run for a while, prefer the `bash` tool with `background=true`, then inspect progress with the `process` tool.
+3. When a background task is still running, give a short status update and continue in follow-up rounds instead of pretending the work already finished.
+"""
 
         file_tools_section = "\n".join(file_tools_lines)
         workspace_prompt = f"""
@@ -6093,6 +6373,7 @@ Always be professional, accurate, and helpful."""
 
 {file_delivery_policy}
 {dependency_recovery_policy}
+{long_running_task_policy}
 
 **You can also create/manipulate files through code blocks** (Python/Bash) that run in the same workspace.
 

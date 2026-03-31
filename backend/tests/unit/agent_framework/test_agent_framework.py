@@ -6,6 +6,7 @@ References:
 """
 
 import asyncio
+import time
 from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, Mock, patch
@@ -25,6 +26,7 @@ from agent_framework.agent_tools import AgentToolkit, create_langchain_tools
 from agent_framework.base_agent import (
     AgentConfig,
     AgentStatus,
+    AgentRuntimeTimeout,
     BaseAgent,
     ConversationState,
     ErrorRecord,
@@ -852,6 +854,98 @@ class TestBaseAgent:
             '{"name":"bash","arguments":{"command":"pwd"}}',
         )
 
+    def test_consume_runtime_timeout_extends_grace_after_compaction(self):
+        config = AgentConfig(
+            agent_id=uuid4(),
+            name="Test Agent",
+            agent_type="test",
+            owner_user_id=uuid4(),
+            capabilities=[],
+        )
+        agent = BaseAgent(config=config)
+
+        loop_budget = agent._build_runtime_loop_budget(1)
+        loop_budget["deadline_monotonic"] = time.monotonic() - 1
+        loop_budget["last_compaction_at"] = time.monotonic()
+
+        timeout_error = agent._consume_runtime_timeout(
+            loop_budget=loop_budget,
+            stream_callback=None,
+            loop_label="[TEST]",
+        )
+
+        assert timeout_error is None
+        assert loop_budget["grace_used"] is True
+        assert loop_budget["deadline_monotonic"] > time.monotonic()
+
+    def test_consume_runtime_timeout_returns_error_after_grace_is_used(self):
+        config = AgentConfig(
+            agent_id=uuid4(),
+            name="Test Agent",
+            agent_type="test",
+            owner_user_id=uuid4(),
+            capabilities=[],
+        )
+        agent = BaseAgent(config=config)
+
+        loop_budget = agent._build_runtime_loop_budget(1)
+        loop_budget["deadline_monotonic"] = time.monotonic() - 1
+        loop_budget["grace_used"] = True
+
+        timeout_error = agent._consume_runtime_timeout(
+            loop_budget=loop_budget,
+            stream_callback=None,
+            loop_label="[TEST]",
+        )
+
+        assert isinstance(timeout_error, AgentRuntimeTimeout)
+        assert timeout_error.timeout_seconds == 1
+
+    @pytest.mark.asyncio
+    async def test_execute_task_with_recovery_uses_iteration_cap_not_soft_max_rounds(self):
+        config = AgentConfig(
+            agent_id=uuid4(),
+            name="Test Agent",
+            agent_type="test",
+            owner_user_id=uuid4(),
+            capabilities=[],
+        )
+        agent = BaseAgent(config=config)
+        agent.status = AgentStatus.ACTIVE
+        agent.tools = []
+        agent.tools_by_name = {}
+
+        responses = [
+            [SimpleNamespace(content="任务还未完成，我需要继续处理。", additional_kwargs={})],
+            [SimpleNamespace(content="已全部完成。", additional_kwargs={})],
+        ]
+
+        def _fake_stream(_messages):
+            for chunk in responses.pop(0):
+                yield chunk
+
+        agent.llm = Mock()
+        agent.llm.stream = _fake_stream
+        agent.llm.invoke = Mock(return_value=SimpleNamespace(content="已全部完成。"))
+
+        runtime_policy = RuntimePolicy(
+            profile=ExecutionProfile.DEBUG_CHAT,
+            loop_mode=LoopMode.RECOVERY_MULTI_TURN,
+            max_rounds=1,
+            retry_iteration_cap=2,
+            enable_error_recovery=True,
+            timeout_seconds=1800,
+            stream_output=True,
+        )
+
+        result = await agent.execute_task_with_recovery(
+            task_description="请继续直到完成",
+            runtime_policy=runtime_policy,
+        )
+
+        assert result["success"] is True
+        assert result["output"] == "已全部完成。"
+        assert responses == []
     def test_runtime_tool_registry_keeps_file_tools_available(self):
         config = AgentConfig(
             agent_id=uuid4(),

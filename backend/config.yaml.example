@@ -285,6 +285,9 @@ llm:
 # Agent Framework Configuration
 # ============================================================================
 agents:
+  defaults:
+    timeout_seconds: 1800
+    compaction_grace_seconds: 60
   # Agent Pool Settings
   pool:
     min_size: 10
