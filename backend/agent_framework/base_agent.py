@@ -2063,6 +2063,8 @@ class BaseAgent:
                 return True
         return False
 
+<<<<<<< ours
+<<<<<<< ours
     @staticmethod
     def _looks_like_tool_call_stream_prefix(raw_text: Any) -> bool:
         """Detect stream prefixes that likely start a tool-call payload."""
@@ -2110,6 +2112,10 @@ class BaseAgent:
         )
         return True
 
+=======
+>>>>>>> theirs
+=======
+>>>>>>> theirs
     def _normalize_tool_arguments_for_execution(
         self,
         tool_name: str,
