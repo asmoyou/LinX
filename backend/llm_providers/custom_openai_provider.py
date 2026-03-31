@@ -453,6 +453,8 @@ class CustomOpenAIChat(BaseChatModel):
         tool_call_chunks: List[ToolCallChunk] = []
         finish_reason = str(chunk_data.get("finish_reason") or "").strip()
 
+        reasoning_content = ""
+
         if "output" in chunk_data:
             content = chunk_data.get("output", "")
         elif "choices" in chunk_data and len(chunk_data["choices"]) > 0:
@@ -463,33 +465,37 @@ class CustomOpenAIChat(BaseChatModel):
             # Streaming delta format.
             if isinstance(delta, dict):
                 tool_call_chunks = self._extract_tool_call_chunks_from_delta(delta)
-                thinking = (
+                reasoning_content = (
                     delta.get("reasoning_content")
                     or delta.get("reasoning")
                     or delta.get("thinking")
                 )
                 regular_content = delta.get("content") or delta.get("output")
-                if thinking:
-                    content = thinking
-                    content_type = "thinking"
-                elif regular_content:
+                if regular_content:
                     content = regular_content
+                elif reasoning_content:
+                    content = reasoning_content
+                    content_type = "thinking"
             # Non-streaming completion payload accidentally returned on stream endpoint.
             else:
                 message_data = choice.get("message", {})
                 if isinstance(message_data, dict):
-                    content = (
+                    reasoning_content = (
                         message_data.get("reasoning_content")
                         or message_data.get("reasoning")
                         or message_data.get("thinking")
-                        or message_data.get("content")
                         or ""
                     )
+                    content = message_data.get("content") or reasoning_content or ""
+                    if not message_data.get("content") and reasoning_content:
+                        content_type = "thinking"
                     tool_calls = self._extract_tool_calls_from_message(message_data)
                     tool_call_chunks = self._tool_calls_to_chunks(tool_calls)
 
         if content or tool_call_chunks or usage_data or finish_reason:
             additional_kwargs = {"content_type": content_type} if content else {}
+            if content and reasoning_content and content_type != "thinking":
+                additional_kwargs["reasoning_content"] = reasoning_content
             response_metadata: Dict[str, Any] = {"usage": usage_data} if usage_data else {}
             if finish_reason:
                 response_metadata["finish_reason"] = finish_reason
@@ -754,9 +760,9 @@ class CustomOpenAIChat(BaseChatModel):
                     or ""
                 )
 
-                # Check for reasoning/thinking content (for models like Qwen3-VL)
-                # Priority: reasoning_content > reasoning > thinking > content
-                content = reasoning_content or final_content or ""
+                # Preserve reasoning separately, but keep visible message content as
+                # the actual final answer whenever the provider returns one.
+                content = final_content or reasoning_content or ""
                 additional_kwargs = {}
                 if final_content:
                     additional_kwargs["final_content"] = final_content
@@ -870,7 +876,7 @@ class CustomOpenAIChat(BaseChatModel):
                     or message_data.get("thinking")
                     or ""
                 )
-                content = reasoning_content or final_content or ""
+                content = final_content or reasoning_content or ""
                 additional_kwargs = {}
                 if final_content:
                     additional_kwargs["final_content"] = final_content

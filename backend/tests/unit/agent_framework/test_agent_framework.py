@@ -807,6 +807,51 @@ class TestBaseAgent:
         assert decision["should_stop"] is False
         assert "incomplete" in str(decision.get("reason", "")).lower()
 
+    def test_assess_autonomous_completion_rejects_tool_call_json_as_final_answer(self):
+        config = AgentConfig(
+            agent_id=uuid4(),
+            name="Test Agent",
+            agent_type="test",
+            owner_user_id=uuid4(),
+            capabilities=[],
+        )
+        agent = BaseAgent(config=config)
+
+        decision = agent._assess_autonomous_completion(
+            task_intent_text="请帮我继续执行命令",
+            latest_output='{"name":"bash","arguments":{"command":"ls -la /workspace"}}',
+            tool_call_records=[],
+            round_number=1,
+            max_rounds=5,
+            finish_reason="",
+        )
+
+        assert decision["should_stop"] is False
+        assert decision["reason"] == "latest output still looks like a tool call payload"
+
+    def test_should_buffer_visible_stream_content_for_tool_call_prefix(self):
+        config = AgentConfig(
+            agent_id=uuid4(),
+            name="Test Agent",
+            agent_type="test",
+            owner_user_id=uuid4(),
+            capabilities=[],
+        )
+        agent = BaseAgent(config=config)
+
+        assert agent._should_buffer_visible_stream_content(
+            "",
+            '{"name":"bash","arguments":{"command":"pwd"}}',
+        )
+        assert agent._should_buffer_visible_stream_content(
+            "   ",
+            "<tool_call>{\"name\":\"bash\"}</tool_call>",
+        )
+        assert not agent._should_buffer_visible_stream_content(
+            "这是给用户的正常回复",
+            '{"name":"bash","arguments":{"command":"pwd"}}',
+        )
+
     def test_runtime_tool_registry_keeps_file_tools_available(self):
         config = AgentConfig(
             agent_id=uuid4(),
@@ -877,6 +922,26 @@ class TestBaseAgent:
         assert not parse_errors
         assert tool_calls[0].tool_name == "write_file"
         assert "花括号 {a:1}" in tool_calls[0].arguments["content"]
+
+    def test_parse_tool_calls_supports_name_arguments_envelope(self):
+        config = AgentConfig(
+            agent_id=uuid4(),
+            name="Test Agent",
+            agent_type="test",
+            owner_user_id=uuid4(),
+            capabilities=[],
+        )
+        agent = BaseAgent(config=config)
+        agent.tools_by_name = {"bash": Mock()}
+
+        llm_output = '{"name":"bash","arguments":{"command":"ls -la /workspace"}}'
+
+        tool_calls, parse_errors = agent._parse_tool_calls(llm_output)
+
+        assert len(tool_calls) == 1
+        assert not parse_errors
+        assert tool_calls[0].tool_name == "bash"
+        assert tool_calls[0].arguments["command"] == "ls -la /workspace"
 
     def test_parse_tool_calls_ignores_unknown_tool_examples_without_explicit_intent(self):
         config = AgentConfig(
@@ -2211,6 +2276,66 @@ class TestBaseAgent:
         plain_llm.invoke.assert_called_once()
         assert ("final from plain llm", "content") in chunks
 
+    def test_execute_task_auto_multi_turn_parse_error_retries_with_feedback(self):
+        """AUTO multi-turn should retry with parse feedback instead of silently stopping."""
+        config = AgentConfig(
+            agent_id=uuid4(),
+            name="Test Agent",
+            agent_type="test",
+            owner_user_id=uuid4(),
+            capabilities=[],
+        )
+        agent = BaseAgent(config=config)
+        agent.status = AgentStatus.ACTIVE
+        agent.agent = Mock()
+        agent.llm_with_tools = Mock()
+        agent.native_tool_calling_enabled = False
+
+        calculator_tool = Mock()
+        agent.tools = [calculator_tool]
+        agent.tools_by_name = {"calculator": calculator_tool}
+
+        round_counter = {"count": 0}
+
+        def _plain_stream(messages):
+            round_counter["count"] += 1
+            if round_counter["count"] == 1:
+                yield SimpleNamespace(
+                    content='{"tool":123,"expression":"2+2"}',
+                    additional_kwargs={},
+                )
+            else:
+                assert "Expected format" in str(messages[-1].content)
+                yield SimpleNamespace(content="修正后最终答案", additional_kwargs={})
+
+        plain_llm = Mock()
+        plain_llm.stream = _plain_stream
+        plain_llm.invoke = Mock(side_effect=AssertionError("Should not invoke in this path"))
+        agent.llm = plain_llm
+
+        runtime_policy = RuntimePolicy(
+            profile=ExecutionProfile.DEBUG_CHAT,
+            loop_mode=LoopMode.AUTO_MULTI_TURN,
+            max_rounds=3,
+            enable_error_recovery=True,
+            stream_output=True,
+        )
+        chunks = []
+
+        result = agent.execute_task(
+            task_description="请继续处理这个任务",
+            runtime_policy=runtime_policy,
+            stream_callback=lambda chunk: chunks.append(chunk),
+        )
+
+        assert result["success"] is True
+        assert result["output"] == "修正后最终答案"
+        assert round_counter["count"] == 2
+        assert all('"tool":123' not in str(chunk[0]) for chunk in chunks)
+        assert any(chunk[1] == "retry_attempt" for chunk in chunks)
+        assert any(chunk[1] == "error_feedback" for chunk in chunks)
+        assert ("修正后最终答案", "content") in chunks
+
     def test_execute_task_auto_resets_error_status_and_retries(self):
         """Cached agent in ERROR status should auto-reset for the next request."""
         config = AgentConfig(
@@ -2285,6 +2410,69 @@ class TestBaseAgent:
         assert agent.native_tool_calling_enabled is False
         assert agent.llm_with_tools is plain_llm
         plain_llm.invoke.assert_called_once()
+
+    def test_execute_task_recovery_multi_turn_hides_tool_call_json_from_stream(self):
+        """Recovery path should execute JSON tool calls without streaming raw payloads."""
+        config = AgentConfig(
+            agent_id=uuid4(),
+            name="Test Agent",
+            agent_type="test",
+            owner_user_id=uuid4(),
+            capabilities=[],
+        )
+        agent = BaseAgent(config=config)
+        agent.status = AgentStatus.ACTIVE
+        agent.agent = Mock()
+
+        request = httpx.Request("POST", "https://example.com/v1/chat/completions")
+        response = httpx.Response(400, request=request)
+
+        bound_llm = Mock()
+        bound_llm.stream.side_effect = httpx.HTTPStatusError(
+            "bad request",
+            request=request,
+            response=response,
+        )
+
+        plain_llm = Mock()
+        plain_llm.invoke.return_value = AIMessage(
+            content='{"name":"calculator","arguments":{"expression":"2+2"}}'
+        )
+        plain_llm.stream.return_value = iter(
+            [SimpleNamespace(content="最终答案", additional_kwargs={})]
+        )
+
+        calculator_tool = Mock()
+        calculator_tool.ainvoke = AsyncMock(return_value="4")
+
+        agent.llm = plain_llm
+        agent.llm_with_tools = bound_llm
+        agent.tools = [calculator_tool]
+        agent.tools_by_name = {"calculator": calculator_tool}
+        agent.native_tool_calling_enabled = True
+
+        runtime_policy = RuntimePolicy(
+            profile=ExecutionProfile.MISSION_TASK,
+            loop_mode=LoopMode.RECOVERY_MULTI_TURN,
+            max_rounds=2,
+            enable_error_recovery=True,
+            stream_output=True,
+        )
+        chunks = []
+
+        result = agent.execute_task(
+            task_description="请帮我算一下 2+2",
+            runtime_policy=runtime_policy,
+            stream_callback=lambda chunk: chunks.append(chunk),
+        )
+
+        assert result["success"] is True
+        assert result["output"] == "最终答案"
+        assert agent.native_tool_calling_enabled is False
+        assert all('"name":"calculator"' not in str(chunk[0]) for chunk in chunks)
+        assert any(chunk[1] == "tool_call" for chunk in chunks)
+        assert any(chunk[1] == "tool_result" for chunk in chunks)
+        assert ("最终答案", "content") in chunks
 
 
 class TestAgentRegistry:

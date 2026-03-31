@@ -282,13 +282,13 @@ class ErrorFeedback:
     max_retries: int
     suggestions: List[str]
 
-    def to_prompt(self) -> str:
-        """Convert to human-readable prompt for LLM."""
+    def to_prompt(self, *, include_malformed_input: bool = True) -> str:
+        """Convert to human-readable prompt for LLM or frontend."""
         prompt = f"⚠️ **{self.error_type}** (Attempt {self.retry_count}/{self.max_retries})\n\n"
 
         prompt += f"**Error**: {self.error_message}\n\n"
 
-        if self.malformed_input:
+        if include_malformed_input and self.malformed_input:
             # Truncate if too long
             input_display = self.malformed_input
             if len(input_display) > 200:
@@ -1502,6 +1502,20 @@ class BaseAgent:
                 ),
             }
 
+        if self._looks_like_tool_call_payload(latest_output):
+            return {
+                "should_stop": False,
+                "confidence": 0.1,
+                "reason": "latest output still looks like a tool call payload",
+                "next_action": "Continue by issuing a valid executable tool call or a final user-facing answer.",
+                "feedback_prompt": (
+                    "你上一轮输出看起来仍然是工具/函数调用 JSON，而不是给用户的最终答复。"
+                    "不要把这类 JSON 直接展示给用户。"
+                    "如果需要工具，请输出可执行的工具调用；"
+                    "如果任务已完成，请直接给出最终答复。"
+                ),
+            }
+
         if file_delivery_required:
             missing_file_delivery = False
             if requested_file_formats and not self._has_successful_requested_format_call(
@@ -1932,6 +1946,166 @@ class BaseAgent:
             return None
 
         return dict(parsed) if isinstance(parsed, dict) else None
+
+    @staticmethod
+    def _coerce_tool_arguments_payload(payload: Any) -> Dict[str, Any]:
+        """Normalize wrapped tool arguments into structured kwargs when possible."""
+        if payload is None:
+            return {}
+        if isinstance(payload, dict):
+            return dict(payload)
+        if isinstance(payload, str):
+            decoded = BaseAgent._decode_positional_tool_payload(payload)
+            if decoded is not None:
+                return decoded
+            return {"__arg1": payload}
+        if isinstance(payload, (list, tuple)):
+            return {"__arg1": json.dumps(list(payload), ensure_ascii=False)}
+        return {"__arg1": str(payload)}
+
+    @classmethod
+    def _normalize_tool_payload_object(
+        cls,
+        tool_data: Any,
+    ) -> Tuple[Optional[str], Dict[str, Any], Optional[str], Optional[str]]:
+        """Normalize multiple tool-call JSON shapes into a stable internal payload."""
+        if not isinstance(tool_data, dict):
+            return None, {}, "invalid_type", "Tool call payload must be a JSON object"
+
+        payload = dict(tool_data)
+        tool_name_value: Any = None
+        args: Dict[str, Any] = {}
+
+        if "tool" in payload:
+            tool_name_value = payload.get("tool")
+            wrapped_args = payload.get("arguments", payload.get("args", payload.get("parameters")))
+            if wrapped_args is None:
+                args = {k: v for k, v in payload.items() if k != "tool"}
+            else:
+                args = {
+                    **{
+                        k: v
+                        for k, v in payload.items()
+                        if k not in {"tool", "arguments", "args", "parameters"}
+                    },
+                    **cls._coerce_tool_arguments_payload(wrapped_args),
+                }
+        elif "tool_name" in payload:
+            tool_name_value = payload.get("tool_name")
+            wrapped_args = payload.get("parameters", payload.get("arguments", payload.get("args")))
+            if wrapped_args is None:
+                args = {k: v for k, v in payload.items() if k not in {"tool_name", "type"}}
+            else:
+                args = cls._coerce_tool_arguments_payload(wrapped_args)
+        elif "name" in payload:
+            tool_name_value = payload.get("name")
+            wrapped_args = payload.get("arguments", payload.get("args", payload.get("parameters")))
+            if wrapped_args is None:
+                args = {k: v for k, v in payload.items() if k not in {"name", "type"}}
+            else:
+                args = cls._coerce_tool_arguments_payload(wrapped_args)
+        else:
+            return (
+                None,
+                {},
+                "missing_field",
+                "Missing required field 'tool' (or wrapped tool name/arguments envelope)",
+            )
+
+        if not isinstance(tool_name_value, str):
+            return None, {}, "invalid_type", "Field 'tool' must be a string"
+
+        tool_name = tool_name_value.strip()
+        if not tool_name:
+            return None, {}, "invalid_type", "Field 'tool' must be a non-empty string"
+
+        return tool_name, args, None, None
+
+    @staticmethod
+    def _looks_like_tool_call_payload(raw_text: Any) -> bool:
+        """Heuristic: output resembles a tool/function-call payload, not a user-facing answer."""
+        text = str(raw_text or "").strip()
+        if not text:
+            return False
+
+        lowered = text.lower()
+        if lowered.startswith("<tool_call>") or lowered.startswith("<function_call>"):
+            return True
+        if lowered.startswith("```tool:"):
+            return True
+        if lowered.startswith("```json"):
+            fenced = re.search(r"```(?:json)?\s*(.*?)\s*```", text, flags=re.IGNORECASE | re.DOTALL)
+            if fenced:
+                text = fenced.group(1).strip()
+
+        if not text or text[0] not in "[{":
+            return False
+
+        key_markers = ('"tool"', '"tool_name"', '"name"', '"arguments"', '"args"', '"parameters"')
+        if not any(marker in text for marker in key_markers):
+            return False
+
+        try:
+            parsed = json.loads(text)
+        except json.JSONDecodeError:
+            return True
+
+        payload_items = parsed if isinstance(parsed, list) else [parsed]
+        for item in payload_items:
+            if not isinstance(item, dict):
+                continue
+            if "tool" in item or "tool_name" in item:
+                return True
+            if "name" in item and any(key in item for key in ("arguments", "args", "parameters")):
+                return True
+        return False
+
+    @staticmethod
+    def _looks_like_tool_call_stream_prefix(raw_text: Any) -> bool:
+        """Detect stream prefixes that likely start a tool-call payload."""
+        text = str(raw_text or "").lstrip()
+        if not text:
+            return False
+
+        lowered = text.lower()
+        if lowered.startswith("<tool_call>") or lowered.startswith("<function_call>"):
+            return True
+        if lowered.startswith("```tool:") or lowered.startswith("```json"):
+            return True
+        return text[0] in "[{"
+
+    @classmethod
+    def _should_buffer_visible_stream_content(
+        cls,
+        current_output: Any,
+        next_chunk: Any,
+    ) -> bool:
+        """Delay visible streaming when the round appears to start with a tool payload."""
+        existing = str(current_output or "")
+        if existing.strip():
+            return False
+        combined = f"{existing}{str(next_chunk or '')}"
+        return cls._looks_like_tool_call_stream_prefix(combined)
+
+    @classmethod
+    def _emit_deferred_visible_output_if_safe(
+        cls,
+        *,
+        stream_callback: Optional[Callable[..., Any]],
+        deferred_output: str,
+        full_output: str,
+    ) -> bool:
+        """Flush buffered visible output only when it is not a tool-call payload."""
+        if not stream_callback or not deferred_output:
+            return False
+        if cls._looks_like_tool_call_payload(full_output):
+            return False
+        cls._emit_stream_chunk(
+            stream_callback=stream_callback,
+            content=deferred_output,
+            content_type="content",
+        )
+        return True
 
     def _normalize_tool_arguments_for_execution(
         self,
@@ -2800,6 +2974,7 @@ class BaseAgent:
                 iteration = 0
                 final_output = ""
                 conversation_completed = False
+                auto_loop_state = ConversationState(max_rounds=max_iterations)
 
                 logger.info(
                     f"[TOOL-LOOP] Starting multi-round conversation (max {max_iterations} iterations)",
@@ -2826,6 +3001,8 @@ class BaseAgent:
                     streamed_content_chars = 0
                     stream_failed = False
                     used_non_stream_fallback = False
+                    deferred_visible_output = ""
+                    suppress_thinking_stream = False
                     native_tool_calls: List[ToolCall] = []
                     merged_stream_message: Any = None
                     llm_for_round = runtime_llm_with_tools if runtime_tools_by_name else self.llm
@@ -2846,17 +3023,32 @@ class BaseAgent:
                                         "content_type", "content"
                                     )
 
-                                # Send to frontend immediately for real-time streaming
-                                self._emit_stream_chunk(
-                                    stream_callback=stream_callback,
-                                    content=chunk.content,
-                                    content_type=content_type,
-                                )
-
                                 # Also accumulate for tool detection
                                 if content_type == "thinking":
+                                    if not suppress_thinking_stream and self._should_buffer_visible_stream_content(
+                                        round_thinking,
+                                        chunk.content,
+                                    ):
+                                        suppress_thinking_stream = True
+                                    if not suppress_thinking_stream:
+                                        self._emit_stream_chunk(
+                                            stream_callback=stream_callback,
+                                            content=chunk.content,
+                                            content_type=content_type,
+                                        )
                                     round_thinking += chunk.content
                                 else:
+                                    if deferred_visible_output or self._should_buffer_visible_stream_content(
+                                        round_output,
+                                        chunk.content,
+                                    ):
+                                        deferred_visible_output += chunk.content
+                                    else:
+                                        self._emit_stream_chunk(
+                                            stream_callback=stream_callback,
+                                            content=chunk.content,
+                                            content_type=content_type,
+                                        )
                                     round_output += chunk.content
                                     streamed_content_chars += len(chunk.content)
                                 chunk_count += 1
@@ -2935,18 +3127,6 @@ class BaseAgent:
                             else:
                                 raise ValueError("LLM returned empty content")
 
-                    if (
-                        used_non_stream_fallback
-                        and stream_callback
-                        and round_output
-                        and streamed_content_chars == 0
-                    ):
-                        self._emit_stream_chunk(
-                            stream_callback=stream_callback,
-                            content=round_output,
-                            content_type="content",
-                        )
-
                     logger.info(
                         f"[TOOL-LOOP] Round {iteration} LLM output: "
                         f"thinking={len(round_thinking)} chars, "
@@ -2966,6 +3146,66 @@ class BaseAgent:
                     if not parsed_calls and native_tool_calls:
                         parsed_calls = native_tool_calls
                         parsed_errors = []
+
+                    if (
+                        (deferred_visible_output or (used_non_stream_fallback and round_output))
+                        and not parsed_calls
+                        and not parsed_errors
+                    ):
+                        self._emit_deferred_visible_output_if_safe(
+                            stream_callback=stream_callback,
+                            deferred_output=deferred_visible_output or round_output,
+                            full_output=round_output,
+                        )
+
+                    auto_loop_state.round_number = iteration
+                    if parsed_errors:
+                        logger.warning(
+                            f"[TOOL-LOOP] Found {len(parsed_errors)} parse errors",
+                            extra={"agent_id": str(self.config.agent_id)},
+                        )
+                        if stream_callback:
+                            retry_count = (
+                                auto_loop_state.retry_counts.get(
+                                    f"parse_error_{parsed_errors[0].error_type}",
+                                    0,
+                                )
+                                + 1
+                            )
+                            self._emit_stream_chunk(
+                                stream_callback=stream_callback,
+                                content=(
+                                    "\n\n🔄 **检测到工具调用格式错误，正在重试** "
+                                    f"(第 {retry_count}/{self.config.max_parse_retries} 次)\n"
+                                ),
+                                content_type="retry_attempt",
+                            )
+
+                        feedback = self._handle_parse_errors(
+                            parsed_errors,
+                            auto_loop_state,
+                            available_tool_names=sorted(runtime_tools_by_name.keys()),
+                        )
+                        if feedback:
+                            self._emit_stream_chunk(
+                                stream_callback=stream_callback,
+                                content=f"\n\n{feedback.to_prompt(include_malformed_input=False)}",
+                                content_type="error_feedback",
+                            )
+                            messages.append(AIMessage(content=round_output))
+                            messages.append(HumanMessage(content=feedback.to_prompt()))
+                            continue
+
+                        logger.error("[TOOL-LOOP] Max parse retries exceeded, terminating")
+                        self._emit_stream_chunk(
+                            stream_callback=stream_callback,
+                            content="\n\n⛔ 工具调用格式错误次数过多，无法继续。请直接提供答案。\n",
+                            content_type="error",
+                        )
+                        messages.append(AIMessage(content=round_output))
+                        final_output = "工具调用格式错误次数过多，无法继续。请直接提供答案。"
+                        break
+
                     tool_json_blocks = []
                     for tc in parsed_calls:
                         tool_json_blocks.append(tc.raw_json)
@@ -3356,7 +3596,8 @@ class BaseAgent:
                     final_output = self._parse_and_execute_tools_sync(final_output)
 
                 # Single-turn path does not stream chunks by default; emit final output once.
-                if stream_callback and final_output:
+                # Suppress raw tool-call JSON payloads from leaking to the frontend.
+                if stream_callback and final_output and not self._looks_like_tool_call_payload(final_output):
                     self._emit_stream_chunk(
                         stream_callback=stream_callback,
                         content=final_output,
@@ -3525,12 +3766,13 @@ class BaseAgent:
 
         candidates: List[Tuple[str, bool]] = []  # (json_str, explicit_tool_intent)
         seen_candidates: Set[str] = set()
+        key_markers = ('"tool"', '"tool_name"', '"name"', '"arguments"', '"args"', '"parameters"')
 
         def _add_candidate(raw_json: str, explicit: bool) -> None:
             candidate = (raw_json or "").strip()
             if not candidate:
                 return
-            if '"tool"' not in candidate:
+            if not any(marker in candidate for marker in key_markers):
                 return
             if candidate in seen_candidates:
                 return
@@ -3616,14 +3858,14 @@ class BaseAgent:
         if (
             stripped_output.startswith("{")
             and stripped_output.endswith("}")
-            and '"tool"' in stripped_output
+            and any(marker in stripped_output for marker in key_markers)
         ):
             _add_candidate(stripped_output, explicit=True)
 
         # Fallback scan: collect balanced objects containing "tool". Mark as explicit only
         # when nearby context indicates the model is trying to call tools.
         for obj_text, start, end in self._extract_balanced_json_objects(preprocessed):
-            if '"tool"' not in obj_text:
+            if not any(marker in obj_text for marker in key_markers):
                 continue
             context = preprocessed[max(0, start - 64) : min(len(preprocessed), end + 64)].lower()
             explicit_intent = any(
@@ -3647,35 +3889,15 @@ class BaseAgent:
                     )
                 continue
 
-            if not isinstance(tool_data, dict):
+            tool_name, args, error_type, error_message = self._normalize_tool_payload_object(
+                tool_data
+            )
+            if error_type or error_message or tool_name is None:
                 if explicit:
                     parse_errors.append(
                         ParseError(
-                            error_type="invalid_type",
-                            message="Tool call payload must be a JSON object",
-                            malformed_input=json_str,
-                        )
-                    )
-                continue
-
-            if "tool" not in tool_data:
-                if explicit:
-                    parse_errors.append(
-                        ParseError(
-                            error_type="missing_field",
-                            message="Missing required field 'tool'",
-                            malformed_input=json_str,
-                        )
-                    )
-                continue
-
-            tool_name = tool_data["tool"]
-            if not isinstance(tool_name, str):
-                if explicit:
-                    parse_errors.append(
-                        ParseError(
-                            error_type="invalid_type",
-                            message="Field 'tool' must be a string",
+                            error_type=error_type or "invalid_type",
+                            message=error_message or "Invalid tool call payload",
                             malformed_input=json_str,
                         )
                     )
@@ -3695,8 +3917,6 @@ class BaseAgent:
                         )
                     )
                 continue
-
-            args = {k: v for k, v in tool_data.items() if k != "tool"}
             tool_calls.append(ToolCall(tool_name=tool_name, arguments=args, raw_json=json_str))
 
         # If at least one valid tool call is available, execute it and ignore malformed extras.
@@ -4793,6 +5013,8 @@ class BaseAgent:
             round_usage = None  # Track usage from LLM response
             streamed_content_chars = 0
             used_non_stream_fallback = False
+            deferred_visible_output = ""
+            suppress_thinking_stream = False
             native_tool_calls: List[ToolCall] = []
             merged_stream_message: Any = None
             llm_for_round = runtime_llm_with_tools if runtime_tools_by_name else self.llm
@@ -4836,16 +5058,31 @@ class BaseAgent:
                             round_last_token_time = time.time()
                             round_output_chars += len(chunk.content)
 
-                        if stream_callback:
-                            self._emit_stream_content_incrementally(
-                                stream_callback,
-                                chunk.content,
-                                content_type,
-                            )
-
                         if content_type == "thinking":
+                            if not suppress_thinking_stream and self._should_buffer_visible_stream_content(
+                                round_thinking,
+                                chunk.content,
+                            ):
+                                suppress_thinking_stream = True
+                            if stream_callback and not suppress_thinking_stream:
+                                self._emit_stream_content_incrementally(
+                                    stream_callback,
+                                    chunk.content,
+                                    content_type,
+                                )
                             round_thinking += chunk.content
                         else:
+                            if deferred_visible_output or self._should_buffer_visible_stream_content(
+                                round_output,
+                                chunk.content,
+                            ):
+                                deferred_visible_output += chunk.content
+                            elif stream_callback:
+                                self._emit_stream_content_incrementally(
+                                    stream_callback,
+                                    chunk.content,
+                                    content_type,
+                                )
                             round_output += chunk.content
                             streamed_content_chars += len(chunk.content)
                 native_tool_calls = self._extract_native_tool_calls(
@@ -4912,14 +5149,6 @@ class BaseAgent:
                     round_finish_reason = self._extract_finish_reason(result)
                 if not round_output and native_tool_calls:
                     round_output = ""
-
-            if (
-                used_non_stream_fallback
-                and stream_callback
-                and round_output
-                and streamed_content_chars == 0
-            ):
-                self._emit_stream_content_incrementally(stream_callback, round_output, "content")
 
             logger.info(
                 f"[RECOVERY] Round {state.round_number} output: "
@@ -5064,6 +5293,17 @@ class BaseAgent:
                 tool_calls = native_tool_calls
                 parse_errors = []
 
+            if (
+                (deferred_visible_output or (used_non_stream_fallback and round_output))
+                and not tool_calls
+                and not parse_errors
+            ):
+                self._emit_deferred_visible_output_if_safe(
+                    stream_callback=stream_callback,
+                    deferred_output=deferred_visible_output or round_output,
+                    full_output=round_output,
+                )
+
             # 4. Handle parse errors
             if parse_errors:
                 logger.warning(
@@ -5089,7 +5329,7 @@ class BaseAgent:
                 if feedback:
                     # Send error feedback to frontend
                     if stream_callback:
-                        stream_callback((f"\n\n{feedback.to_prompt()}", "error_feedback"))
+                        stream_callback((f"\n\n{feedback.to_prompt(include_malformed_input=False)}", "error_feedback"))
 
                     # Add to conversation and retry
                     messages.append(AIMessage(content=round_output))
@@ -5230,7 +5470,7 @@ class BaseAgent:
                 if feedback:
                     # Send error feedback
                     if stream_callback:
-                        stream_callback((f"\n\n{feedback.to_prompt()}", "error_feedback"))
+                        stream_callback((f"\n\n{feedback.to_prompt(include_malformed_input=False)}", "error_feedback"))
 
                     # Add to conversation and retry
                     messages.append(AIMessage(content=round_output))

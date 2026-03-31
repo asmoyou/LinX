@@ -227,6 +227,53 @@ def test_stream_handles_non_sse_json_body(monkeypatch):
     assert any(chunk.content == "plain json response" for chunk in chunks)
 
 
+def test_stream_prefers_final_content_over_reasoning_when_both_exist(monkeypatch):
+    lines: List[str] = [
+        (
+            'data: {"choices":[{"delta":{"reasoning_content":"{\\"tool\\":\\"bash\\"}",' 
+            '"content":"最终答案"}}]}'
+        ),
+        "data: [DONE]",
+    ]
+
+    class _FakeStreamResponse:
+        def raise_for_status(self) -> None:
+            return None
+
+        def iter_lines(self):
+            for line in lines:
+                yield line
+
+    class _FakeStreamContext:
+        def __enter__(self) -> _FakeStreamResponse:
+            return _FakeStreamResponse()
+
+        def __exit__(self, exc_type, exc_val, exc_tb) -> bool:
+            del exc_type, exc_val, exc_tb
+            return False
+
+    def _fake_stream(
+        _method: str,
+        _url: str,
+        *,
+        json: Dict[str, Any],
+        headers: Dict[str, Any],
+        timeout: int,
+    ) -> _FakeStreamContext:
+        del json, headers, timeout
+        return _FakeStreamContext()
+
+    monkeypatch.setattr("llm_providers.custom_openai_provider.httpx.stream", _fake_stream)
+
+    llm = CustomOpenAIChat(base_url="https://example.com/v1", model="qwen3.5-flash")
+    chunks = list(llm.stream([HumanMessage(content="hello")]))
+
+    assert chunks
+    assert chunks[0].content == "最终答案"
+    assert chunks[0].additional_kwargs.get("content_type") == "content"
+    assert chunks[0].additional_kwargs.get("reasoning_content") == '{"tool":"bash"}'
+
+
 def test_generate_preserves_finish_reason_metadata(monkeypatch):
     def _fake_post(
         _url: str,
@@ -255,6 +302,40 @@ def test_generate_preserves_finish_reason_metadata(monkeypatch):
 
     assert message.content == "partial response"
     assert message.response_metadata["finish_reason"] == "length"
+
+
+def test_generate_prefers_final_content_over_reasoning_content(monkeypatch):
+    def _fake_post(
+        _url: str,
+        *,
+        json: Dict[str, Any],
+        headers: Dict[str, Any],
+        timeout: int,
+    ) -> _FakeResponse:
+        del json, headers, timeout
+        return _FakeResponse(
+            {
+                "choices": [
+                    {
+                        "message": {
+                            "content": "真正给用户的答案",
+                            "reasoning_content": '{"tool":"write_file"}',
+                        },
+                        "finish_reason": "stop",
+                    }
+                ],
+                "usage": {"prompt_tokens": 3, "completion_tokens": 2, "total_tokens": 5},
+            }
+        )
+
+    monkeypatch.setattr("llm_providers.custom_openai_provider.httpx.post", _fake_post)
+
+    llm = CustomOpenAIChat(base_url="https://example.com/v1", model="qwen3.5-flash")
+    message = llm.invoke([HumanMessage(content="hello")])
+
+    assert message.content == "真正给用户的答案"
+    assert message.additional_kwargs["final_content"] == "真正给用户的答案"
+    assert message.additional_kwargs["reasoning_content"] == '{"tool":"write_file"}'
 
 
 def test_generate_preserves_raw_tool_arguments_when_json_is_truncated(monkeypatch):
