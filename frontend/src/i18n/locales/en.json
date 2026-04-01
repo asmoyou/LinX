@@ -1175,6 +1175,8 @@
     "bindingSourceTemplateDefault": "Template default",
     "approveCandidate": "Approve",
     "rejectCandidate": "Reject",
+    "deleteCandidate": "Delete",
+    "deleteCandidateConfirm": "Delete this skill candidate? This action cannot be undone.",
     "candidateAutoBindHint": "Approval will promote this candidate and auto-bind it back to {{agentName}}.",
     "candidateStatusPending": "Pending",
     "candidateStatusPublished": "Approved",

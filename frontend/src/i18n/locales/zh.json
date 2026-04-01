@@ -1175,6 +1175,8 @@
     "bindingSourceTemplateDefault": "模板默认",
     "approveCandidate": "审批通过",
     "rejectCandidate": "拒绝",
+    "deleteCandidate": "删除",
+    "deleteCandidateConfirm": "确定删除这个技能候选吗？删除后不可恢复。",
     "candidateAutoBindHint": "审批通过后会把这个技能提升到技能库，并自动绑定回 {{agentName}}。",
     "candidateStatusPending": "待审批",
     "candidateStatusPublished": "已审批",

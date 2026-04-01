@@ -10,6 +10,7 @@ import {
   Plus,
   RefreshCw,
   Search,
+  Trash2,
   XCircle,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
@@ -684,6 +685,20 @@ export default function Skills() {
     }
   };
 
+  const handleDeleteCandidate = async (candidateId: string) => {
+    if (!confirm(t("skills.deleteCandidateConfirm"))) {
+      return;
+    }
+
+    setCandidateActionId(candidateId);
+    try {
+      await skillsApi.deleteCandidate(candidateId);
+      await loadPageData();
+    } finally {
+      setCandidateActionId(null);
+    }
+  };
+
   const resolvedOverviewStats = overviewStats
     ? overviewStats
     : {
@@ -1006,6 +1021,21 @@ export default function Skills() {
                         </div>
 
                         <div className="flex items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() =>
+                              void handleDeleteCandidate(candidate.candidate_id)
+                            }
+                            disabled={isBusy}
+                            className="inline-flex items-center gap-2 rounded-lg border border-rose-200 px-3 py-2 text-sm text-rose-600 transition-colors hover:bg-rose-50 disabled:opacity-50 dark:border-rose-500/30 dark:text-rose-300 dark:hover:bg-rose-500/10"
+                          >
+                            {isBusy ? (
+                              <Loader2 className="h-4 w-4 animate-spin" />
+                            ) : (
+                              <Trash2 className="h-4 w-4" />
+                            )}
+                            {t("skills.deleteCandidate")}
+                          </button>
                           <button
                             type="button"
                             onClick={() =>
