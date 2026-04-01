@@ -19,9 +19,11 @@ import AddSkillModalV2 from "@/components/skills/AddSkillModalV2";
 import EditSkillModal from "@/components/skills/EditSkillModal";
 import AgentSkillViewer from "@/components/skills/AgentSkillViewer";
 import SkillTesterModal from "@/components/skills/SkillTesterModal";
+import BindSkillModal from "@/components/skills/BindSkillModal";
 import McpServerCard from "@/components/skills/McpServerCard";
 import AddMcpServerModal from "@/components/skills/AddMcpServerModal";
 import EditMcpServerModal from "@/components/skills/EditMcpServerModal";
+import { agentsApi } from "@/api";
 import {
   mcpServersApi,
   type McpServer,
@@ -34,7 +36,9 @@ import {
   type SkillCandidate,
   type SkillOverviewStats,
   type StoreSkill,
+  type AgentSkillBindingDraft,
 } from "@/api/skills";
+import type { Agent } from "@/types/agent";
 
 type SkillsSection = "inbox" | "library" | "store" | "bindings" | "mcp_servers";
 
@@ -274,8 +278,17 @@ export default function Skills() {
   );
   const [storeSkills, setStoreSkills] = useState<StoreSkill[]>([]);
   const [isStoreLoading, setIsStoreLoading] = useState(true);
-  const [storeError, setStoreError] = useState<string | null>(null);
+  const [storeLoadError, setStoreLoadError] = useState<string | null>(null);
+  const [storeActionError, setStoreActionError] = useState<string | null>(null);
   const [storeActionSkillId, setStoreActionSkillId] = useState<string | null>(null);
+  const [storeAgents, setStoreAgents] = useState<Agent[]>([]);
+  const [isBindModalOpen, setIsBindModalOpen] = useState(false);
+  const [bindTargetSkill, setBindTargetSkill] = useState<StoreSkill | null>(null);
+  const [selectedBindAgentIds, setSelectedBindAgentIds] = useState<string[]>([]);
+  const [bindInitiallyHadSelection, setBindInitiallyHadSelection] = useState(false);
+  const [isAgentsLoading, setIsAgentsLoading] = useState(false);
+  const [isBindingSkill, setIsBindingSkill] = useState(false);
+  const [bindError, setBindError] = useState<string | null>(null);
 
   // MCP servers state
   const [mcpServers, setMcpServers] = useState<McpServer[]>([]);
@@ -361,7 +374,7 @@ export default function Skills() {
     setIsStoreLoading(true);
     setCandidatesError(null);
     setBindingsError(null);
-    setStoreError(null);
+    setStoreLoadError(null);
 
     const [candidatesResult, bindingsResult, overviewResult, mcpResult, storeResult] =
       await Promise.allSettled([
@@ -406,7 +419,7 @@ export default function Skills() {
     if (storeResult.status === "fulfilled") {
       setStoreSkills(storeResult.value);
     } else {
-      setStoreError(
+      setStoreLoadError(
         t("skills.loadStoreError", {
           defaultValue: "Failed to load official skill store.",
         }),
@@ -495,12 +508,13 @@ export default function Skills() {
 
   const handleInstallStoreSkill = async (skill: StoreSkill) => {
     setStoreActionSkillId(skill.skill_id);
+    setStoreActionError(null);
     try {
       await skillsApi.installSkill(skill.skill_id);
       await loadPageData();
     } catch (error) {
       console.error("Failed to install curated skill:", error);
-      setStoreError(
+      setStoreActionError(
         t("skills.installError", {
           defaultValue: "Failed to install this official skill.",
         }),
@@ -510,14 +524,138 @@ export default function Skills() {
     }
   };
 
+  const openBindSkillModal = async (skill: StoreSkill) => {
+    setBindTargetSkill(skill);
+    setSelectedBindAgentIds([]);
+    setBindInitiallyHadSelection(false);
+    setBindError(null);
+    setIsBindModalOpen(true);
+    setIsAgentsLoading(true);
+    try {
+      const agents = await agentsApi.getAll();
+      const manageableAgents = agents.filter((agent) => agent.canManage !== false);
+      setStoreAgents(manageableAgents);
+      const preselectedAgentIds = skill.installed_skill_id
+        ? bindings
+            .filter(
+              (binding) =>
+                binding.owner_type === 'agent' && binding.skill_id === skill.installed_skill_id,
+            )
+            .map((binding) => binding.owner_id)
+        : [];
+      setSelectedBindAgentIds(preselectedAgentIds);
+      setBindInitiallyHadSelection(preselectedAgentIds.length > 0);
+    } catch (error) {
+      console.error("Failed to load agents for binding:", error);
+      setStoreAgents([]);
+      setBindError(
+        t("skills.loadAgentsError", {
+          defaultValue: "Failed to load available agents.",
+        }),
+      );
+    } finally {
+      setIsAgentsLoading(false);
+    }
+  };
+
+  const closeBindSkillModal = () => {
+    setIsBindModalOpen(false);
+    setBindTargetSkill(null);
+    setSelectedBindAgentIds([]);
+    setBindInitiallyHadSelection(false);
+    setBindError(null);
+    setIsAgentsLoading(false);
+    setIsBindingSkill(false);
+  };
+
+  const buildBindingMode = (runtimeMode?: string | null): AgentSkillBindingDraft["binding_mode"] => {
+    if (runtimeMode === "tool" || runtimeMode === "doc" || runtimeMode === "retrieval" || runtimeMode === "hybrid") {
+      return runtimeMode;
+    }
+    return "doc";
+  };
+
+  const handleBindSkillToAgent = async () => {
+    if (!bindTargetSkill) {
+      return;
+    }
+    setIsBindingSkill(true);
+    setBindError(null);
+    try {
+      let installedSkillId = bindTargetSkill.installed_skill_id || null;
+      if (!installedSkillId) {
+        const installResult = await skillsApi.installSkill(bindTargetSkill.skill_id);
+        installedSkillId = installResult.installed_skill_id;
+      }
+      if (!installedSkillId) {
+        throw new Error("Installed skill ID is missing after install.");
+      }
+
+      const currentlyBoundAgentIds = bindings
+        .filter(
+          (binding) =>
+            binding.owner_type === 'agent' && binding.skill_id === installedSkillId,
+        )
+        .map((binding) => binding.owner_id);
+      const affectedAgentIds = Array.from(
+        new Set([...currentlyBoundAgentIds, ...selectedBindAgentIds]),
+      );
+
+      for (const agentId of affectedAgentIds) {
+        const bindingConfig = await skillsApi.getAgentBindings(agentId);
+        const shouldBind = selectedBindAgentIds.includes(agentId);
+        const nextBindings = [...bindingConfig.bindings];
+        const existingIndex = nextBindings.findIndex((binding) => binding.skill_id === installedSkillId);
+        if (shouldBind && existingIndex >= 0) {
+          nextBindings[existingIndex] = {
+            ...nextBindings[existingIndex],
+            enabled: true,
+            binding_mode: buildBindingMode(bindTargetSkill.runtime_mode),
+          };
+        } else if (shouldBind) {
+          const maxPriority = nextBindings.reduce(
+            (maxValue, binding) => Math.max(maxValue, binding.priority ?? 0),
+            -1,
+          );
+          nextBindings.push({
+            skill_id: installedSkillId,
+            binding_mode: buildBindingMode(bindTargetSkill.runtime_mode),
+            enabled: true,
+            priority: maxPriority + 1,
+            source: "manual",
+            auto_update_policy: "follow_active",
+            revision_pin_id: null,
+          });
+        } else {
+          const filteredBindings = nextBindings.filter((binding) => binding.skill_id !== installedSkillId);
+          await skillsApi.updateAgentBindings(agentId, filteredBindings);
+          continue;
+        }
+
+        await skillsApi.updateAgentBindings(agentId, nextBindings);
+      }
+      closeBindSkillModal();
+      await loadPageData();
+    } catch (error) {
+      console.error("Failed to bind skill to agent:", error);
+      setBindError(
+        t("skills.bindError", {
+          defaultValue: "Failed to bind this skill to the selected agent.",
+        }),
+      );
+      setIsBindingSkill(false);
+    }
+  };
+
   const handleUninstallStoreSkill = async (skill: StoreSkill) => {
     setStoreActionSkillId(skill.skill_id);
+    setStoreActionError(null);
     try {
       await skillsApi.uninstallSkill(skill.skill_id);
       await loadPageData();
     } catch (error) {
       console.error("Failed to uninstall curated skill:", error);
-      setStoreError(
+      setStoreActionError(
         t("skills.uninstallError", {
           defaultValue: "Failed to uninstall this official skill.",
         }),
@@ -1052,9 +1190,9 @@ export default function Skills() {
               </div>
             </div>
 
-            {storeError ? (
+            {storeLoadError ? (
               <div className="rounded-2xl border border-rose-200 bg-rose-50 p-6 text-sm text-rose-700 dark:border-rose-500/20 dark:bg-rose-500/10 dark:text-rose-300">
-                {storeError}
+                {storeLoadError}
               </div>
             ) : isStoreLoading ? (
               <div className="flex items-center justify-center py-20">
@@ -1068,9 +1206,17 @@ export default function Skills() {
                 </p>
               </div>
             ) : (
-              <div className="grid grid-cols-1 gap-6 md:grid-cols-2 lg:grid-cols-3">
+              <div className="space-y-4">
+                {storeActionError ? (
+                  <div className="rounded-2xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-700 dark:border-rose-500/20 dark:bg-rose-500/10 dark:text-rose-300">
+                    {storeActionError}
+                  </div>
+                ) : null}
+                <div className="grid grid-cols-1 gap-6 md:grid-cols-2 lg:grid-cols-3">
                 {storeSkills.map((skill) => {
                   const isBusy = storeActionSkillId === skill.skill_id;
+                  const bindingCount = skill.installed_binding_count ?? 0;
+                  const uninstallDisabled = isBusy || bindingCount > 0;
                   return (
                     <article
                       key={skill.skill_id}
@@ -1090,6 +1236,9 @@ export default function Skills() {
                         {skill.runtime_mode ? <span>{skill.runtime_mode}</span> : null}
                         {skill.artifact_kind ? <span>· {skill.artifact_kind}</span> : null}
                         <span>· v{skill.version}</span>
+                        {skill.is_installed && bindingCount > 0 ? (
+                          <span>· {t("skills.storeBoundAgentsCount", { defaultValue: "Bound to {{count}} agents", count: bindingCount })}</span>
+                        ) : null}
                       </div>
                       <div className="mt-6 flex items-center justify-between gap-3">
                         <span className="text-sm text-muted-foreground">
@@ -1098,34 +1247,58 @@ export default function Skills() {
                             : t("skills.storeNotInstalled", { defaultValue: "Not installed" })}
                         </span>
                         {skill.is_installed ? (
-                          <button
-                            type="button"
-                            onClick={() => {
-                              void handleUninstallStoreSkill(skill);
-                            }}
-                            disabled={isBusy}
-                            className="inline-flex items-center gap-2 rounded-xl border border-rose-200 bg-rose-50 px-4 py-2 text-sm font-medium text-rose-700 transition-colors hover:bg-rose-100 disabled:opacity-60 dark:border-rose-500/30 dark:bg-rose-500/10 dark:text-rose-300 dark:hover:bg-rose-500/20"
-                          >
-                            {isBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
-                            {t("skills.uninstall", { defaultValue: "Uninstall" })}
-                          </button>
+                          <div className="flex flex-wrap items-center justify-end gap-2">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                void openBindSkillModal(skill);
+                              }}
+                              className="inline-flex items-center gap-2 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-2 text-sm font-medium text-emerald-700 transition-colors hover:bg-emerald-100 dark:border-emerald-500/30 dark:bg-emerald-500/10 dark:text-emerald-300 dark:hover:bg-emerald-500/20"
+                            >
+                              {t("skills.bindToAgent", { defaultValue: "Bind to Agent" })}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                void handleUninstallStoreSkill(skill);
+                              }}
+                              disabled={uninstallDisabled}
+                              className="inline-flex items-center gap-2 rounded-xl border border-rose-200 bg-rose-50 px-4 py-2 text-sm font-medium text-rose-700 transition-colors hover:bg-rose-100 disabled:opacity-60 dark:border-rose-500/30 dark:bg-rose-500/10 dark:text-rose-300 dark:hover:bg-rose-500/20"
+                            >
+                              {isBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+                              {t("skills.uninstall", { defaultValue: "Uninstall" })}
+                            </button>
+                          </div>
                         ) : (
-                          <button
-                            type="button"
-                            onClick={() => {
-                              void handleInstallStoreSkill(skill);
-                            }}
-                            disabled={isBusy}
-                            className="inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-emerald-500 to-cyan-500 px-4 py-2 text-sm font-medium text-white shadow-lg transition-transform hover:-translate-y-0.5 disabled:opacity-60"
-                          >
-                            {isBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
-                            {t("skills.install", { defaultValue: "Install" })}
-                          </button>
+                          <div className="flex flex-wrap items-center justify-end gap-2">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                void handleInstallStoreSkill(skill);
+                              }}
+                              disabled={isBusy}
+                              className="inline-flex items-center gap-2 rounded-xl border border-border/50 px-4 py-2 text-sm font-medium text-foreground transition-colors hover:bg-muted/40 disabled:opacity-60"
+                            >
+                              {isBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+                              {t("skills.install", { defaultValue: "Install" })}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                void openBindSkillModal(skill);
+                              }}
+                              disabled={isBusy}
+                              className="inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-emerald-500 to-cyan-500 px-4 py-2 text-sm font-medium text-white shadow-lg transition-transform hover:-translate-y-0.5 disabled:opacity-60"
+                            >
+                              {t("skills.installAndBind", { defaultValue: "Install & Bind" })}
+                            </button>
+                          </div>
                         )}
                       </div>
                     </article>
                   );
                 })}
+                </div>
               </div>
             )}
           </section>
@@ -1362,6 +1535,22 @@ export default function Skills() {
             interfaceDefinition={selectedSkill.interface_definition}
           />
         )}
+
+        <BindSkillModal
+          isOpen={isBindModalOpen}
+          skillName={bindTargetSkill?.display_name || ""}
+          agents={storeAgents}
+          selectedAgentIds={selectedBindAgentIds}
+          allowEmptySelection={bindInitiallyHadSelection}
+          isLoadingAgents={isAgentsLoading}
+          isSubmitting={isBindingSkill}
+          error={bindError}
+          onClose={closeBindSkillModal}
+          onChangeSelectedAgentIds={setSelectedBindAgentIds}
+          onConfirm={() => {
+            void handleBindSkillToAgent();
+          }}
+        />
       </div>
     </div>
   );

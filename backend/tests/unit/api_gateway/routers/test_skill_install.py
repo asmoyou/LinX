@@ -59,6 +59,7 @@ def test_list_store_skills_marks_install_status(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     skill_id = str(uuid4())
+    installed_skill_id = str(uuid4())
     monkeypatch.setattr(
         skills_router,
         "get_skill_registry",
@@ -69,7 +70,12 @@ def test_list_store_skills_marks_install_status(
     monkeypatch.setattr(
         skills_router,
         "_find_installed_curated_skill",
-        lambda **_kwargs: SimpleNamespace(skill_id="installed-1", skill_slug="installed-skill"),
+        lambda **_kwargs: SimpleNamespace(skill_id=installed_skill_id, skill_slug="installed-skill"),
+    )
+    monkeypatch.setattr(
+        skills_router,
+        "_count_installed_skill_bindings",
+        lambda **_kwargs: 2,
     )
 
     response = client.get("/skills/store")
@@ -77,7 +83,8 @@ def test_list_store_skills_marks_install_status(
     assert response.status_code == 200
     assert response.json()[0]["skill_id"] == skill_id
     assert response.json()[0]["isInstalled"] is True
-    assert response.json()[0]["installedSkillId"] == "installed-1"
+    assert response.json()[0]["installedSkillId"] == installed_skill_id
+    assert response.json()[0]["installedBindingCount"] == 2
 
 
 def test_install_store_skill_creates_installed_copy(

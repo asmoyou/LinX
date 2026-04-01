@@ -79,6 +79,14 @@ export interface StoreSkill extends Skill {
   is_installed: boolean;
   installed_skill_id?: string | null;
   installed_skill_slug?: string | null;
+  installed_binding_count?: number;
+}
+
+export interface SkillInstallResult {
+  installed_skill_id: string;
+  installed_skill_slug: string;
+  canonical_skill_id: string;
+  source: string;
 }
 
 export interface CreateSkillRequest {
@@ -498,6 +506,12 @@ const normalizeStoreSkill = (raw: unknown): StoreSkill => {
       asOptionalString(record.installed_skill_id) || asOptionalString(record.installedSkillId),
     installed_skill_slug:
       asOptionalString(record.installed_skill_slug) || asOptionalString(record.installedSkillSlug),
+    installed_binding_count:
+      typeof record.installed_binding_count === "number"
+        ? record.installed_binding_count
+        : typeof record.installedBindingCount === "number"
+          ? record.installedBindingCount
+          : 0,
   };
 };
 
@@ -594,8 +608,24 @@ export const skillsApi = {
     return response.data.map((item) => normalizeStoreSkill(item));
   },
 
-  async installSkill(skillId: string): Promise<void> {
-    await apiClient.post(`/skills/${skillId}/install`);
+  async installSkill(skillId: string): Promise<SkillInstallResult> {
+    const response = await apiClient.post<SkillInstallResult>(`/skills/${skillId}/install`);
+    const record = asRecord(response.data);
+    return {
+      installed_skill_id:
+        asOptionalString(record.installed_skill_id) ||
+        asOptionalString(record.installedSkillId) ||
+        "",
+      installed_skill_slug:
+        asOptionalString(record.installed_skill_slug) ||
+        asOptionalString(record.installedSkillSlug) ||
+        "",
+      canonical_skill_id:
+        asOptionalString(record.canonical_skill_id) ||
+        asOptionalString(record.canonicalSkillId) ||
+        skillId,
+      source: asOptionalString(record.source) || "curated_install",
+    };
   },
 
   async uninstallSkill(skillId: string): Promise<void> {

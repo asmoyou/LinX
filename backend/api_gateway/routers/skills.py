@@ -736,6 +736,7 @@ class SkillStoreItemResponse(SkillResponse):
     is_installed: bool = Field(default=False, alias="isInstalled")
     installed_skill_id: Optional[str] = Field(default=None, alias="installedSkillId")
     installed_skill_slug: Optional[str] = Field(default=None, alias="installedSkillSlug")
+    installed_binding_count: int = Field(default=0, alias="installedBindingCount")
 
     model_config = {"populate_by_name": True}
 
@@ -759,6 +760,22 @@ def _find_installed_curated_skill(
             if str(config.get("curated_origin_skill_id") or "") == str(canonical_skill_id):
                 return candidate
     return None
+
+
+def _count_installed_skill_bindings(*, installed_skill_id: UUID, current_user: CurrentUser) -> int:
+    from database.models import Agent, AgentSkillBinding
+
+    with get_db_session() as session:
+        return (
+            session.query(AgentSkillBinding)
+            .join(Agent, Agent.agent_id == AgentSkillBinding.agent_id)
+            .filter(
+                Agent.owner_user_id == UUID(str(current_user.user_id)),
+                AgentSkillBinding.skill_id == installed_skill_id,
+                AgentSkillBinding.enabled.is_(True),
+            )
+            .count()
+        )
 
 
 class RegisterDefaultsResponse(BaseModel):
@@ -929,6 +946,14 @@ async def list_store_skills(
                     isInstalled=installed is not None,
                     installedSkillId=str(installed.skill_id) if installed else None,
                     installedSkillSlug=str(installed.skill_slug) if installed else None,
+                    installedBindingCount=(
+                        _count_installed_skill_bindings(
+                            installed_skill_id=installed.skill_id,
+                            current_user=current_user,
+                        )
+                        if installed
+                        else 0
+                    ),
                 )
             )
         return items
