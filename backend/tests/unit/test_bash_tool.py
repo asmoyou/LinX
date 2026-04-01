@@ -11,7 +11,7 @@ import signal
 import subprocess
 import time
 from pathlib import Path
-from unittest.mock import Mock
+from unittest.mock import MagicMock, Mock
 from uuid import uuid4
 
 import pytest
@@ -233,6 +233,31 @@ class TestEnhancedBashTool:
         assert result.success is False
         assert "ProcessManager" in result.stderr or "ProcessManager" in result.error_message
 
+    def test_sandbox_execution_injects_shared_python_runtime_env(self, monkeypatch):
+        tool = EnhancedBashTool()
+        tool.set_execution_context("sandbox-1")
+        mock_container_manager = MagicMock()
+        mock_container_manager.get_container_status.return_value = ContainerStatus.RUNNING
+        mock_container_manager.exec_in_container.return_value = (0, "ok", "")
+        tool._container_manager = mock_container_manager
+
+        monkeypatch.setattr(
+            "agent_framework.tools.bash_tool.write_sandbox_runtime_env_file",
+            MagicMock(),
+        )
+        monkeypatch.setattr(
+            "agent_framework.tools.bash_tool.probe_and_write_sandbox_capabilities",
+            MagicMock(return_value={"renderers": {}}),
+        )
+
+        result = tool.execute(BashToolConfig(command="python3 -c 'print(1)'", env={"TEST_VAR": "ok"}))
+
+        assert result.success is True
+        _, kwargs = mock_container_manager.exec_in_container.call_args
+        assert kwargs["environment"]["TEST_VAR"] == "ok"
+        assert kwargs["environment"]["PIP_TARGET"] == "/opt/linx_python_deps"
+        assert kwargs["environment"]["PYTHONPATH"].startswith("/opt/linx_python_deps")
+
     def test_background_execution_with_manager(self):
         """Test background execution with ProcessManager."""
         process_manager = ProcessManager()
@@ -289,13 +314,24 @@ class TestEnhancedBashTool:
         fake_manager.exec_in_container.return_value = (0, "sandbox-ok\n", "")
         tool._container_manager = fake_manager
         tool.set_execution_context("sandbox-123")
-
-        result = tool.execute(
-            BashToolConfig(
-                command="cat /workspace/output/file.txt",
-                workdir="/workspace/output",
+        with (
+            pytest.MonkeyPatch.context() as m,
+        ):
+            m.setattr(
+                "agent_framework.tools.bash_tool.write_sandbox_runtime_env_file",
+                MagicMock(),
             )
-        )
+            m.setattr(
+                "agent_framework.tools.bash_tool.probe_and_write_sandbox_capabilities",
+                MagicMock(return_value={"renderers": {}}),
+            )
+
+            result = tool.execute(
+                BashToolConfig(
+                    command="cat /workspace/output/file.txt",
+                    workdir="/workspace/output",
+                )
+            )
 
         assert result.success is True
         assert "sandbox-ok" in result.stdout

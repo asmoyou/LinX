@@ -75,6 +75,12 @@ export interface Skill {
   };
 }
 
+export interface StoreSkill extends Skill {
+  is_installed: boolean;
+  installed_skill_id?: string | null;
+  installed_skill_slug?: string | null;
+}
+
 export interface CreateSkillRequest {
   display_name: string;
   skill_slug?: string;
@@ -145,6 +151,7 @@ export interface ListSkillsRequest {
   offset?: number;
   includeCode?: boolean;
   query?: string;
+  sourceKind?: string;
 }
 
 export interface PaginatedSkillsResponse {
@@ -397,6 +404,103 @@ const normalizeSkillBinding = (raw: unknown): SkillBinding => {
   };
 };
 
+const normalizeStoreSkill = (raw: unknown): StoreSkill => {
+  const record = asRecord(raw);
+
+  return {
+    skill_id: String(record.skill_id || record.skillId || ""),
+    skill_slug:
+      asOptionalString(record.skill_slug) || asOptionalString(record.skillSlug) || "",
+    display_name:
+      asOptionalString(record.display_name) ||
+      asOptionalString(record.displayName) ||
+      "Unnamed skill",
+    description: asOptionalString(record.description) || "",
+    version: asOptionalString(record.version) || "1.0.0",
+    access_level: (record.access_level || record.accessLevel || "private") as SkillAccessLevel,
+    department_id:
+      asOptionalString(record.department_id) || asOptionalString(record.departmentId),
+    department_name:
+      asOptionalString(record.department_name) || asOptionalString(record.departmentName),
+    source_kind:
+      asOptionalString(record.source_kind) || asOptionalString(record.sourceKind),
+    artifact_kind:
+      asOptionalString(record.artifact_kind) || asOptionalString(record.artifactKind),
+    runtime_mode:
+      asOptionalString(record.runtime_mode) || asOptionalString(record.runtimeMode),
+    lifecycle_state:
+      asOptionalString(record.lifecycle_state) || asOptionalString(record.lifecycleState),
+    active_revision_id:
+      asOptionalString(record.active_revision_id) || asOptionalString(record.activeRevisionId),
+    can_edit: typeof record.can_edit === "boolean" ? record.can_edit : Boolean(record.canEdit),
+    can_delete:
+      typeof record.can_delete === "boolean" ? record.can_delete : Boolean(record.canDelete),
+    can_publish_public:
+      typeof record.can_publish_public === "boolean"
+        ? record.can_publish_public
+        : Boolean(record.canPublishPublic),
+    skill_type:
+      asOptionalString(record.skill_type) || asOptionalString(record.skillType) || undefined,
+    storage_type:
+      asOptionalString(record.storage_type) || asOptionalString(record.storageType) || undefined,
+    storage_path:
+      asOptionalString(record.storage_path) || asOptionalString(record.storagePath) || undefined,
+    code: asOptionalString(record.code),
+    config: asRecord(record.config),
+    manifest: asRecord(record.manifest),
+    is_active: typeof record.is_active === "boolean" ? record.is_active : undefined,
+    execution_count:
+      typeof record.execution_count === "number"
+        ? record.execution_count
+        : typeof record.executionCount === "number"
+          ? record.executionCount
+          : undefined,
+    last_executed_at:
+      asOptionalString(record.last_executed_at) || asOptionalString(record.lastExecutedAt) || undefined,
+    average_execution_time:
+      typeof record.average_execution_time === "number"
+        ? record.average_execution_time
+        : typeof record.averageExecutionTime === "number"
+          ? record.averageExecutionTime
+          : undefined,
+    updated_at:
+      asOptionalString(record.updated_at) || asOptionalString(record.updatedAt) || undefined,
+    interface_definition: (record.interface_definition || record.interfaceDefinition || {
+      inputs: {},
+      outputs: {},
+    }) as Skill["interface_definition"],
+    dependencies: asStringArray(record.dependencies),
+    created_at:
+      asOptionalString(record.created_at) || asOptionalString(record.createdAt) || "",
+    created_by:
+      asOptionalString(record.created_by) || asOptionalString(record.createdBy) || undefined,
+    skill_md_content:
+      asOptionalString(record.skill_md_content) || asOptionalString(record.skillMdContent) || undefined,
+    homepage: asOptionalString(record.homepage) || undefined,
+    metadata: asRecord(record.metadata),
+    skill_metadata:
+      Object.keys(asRecord(record.skill_metadata)).length > 0
+        ? asRecord(record.skill_metadata)
+        : Object.keys(asRecord(record.skillMetadata)).length > 0
+          ? asRecord(record.skillMetadata)
+          : undefined,
+    gating_status:
+      Object.keys(asRecord(record.gating_status)).length > 0
+        ? asRecord(record.gating_status) as Skill["gating_status"]
+        : Object.keys(asRecord(record.gatingStatus)).length > 0
+          ? asRecord(record.gatingStatus) as Skill["gating_status"]
+          : undefined,
+    is_installed:
+      typeof record.is_installed === "boolean"
+        ? record.is_installed
+        : Boolean(record.isInstalled),
+    installed_skill_id:
+      asOptionalString(record.installed_skill_id) || asOptionalString(record.installedSkillId),
+    installed_skill_slug:
+      asOptionalString(record.installed_skill_slug) || asOptionalString(record.installedSkillSlug),
+  };
+};
+
 export const skillsApi = {
   async getCandidates(
     params?: ListSkillCandidatesRequest,
@@ -485,11 +589,25 @@ export const skillsApi = {
     });
   },
 
+  async getStore(): Promise<StoreSkill[]> {
+    const response = await apiClient.get<StoreSkill[]>("/skills/store");
+    return response.data.map((item) => normalizeStoreSkill(item));
+  },
+
+  async installSkill(skillId: string): Promise<void> {
+    await apiClient.post(`/skills/${skillId}/install`);
+  },
+
+  async uninstallSkill(skillId: string): Promise<void> {
+    await apiClient.delete(`/skills/${skillId}/install`);
+  },
+
   async listPage({
     limit = 24,
     offset = 0,
     includeCode = false,
     query,
+    sourceKind,
   }: ListSkillsRequest = {}): Promise<PaginatedSkillsResponse> {
     const normalizedQuery = query?.trim();
     const response = await apiClient.get<Skill[]>(
@@ -501,11 +619,13 @@ export const skillsApi = {
               limit,
               offset,
               include_code: includeCode,
+              source_kind: sourceKind,
             }
           : {
               limit,
               offset,
               include_code: includeCode,
+              source_kind: sourceKind,
             },
       },
     );

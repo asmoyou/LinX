@@ -33,15 +33,16 @@ import {
   type SkillBinding,
   type SkillCandidate,
   type SkillOverviewStats,
+  type StoreSkill,
 } from "@/api/skills";
 
-type SkillsSection = "inbox" | "library" | "bindings" | "mcp_servers";
+type SkillsSection = "inbox" | "library" | "store" | "bindings" | "mcp_servers";
 
 const SECTION_PARAM = "section";
 const LIBRARY_PAGE_SIZE = 24;
 
 const getSectionFromSearchParam = (value: string | null): SkillsSection => {
-  if (value === "inbox" || value === "bindings" || value === "mcp_servers") {
+  if (value === "inbox" || value === "store" || value === "bindings" || value === "mcp_servers") {
     return value;
   }
   return "library";
@@ -271,6 +272,10 @@ export default function Skills() {
   const [selectedSkillMode, setSelectedSkillMode] = useState<"view" | "edit">(
     "edit",
   );
+  const [storeSkills, setStoreSkills] = useState<StoreSkill[]>([]);
+  const [isStoreLoading, setIsStoreLoading] = useState(true);
+  const [storeError, setStoreError] = useState<string | null>(null);
+  const [storeActionSkillId, setStoreActionSkillId] = useState<string | null>(null);
 
   // MCP servers state
   const [mcpServers, setMcpServers] = useState<McpServer[]>([]);
@@ -353,15 +358,18 @@ export default function Skills() {
     setIsCandidatesLoading(true);
     setIsBindingsLoading(true);
     setIsMcpLoading(true);
+    setIsStoreLoading(true);
     setCandidatesError(null);
     setBindingsError(null);
+    setStoreError(null);
 
-    const [candidatesResult, bindingsResult, overviewResult, mcpResult] =
+    const [candidatesResult, bindingsResult, overviewResult, mcpResult, storeResult] =
       await Promise.allSettled([
         skillsApi.getCandidates({ status: "all", limit: 100 }),
         skillsApi.getBindings({ limit: 200 }),
         skillsApi.getOverviewStats(),
         mcpServersApi.getAll(false),
+        skillsApi.getStore(),
       ]);
 
     if (overviewResult.status === "fulfilled") {
@@ -394,6 +402,17 @@ export default function Skills() {
       setMcpServers(mcpResult.value);
     }
     setIsMcpLoading(false);
+
+    if (storeResult.status === "fulfilled") {
+      setStoreSkills(storeResult.value);
+    } else {
+      setStoreError(
+        t("skills.loadStoreError", {
+          defaultValue: "Failed to load official skill store.",
+        }),
+      );
+    }
+    setIsStoreLoading(false);
   };
 
   const loadPageData = async ({
@@ -472,6 +491,40 @@ export default function Skills() {
   const handleTestSkill = (skill: Skill) => {
     setSelectedSkill(skill);
     setIsTesterModalOpen(true);
+  };
+
+  const handleInstallStoreSkill = async (skill: StoreSkill) => {
+    setStoreActionSkillId(skill.skill_id);
+    try {
+      await skillsApi.installSkill(skill.skill_id);
+      await loadPageData();
+    } catch (error) {
+      console.error("Failed to install curated skill:", error);
+      setStoreError(
+        t("skills.installError", {
+          defaultValue: "Failed to install this official skill.",
+        }),
+      );
+    } finally {
+      setStoreActionSkillId(null);
+    }
+  };
+
+  const handleUninstallStoreSkill = async (skill: StoreSkill) => {
+    setStoreActionSkillId(skill.skill_id);
+    try {
+      await skillsApi.uninstallSkill(skill.skill_id);
+      await loadPageData();
+    } catch (error) {
+      console.error("Failed to uninstall curated skill:", error);
+      setStoreError(
+        t("skills.uninstallError", {
+          defaultValue: "Failed to uninstall this official skill.",
+        }),
+      );
+    } finally {
+      setStoreActionSkillId(null);
+    }
   };
 
   const handleReviewCandidate = async (
@@ -564,6 +617,12 @@ export default function Skills() {
       label: t("skills.sectionLibrary"),
       icon: Package,
       count: resolvedOverviewStats.total_skills,
+    },
+    {
+      id: "store",
+      label: t("skills.sectionStore", "Skill Store"),
+      icon: Package,
+      count: storeSkills.length,
     },
     {
       id: "bindings",
@@ -972,6 +1031,101 @@ export default function Skills() {
                     onTest={handleTestSkill}
                   />
                 ))}
+              </div>
+            )}
+          </section>
+        )}
+
+        {activeSection === "store" && (
+          <section className="space-y-4">
+            <div className="glass-panel rounded-2xl p-6 shadow-xl">
+              <div>
+                <h2 className="text-xl font-semibold text-foreground">
+                  {t("skills.storeTitle", { defaultValue: "Official Skill Store" })}
+                </h2>
+                <p className="mt-1 text-sm text-muted-foreground">
+                  {t("skills.storeDescription", {
+                    defaultValue:
+                      "Browse official curated skills. Install adds the skill to your library; uninstall removes your installed copy.",
+                  })}
+                </p>
+              </div>
+            </div>
+
+            {storeError ? (
+              <div className="rounded-2xl border border-rose-200 bg-rose-50 p-6 text-sm text-rose-700 dark:border-rose-500/20 dark:bg-rose-500/10 dark:text-rose-300">
+                {storeError}
+              </div>
+            ) : isStoreLoading ? (
+              <div className="flex items-center justify-center py-20">
+                <Loader2 className="h-8 w-8 animate-spin text-emerald-500" />
+              </div>
+            ) : storeSkills.length === 0 ? (
+              <div className="glass-panel rounded-2xl p-16 text-center shadow-xl">
+                <Package className="mx-auto h-10 w-10 text-muted-foreground" />
+                <p className="mt-4 text-sm text-muted-foreground">
+                  {t("skills.storeEmpty", { defaultValue: "No official skills available right now." })}
+                </p>
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 gap-6 md:grid-cols-2 lg:grid-cols-3">
+                {storeSkills.map((skill) => {
+                  const isBusy = storeActionSkillId === skill.skill_id;
+                  return (
+                    <article
+                      key={skill.skill_id}
+                      className="glass-panel rounded-2xl border border-border/40 p-6 shadow-xl"
+                    >
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <h3 className="text-lg font-semibold text-foreground">{skill.display_name}</h3>
+                          <p className="mt-1 text-xs font-mono text-muted-foreground">{skill.skill_slug}</p>
+                        </div>
+                        <span className="rounded-full bg-emerald-100 px-2.5 py-1 text-xs font-medium text-emerald-700 dark:bg-emerald-500/20 dark:text-emerald-300">
+                          {t("skills.officialCurated", { defaultValue: "Official" })}
+                        </span>
+                      </div>
+                      <p className="mt-4 text-sm text-muted-foreground">{skill.description}</p>
+                      <div className="mt-4 flex flex-wrap gap-2 text-xs text-muted-foreground">
+                        {skill.runtime_mode ? <span>{skill.runtime_mode}</span> : null}
+                        {skill.artifact_kind ? <span>· {skill.artifact_kind}</span> : null}
+                        <span>· v{skill.version}</span>
+                      </div>
+                      <div className="mt-6 flex items-center justify-between gap-3">
+                        <span className="text-sm text-muted-foreground">
+                          {skill.is_installed
+                            ? t("skills.storeInstalled", { defaultValue: "Installed" })
+                            : t("skills.storeNotInstalled", { defaultValue: "Not installed" })}
+                        </span>
+                        {skill.is_installed ? (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              void handleUninstallStoreSkill(skill);
+                            }}
+                            disabled={isBusy}
+                            className="inline-flex items-center gap-2 rounded-xl border border-rose-200 bg-rose-50 px-4 py-2 text-sm font-medium text-rose-700 transition-colors hover:bg-rose-100 disabled:opacity-60 dark:border-rose-500/30 dark:bg-rose-500/10 dark:text-rose-300 dark:hover:bg-rose-500/20"
+                          >
+                            {isBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+                            {t("skills.uninstall", { defaultValue: "Uninstall" })}
+                          </button>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              void handleInstallStoreSkill(skill);
+                            }}
+                            disabled={isBusy}
+                            className="inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-emerald-500 to-cyan-500 px-4 py-2 text-sm font-medium text-white shadow-lg transition-transform hover:-translate-y-0.5 disabled:opacity-60"
+                          >
+                            {isBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+                            {t("skills.install", { defaultValue: "Install" })}
+                          </button>
+                        )}
+                      </div>
+                    </article>
+                  );
+                })}
               </div>
             )}
           </section>

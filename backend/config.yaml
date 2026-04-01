@@ -210,6 +210,11 @@ agents:
     heartbeat_interval_seconds: 30
     max_retries: 3
     retry_delay_seconds: 5
+skill_library:
+  curated_sync:
+    run_on_startup: true
+    fail_soft: true
+    curated_root: backend/skill_library/curated_skills
 code_execution:
   sandbox_mode: auto
   fallback_enabled: true

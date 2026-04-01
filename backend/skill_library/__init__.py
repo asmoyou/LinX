@@ -17,6 +17,7 @@ from skill_library.default_skills import (
     get_default_skill_definitions,
     register_default_skills,
 )
+from skill_library.curated_sync import sync_curated_skills
 from skill_library.dependency_resolver import (
     DependencyGraph,
     DependencyResolver,
@@ -90,6 +91,7 @@ __all__ = [
     # Default skills
     "register_default_skills",
     "get_default_skill_definitions",
+    "sync_curated_skills",
     # Dynamic skill generation
     "DynamicSkillGenerator",
     "GeneratedSkill",

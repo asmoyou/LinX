@@ -155,11 +155,16 @@ class SkillModel:
         self,
         *,
         access_context: SkillAccessContext,
+        source_kind: Optional[str] = None,
         limit: int = 100,
         offset: int = 0,
     ) -> List[Skill]:
         with get_db_session() as session:
             query = self._apply_visibility_filter(self._base_query(session), access_context)
+            if source_kind:
+                query = query.filter(Skill.source_kind == source_kind)
+            else:
+                query = query.filter(Skill.source_kind != "curated")
             return (
                 query.order_by(Skill.created_at.desc(), Skill.skill_id.desc())
                 .limit(limit)
@@ -171,9 +176,14 @@ class SkillModel:
         self,
         *,
         access_context: SkillAccessContext,
+        source_kind: Optional[str] = None,
     ) -> int:
         with get_db_session() as session:
             query = self._apply_visibility_filter(self._base_query(session), access_context)
+            if source_kind:
+                query = query.filter(Skill.source_kind == source_kind)
+            else:
+                query = query.filter(Skill.source_kind != "curated")
             return query.count()
 
     def get_overview_stats(self, *, access_context: Optional[SkillAccessContext] = None) -> Dict[str, Any]:
@@ -322,12 +332,17 @@ class SkillModel:
         *,
         query: str,
         access_context: SkillAccessContext,
+        source_kind: Optional[str] = None,
         limit: int = 100,
         offset: int = 0,
     ) -> List[Skill]:
         with get_db_session() as session:
             search_pattern = f"%{query}%"
             filtered = self._apply_visibility_filter(self._base_query(session), access_context)
+            if source_kind:
+                filtered = filtered.filter(Skill.source_kind == source_kind)
+            else:
+                filtered = filtered.filter(Skill.source_kind != "curated")
             return (
                 filtered.filter(
                     or_(
@@ -347,10 +362,15 @@ class SkillModel:
         *,
         query: str,
         access_context: SkillAccessContext,
+        source_kind: Optional[str] = None,
     ) -> int:
         with get_db_session() as session:
             search_pattern = f"%{query}%"
             filtered = self._apply_visibility_filter(self._base_query(session), access_context)
+            if source_kind:
+                filtered = filtered.filter(Skill.source_kind == source_kind)
+            else:
+                filtered = filtered.filter(Skill.source_kind != "curated")
             return (
                 filtered.filter(
                     or_(

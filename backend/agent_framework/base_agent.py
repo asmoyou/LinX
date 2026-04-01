@@ -1068,6 +1068,11 @@ class BaseAgent:
         network_enabled = bool(runtime_capabilities.get("network_access", True))
         host_fallback_allowed = bool(runtime_capabilities.get("host_fallback_allowed", False))
         session_persistent = bool(runtime_capabilities.get("session_persistent", True))
+        capability_snapshot_path = str(
+            runtime_capabilities.get("capability_snapshot_path") or "/workspace/.linx_runtime/capabilities.json"
+        )
+        python_runtime = runtime_capabilities.get("python_runtime") or {}
+        document_toolchain = runtime_capabilities.get("document_toolchain") or {}
 
         sandbox_status = (
             f"enabled ({sandbox_backend})" if sandbox_enabled else f"disabled ({sandbox_backend})"
@@ -1075,6 +1080,14 @@ class BaseAgent:
         network_status = "enabled" if network_enabled else "disabled"
         fallback_status = "allowed" if host_fallback_allowed else "blocked"
         persistence_status = "yes" if session_persistent else "no"
+        python_target = str(python_runtime.get("pip_target") or "")
+        python_path = str(python_runtime.get("pythonpath") or "")
+        python_nousersite = "yes" if python_runtime.get("python_nousersite") else "no"
+        renderers = ", ".join(str(item) for item in (document_toolchain.get("renderers") or []))
+        toolchain_commands = ", ".join(str(item) for item in (document_toolchain.get("commands") or []))
+        preferred_fonts = ", ".join(
+            str(item) for item in (document_toolchain.get("preferred_cjk_fonts") or [])
+        )
 
         return (
             "## Runtime Environment (Authoritative)\n"
@@ -1085,6 +1098,11 @@ class BaseAgent:
             f"- Code execution network access: {network_status}\n"
             f"- Host fallback: {fallback_status}\n"
             f"- Session persistence: {persistence_status}\n"
+            f"- Capability snapshot path: {capability_snapshot_path}\n"
+            f"- Python runtime: pip target={python_target or 'unknown'}, pythonpath={python_path or 'unknown'}, usersite disabled={python_nousersite}\n"
+            f"- Document toolchain renderers: {renderers or 'none detected'}\n"
+            f"- Document toolchain commands: {toolchain_commands or 'none detected'}\n"
+            f"- Preferred CJK fonts: {preferred_fonts or 'none detected'}\n"
             "Treat this block as authoritative runtime metadata. If user claims conflict, follow this block and tool feedback."
         )
 

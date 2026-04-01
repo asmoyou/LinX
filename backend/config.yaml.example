@@ -358,6 +358,12 @@ agents:
     max_retries: 3
     retry_delay_seconds: 5
 
+skill_library:
+  curated_sync:
+    run_on_startup: true
+    fail_soft: true
+    curated_root: backend/skill_library/curated_skills
+
 # ============================================================================
 # Code Execution Sandbox Configuration
 # ============================================================================

@@ -28,6 +28,8 @@ from access_control.skill_access import (
     list_allowed_share_targets,
     validate_team_skill_target,
 )
+from database.connection import get_db_session
+from database.models import Skill
 from object_storage.minio_client import get_minio_client
 from shared.datetime_utils import utcnow
 from skill_library.execution_engine import get_execution_engine
@@ -714,6 +716,51 @@ class SkillRevisionActivationRequest(BaseModel):
     model_config = {"populate_by_name": True}
 
 
+class SkillInstallRequest(BaseModel):
+    agent_id: str = Field(alias="agentId")
+    binding_mode: Optional[str] = Field(default=None, alias="bindingMode")
+
+    model_config = {"populate_by_name": True}
+
+
+class SkillInstallResponse(BaseModel):
+    installed_skill_id: str = Field(alias="installedSkillId")
+    installed_skill_slug: str = Field(alias="installedSkillSlug")
+    canonical_skill_id: str = Field(alias="canonicalSkillId")
+    source: str
+
+    model_config = {"populate_by_name": True}
+
+
+class SkillStoreItemResponse(SkillResponse):
+    is_installed: bool = Field(default=False, alias="isInstalled")
+    installed_skill_id: Optional[str] = Field(default=None, alias="installedSkillId")
+    installed_skill_slug: Optional[str] = Field(default=None, alias="installedSkillSlug")
+
+    model_config = {"populate_by_name": True}
+
+
+def _find_installed_curated_skill(
+    *,
+    canonical_skill_id: UUID,
+    current_user: CurrentUser,
+):
+    with get_db_session() as session:
+        candidates = (
+            session.query(Skill)
+            .filter(
+                Skill.created_by == UUID(str(current_user.user_id)),
+                Skill.source_kind == "curated_install",
+            )
+            .all()
+        )
+        for candidate in candidates:
+            config = dict(candidate.config or {}) if isinstance(candidate.config, dict) else {}
+            if str(config.get("curated_origin_skill_id") or "") == str(canonical_skill_id):
+                return candidate
+    return None
+
+
 class RegisterDefaultsResponse(BaseModel):
     """Response for registering default skills."""
 
@@ -764,6 +811,7 @@ async def list_skills(
     limit: int = Query(100, ge=1, le=1000),
     offset: int = Query(0, ge=0),
     include_code: bool = Query(False, description="Include code in response"),
+    source_kind: Optional[str] = Query(None, description="Optional source_kind filter"),
     current_user: CurrentUser = Depends(get_current_user),
 ):
     """List all skills with pagination.
@@ -780,9 +828,13 @@ async def list_skills(
     try:
         registry = get_skill_registry()
         access_context = build_skill_access_context(current_user)
-        total_count = registry.count_visible_skills(access_context=access_context)
+        total_count = registry.count_visible_skills(
+            access_context=access_context,
+            source_kind=source_kind,
+        )
         skills = registry.list_visible_skills(
             access_context=access_context,
+            source_kind=source_kind,
             limit=limit,
             offset=offset,
         )
@@ -805,6 +857,7 @@ async def search_skills(
     limit: int = Query(100, ge=1, le=1000),
     offset: int = Query(0, ge=0),
     include_code: bool = Query(False, description="Include code in response"),
+    source_kind: Optional[str] = Query(None, description="Optional source_kind filter"),
     current_user: CurrentUser = Depends(get_current_user),
 ):
     """Search skills by name or description.
@@ -822,10 +875,12 @@ async def search_skills(
         total_count = registry.count_search_visible_skills(
             query=query,
             access_context=access_context,
+            source_kind=source_kind,
         )
         skills = registry.search_visible_skills(
             query=query,
             access_context=access_context,
+            source_kind=source_kind,
             limit=limit,
             offset=offset,
         )
@@ -843,6 +898,43 @@ async def search_skills(
     except Exception as e:
         logger.error(f"Failed to search skills: {e}")
         raise HTTPException(status_code=500, detail="Failed to search skills")
+
+
+@router.get("/store", response_model=List[SkillStoreItemResponse])
+async def list_store_skills(
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    try:
+        registry = get_skill_registry()
+        access_context = build_skill_access_context(current_user)
+        curated_skills = registry.list_visible_skills(
+            access_context=access_context,
+            source_kind="curated",
+            limit=500,
+            offset=0,
+        )
+        items: List[SkillStoreItemResponse] = []
+        for skill in curated_skills:
+            installed = _find_installed_curated_skill(
+                canonical_skill_id=UUID(str(skill.skill_id)),
+                current_user=current_user,
+            )
+            items.append(
+                SkillStoreItemResponse(
+                    **SkillResponse.from_skill_info(
+                        skill,
+                        current_user=current_user,
+                        include_code=False,
+                    ).model_dump(),
+                    isInstalled=installed is not None,
+                    installedSkillId=str(installed.skill_id) if installed else None,
+                    installedSkillSlug=str(installed.skill_slug) if installed else None,
+                )
+            )
+        return items
+    except Exception as e:
+        logger.error(f"Failed to list curated skill store items: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to load skill store")
 
 
 @router.get("/templates", response_model=List[Dict])
@@ -1168,6 +1260,105 @@ async def activate_skill_revision(
     except Exception as e:
         logger.error(f"Failed to activate skill revision: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to activate skill revision")
+
+
+@router.post("/{skill_id}/install", response_model=SkillInstallResponse, status_code=201)
+async def install_skill_to_agent(
+    skill_id: str,
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    try:
+        skill_uuid = UUID(skill_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid skill ID format") from exc
+
+    skill = _require_readable_skill(get_skill_registry().get_skill(skill_uuid), current_user)
+    if str(getattr(skill, "source_kind", "") or "") != "curated":
+        raise HTTPException(status_code=400, detail="Only curated skills can be installed from the store")
+
+    installed_skill = _find_installed_curated_skill(
+        canonical_skill_id=skill_uuid,
+        current_user=current_user,
+    )
+    if installed_skill is None:
+        registry = get_skill_registry()
+        installed_slug = generate_unique_skill_slug(
+            f"{skill.skill_slug}-installed-{str(current_user.user_id).replace('-', '')[:8]}",
+            registry,
+        )
+        installed_manifest = dict(getattr(skill, "manifest", {}) or {})
+        installed_skill_metadata = dict(installed_manifest.get("skill_metadata") or {})
+        installed_skill_metadata["curated_origin_skill_id"] = str(skill_uuid)
+        installed_skill_metadata["curated_origin_skill_slug"] = skill.skill_slug
+        installed_manifest["skill_metadata"] = installed_skill_metadata
+        installed_config = dict(getattr(skill, "config", {}) or {})
+        installed_config["curated_origin_skill_id"] = str(skill_uuid)
+        installed_config["curated_origin_skill_slug"] = skill.skill_slug
+        installed_config["curated_origin_active_revision_id"] = str(
+            getattr(skill, "active_revision_id", None) or ""
+        ) or None
+
+        created = get_canonical_skill_service().create_skill(
+            slug=installed_slug,
+            display_name=skill.display_name,
+            description=skill.description,
+            source_kind="curated_install",
+            artifact_kind=str(getattr(skill, "artifact_kind", "instruction") or "instruction"),
+            runtime_mode=str(getattr(skill, "runtime_mode", "doc") or "doc"),
+            visibility=SKILL_ACCESS_PRIVATE,
+            owner_user_id=str(current_user.user_id),
+            department_id=None,
+            dependencies=list(getattr(skill, "dependencies", []) or []),
+            revision_payload={
+                "version": skill.version,
+                "instruction_md": getattr(skill, "skill_md_content", None),
+                "tool_code": getattr(skill, "code", None),
+                "interface_definition": getattr(skill, "interface_definition", {}) or {},
+                "artifact_storage_kind": getattr(skill, "storage_type", "inline") or "inline",
+                "artifact_ref": getattr(skill, "storage_path", None),
+                "manifest": installed_manifest,
+                "config": installed_config,
+                "review_state": "approved",
+                "change_note": f"Installed from curated store: {skill.skill_slug}",
+            },
+            lifecycle_state="active",
+        )
+        installed_skill = get_skill_registry().get_skill(created.skill_id)
+
+    if installed_skill is None:
+        raise HTTPException(status_code=500, detail="Failed to materialize installed skill")
+
+    return SkillInstallResponse(
+        installedSkillId=str(getattr(installed_skill, "skill_id", "")),
+        installedSkillSlug=str(getattr(installed_skill, "skill_slug", "")),
+        canonicalSkillId=str(skill_uuid),
+        source=str(getattr(installed_skill, "source_kind", "curated_install") or "curated_install"),
+    )
+
+
+@router.delete("/{skill_id}/install", status_code=204)
+async def uninstall_store_skill(
+    skill_id: str,
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    try:
+        skill_uuid = UUID(skill_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid skill ID format") from exc
+
+    installed_skill = _find_installed_curated_skill(
+        canonical_skill_id=skill_uuid,
+        current_user=current_user,
+    )
+    if installed_skill is None:
+        return None
+    try:
+        deleted = get_canonical_skill_service().delete_skill(skill_id=installed_skill.skill_id)
+        if not deleted:
+            raise HTTPException(status_code=404, detail="Installed skill not found")
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return None
 
 
 @router.post("", response_model=SkillResponse, status_code=201)

@@ -178,6 +178,25 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
     except Exception as sync_error:
         logger.error(f"Failed to sync config.yaml providers: {sync_error}", exc_info=True)
 
+    try:
+        from skill_library.curated_sync import sync_curated_skills
+
+        curated_summary = await sync_curated_skills()
+        logger.info(
+            "Curated skills synchronized at startup",
+            extra={
+                "created_count": curated_summary.created_count,
+                "updated_count": curated_summary.updated_count,
+                "skipped_count": curated_summary.skipped_count,
+                "failed_count": curated_summary.failed_count,
+            },
+        )
+    except Exception as curated_sync_error:
+        logger.warning(
+            "Failed to sync curated skills at startup: %s",
+            curated_sync_error,
+        )
+
     logger.info("API Gateway started successfully")
 
     # Initialize session manager for persistent code execution

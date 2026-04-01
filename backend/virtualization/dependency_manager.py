@@ -16,9 +16,14 @@ import json
 import logging
 import re
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional, Set
-from datetime import datetime, timedelta
+
+from virtualization.sandbox_runtime_env import (
+    DEFAULT_INTERNAL_DEP_WORKDIR,
+    DEFAULT_INTERNAL_PYTHON_DEPS_DIR,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -479,7 +484,7 @@ set -e
 echo "Installing Python dependencies..."
 
 # Create requirements file
-DEP_WORKDIR="${{LINX_DEP_WORKDIR:-/opt/linx_runtime}}"
+DEP_WORKDIR="${{LINX_DEP_WORKDIR:-%s}}"
 mkdir -p "$DEP_WORKDIR"
 REQ_FILE="$DEP_WORKDIR/requirements.txt"
 
@@ -488,7 +493,7 @@ cat > "$REQ_FILE" <<'EOF'
 EOF
 
 # Install to writable target so container-local dependency caching remains isolated
-DEP_TARGET="${{PIP_TARGET:-/opt/linx_python_deps}}"
+DEP_TARGET="${{PIP_TARGET:-%s}}"
 mkdir -p "$DEP_TARGET"
 
 # Install with pip (pip -> pip3 -> python -m pip)
@@ -515,7 +520,7 @@ else
 fi
 
 echo "Python dependencies installed successfully into $DEP_TARGET"
-"""
+""" % (DEFAULT_INTERNAL_DEP_WORKDIR, DEFAULT_INTERNAL_PYTHON_DEPS_DIR)
         return script
 
     def _generate_node_install_script(

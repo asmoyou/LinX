@@ -9,10 +9,50 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional
 
 from agent_framework.sandbox_policy import allow_host_execution_fallback
+from virtualization.sandbox_capability_probe import (
+    DEFAULT_CAPABILITY_SNAPSHOT_PATH,
+    build_document_toolchain_summary,
+)
+from virtualization.sandbox_runtime_env import build_python_runtime_summary
 
 RUNTIME_CAPABILITIES_VERSION = "1"
 DEFAULT_WORKSPACE_ROOT_VIRTUAL = "/workspace"
 DEFAULT_UI_MODE = "none"
+
+
+def _normalize_python_runtime(value: Any, *, default: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    base = dict(default or build_python_runtime_summary())
+    if not isinstance(value, dict):
+        return base
+
+    if value.get("executable"):
+        base["executable"] = str(value.get("executable"))
+    if value.get("pip_target"):
+        base["pip_target"] = str(value.get("pip_target"))
+    if value.get("pythonpath"):
+        base["pythonpath"] = str(value.get("pythonpath"))
+    if "python_nousersite" in value:
+        base["python_nousersite"] = _coerce_bool(
+            value.get("python_nousersite"),
+            default=bool(base.get("python_nousersite", True)),
+        )
+    return base
+
+
+def _normalize_document_toolchain(
+    value: Any,
+    *,
+    default: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    base = dict(default or build_document_toolchain_summary())
+    if not isinstance(value, dict):
+        return base
+
+    for key in ("renderers", "preferred_cjk_fonts", "commands"):
+        raw_list = value.get(key)
+        if isinstance(raw_list, list):
+            base[key] = [str(item) for item in raw_list if str(item).strip()]
+    return base
 
 
 def _coerce_bool(value: Any, default: bool) -> bool:
@@ -67,6 +107,9 @@ def build_runtime_capabilities_snapshot(
     network_access: Optional[bool] = None,
     host_fallback_allowed: Optional[bool] = None,
     session_persistent: bool = True,
+    capability_snapshot_path: str = DEFAULT_CAPABILITY_SNAPSHOT_PATH,
+    python_runtime: Optional[Dict[str, Any]] = None,
+    document_toolchain: Optional[Dict[str, Any]] = None,
     source: str = "backend_runtime",
 ) -> Dict[str, Any]:
     """Build a normalized runtime capability snapshot."""
@@ -88,6 +131,12 @@ def build_runtime_capabilities_snapshot(
         if host_fallback_allowed is None
         else bool(host_fallback_allowed)
     )
+    resolved_capability_snapshot_path = _normalize_virtual_path(
+        capability_snapshot_path,
+        default=DEFAULT_CAPABILITY_SNAPSHOT_PATH,
+    )
+    resolved_python_runtime = _normalize_python_runtime(python_runtime)
+    resolved_document_toolchain = _normalize_document_toolchain(document_toolchain)
 
     return {
         "version": RUNTIME_CAPABILITIES_VERSION,
@@ -100,6 +149,9 @@ def build_runtime_capabilities_snapshot(
         "network_access": resolved_network_access,
         "host_fallback_allowed": resolved_host_fallback,
         "session_persistent": bool(session_persistent),
+        "capability_snapshot_path": resolved_capability_snapshot_path,
+        "python_runtime": resolved_python_runtime,
+        "document_toolchain": resolved_document_toolchain,
     }
 
 
@@ -145,6 +197,17 @@ def sanitize_runtime_capabilities(
             merged.get("session_persistent"),
             default=_coerce_bool((defaults or {}).get("session_persistent"), True),
         ),
+        capability_snapshot_path=merged.get("capability_snapshot_path")
+        or (defaults or {}).get("capability_snapshot_path")
+        or DEFAULT_CAPABILITY_SNAPSHOT_PATH,
+        python_runtime=_normalize_python_runtime(
+            merged.get("python_runtime"),
+            default=_normalize_python_runtime((defaults or {}).get("python_runtime")),
+        ),
+        document_toolchain=_normalize_document_toolchain(
+            merged.get("document_toolchain"),
+            default=_normalize_document_toolchain((defaults or {}).get("document_toolchain")),
+        ),
         source=str(merged.get("source") or (defaults or {}).get("source") or "backend_runtime"),
     )
 
@@ -170,6 +233,9 @@ def apply_authoritative_runtime_overrides(
         "network_access",
         "host_fallback_allowed",
         "session_persistent",
+        "capability_snapshot_path",
+        "python_runtime",
+        "document_toolchain",
     )
     for key in authoritative_keys:
         if key in defaults:

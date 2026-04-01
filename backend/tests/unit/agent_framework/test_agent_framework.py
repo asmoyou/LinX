@@ -489,6 +489,9 @@ class TestBaseAgent:
         assert "- UI mode: none" in prompt
         assert "- Code execution network access: disabled" in prompt
         assert "- Host fallback: blocked" in prompt
+        assert "- Capability snapshot path: /workspace/.linx_runtime/capabilities.json" in prompt
+        assert "- Python runtime: pip target=" in prompt
+        assert "- Document toolchain renderers:" in prompt
 
     def test_resolve_runtime_capabilities_uses_authoritative_runtime_flags(self):
         resolved = BaseAgent._resolve_runtime_capabilities(

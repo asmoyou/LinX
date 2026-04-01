@@ -25,18 +25,20 @@ from uuid import uuid4
 from shared.sandbox_images import resolve_shared_sandbox_image
 from shared.datetime_utils import utcnow
 from virtualization.code_validator import ValidationResult, get_code_validator
+from virtualization.sandbox_capability_probe import probe_and_write_sandbox_capabilities
 from virtualization.container_manager import ContainerConfig, ContainerStatus, get_container_manager
 from virtualization.dependency_manager import DependencyManager, get_dependency_manager
 from virtualization.resource_limits import ResourceLimits, ResourceUsage, get_default_limits
+from virtualization.sandbox_runtime_env import (
+    build_sandbox_runtime_env,
+    write_sandbox_runtime_env_file,
+)
 from virtualization.sandbox_selector import SandboxType, get_sandbox_selector
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_SANDBOX_PYTHON_IMAGE = resolve_shared_sandbox_image()
 DEFAULT_SANDBOX_TMPFS_SIZE = os.getenv("LINX_SANDBOX_TMPFS_SIZE", "1G").strip() or "1G"
-DEFAULT_INTERNAL_PIP_CACHE_DIR = "/opt/linx_pip_cache"
-DEFAULT_INTERNAL_PYTHON_DEPS_DIR = "/opt/linx_python_deps"
-DEFAULT_INTERNAL_DEP_WORKDIR = "/opt/linx_runtime"
 DEFAULT_INTERNAL_CODE_WORKDIR = "/workspace/.linx_runtime/code_execution"
 DEFAULT_TMP_CODE_WORKDIR = "/tmp/linx_code_execution"
 
@@ -190,6 +192,51 @@ class CodeExecutionSandbox:
                 "dependency_cache_scope": self.dependency_cache_scope,
             },
         )
+
+    def _refresh_runtime_metadata(
+        self,
+        *,
+        sandbox_id: str,
+        runtime_environment: Optional[Dict[str, str]],
+        network_enabled: bool,
+    ) -> Optional[Dict[str, Any]]:
+        """Persist authoritative runtime env + capability snapshot into sandbox."""
+        try:
+            write_sandbox_runtime_env_file(
+                sandbox_id,
+                container_manager=self.container_manager,
+                raw_env=runtime_environment,
+            )
+            snapshot = probe_and_write_sandbox_capabilities(
+                sandbox_id,
+                container_manager=self.container_manager,
+                runtime_environment=runtime_environment,
+                sandbox_backend=self.sandbox_type.value,
+                workspace_root_virtual="/workspace",
+                network_access=network_enabled,
+            )
+            self.logger.info(
+                "Sandbox runtime metadata refreshed",
+                extra={
+                    "sandbox_id": sandbox_id,
+                    "network_access": network_enabled,
+                    "available_renderers": [
+                        name
+                        for name, details in (snapshot.get("renderers") or {}).items()
+                        if details.get("available")
+                    ],
+                },
+            )
+            return snapshot
+        except Exception as runtime_metadata_error:
+            self.logger.warning(
+                "Failed to refresh sandbox runtime metadata",
+                extra={
+                    "sandbox_id": sandbox_id,
+                    "error": str(runtime_metadata_error),
+                },
+            )
+            return None
 
     async def execute_code(
         self,
@@ -377,33 +424,8 @@ class CodeExecutionSandbox:
                                     extra={"execution_id": execution_id},
                                 )
 
-            runtime_environment: Dict[str, str] = {}
             raw_environment = context.get("environment")
-            if isinstance(raw_environment, dict):
-                for key, value in raw_environment.items():
-                    env_key = str(key).strip()
-                    if not env_key or value is None:
-                        continue
-                    runtime_environment[env_key] = str(value)
-
-            if self.dependency_manager:
-                dep_target = str(
-                    runtime_environment.get("PIP_TARGET", DEFAULT_INTERNAL_PYTHON_DEPS_DIR)
-                ).strip()
-                if not dep_target:
-                    dep_target = DEFAULT_INTERNAL_PYTHON_DEPS_DIR
-
-                runtime_environment.setdefault("PIP_TARGET", dep_target)
-                runtime_environment.setdefault("PIP_USER", "0")
-                runtime_environment.setdefault("PYTHONNOUSERSITE", "1")
-
-                existing_pythonpath = str(runtime_environment.get("PYTHONPATH", "")).strip()
-                if existing_pythonpath:
-                    path_entries = [entry for entry in existing_pythonpath.split(":") if entry]
-                    if dep_target not in path_entries:
-                        runtime_environment["PYTHONPATH"] = f"{dep_target}:{existing_pythonpath}"
-                else:
-                    runtime_environment["PYTHONPATH"] = dep_target
+            runtime_environment = build_sandbox_runtime_env(raw_environment)
 
             # 3. Resolve sandbox environment (reuse session sandbox when provided)
             if existing_sandbox_id:
@@ -471,6 +493,12 @@ class CodeExecutionSandbox:
                         cache_scope=self.dependency_cache_scope,
                     )
                     dependency_state = "installed_and_cached"
+
+            self._refresh_runtime_metadata(
+                sandbox_id=sandbox_id,
+                runtime_environment=runtime_environment,
+                network_enabled=network_enabled,
+            )
 
             # 5. Inject code and context into sandbox
             code_file, execution_workdir = await self._inject_code(
@@ -629,7 +657,7 @@ class CodeExecutionSandbox:
         temp_agent_id = UUID(execution_id)
 
         volume_mounts: Dict[str, str] = {}
-        environment: Dict[str, str] = {}
+        environment = build_sandbox_runtime_env()
         if workspace_root:
             try:
                 host_workspace = Path(workspace_root).expanduser().resolve()
@@ -644,29 +672,6 @@ class CodeExecutionSandbox:
                         "error": str(workspace_error),
                     },
                 )
-
-        if self.dependency_manager:
-            environment["PIP_CACHE_DIR"] = DEFAULT_INTERNAL_PIP_CACHE_DIR
-            environment["LINX_DEP_WORKDIR"] = DEFAULT_INTERNAL_DEP_WORKDIR
-            environment["PIP_DISABLE_PIP_VERSION_CHECK"] = "1"
-            environment["PIP_DEFAULT_TIMEOUT"] = "120"
-            environment["PIP_RETRIES"] = "6"
-            environment["PIP_TARGET"] = DEFAULT_INTERNAL_PYTHON_DEPS_DIR
-            environment["PYTHONPATH"] = DEFAULT_INTERNAL_PYTHON_DEPS_DIR
-            environment["PYTHONNOUSERSITE"] = "1"
-            environment["PIP_USER"] = "0"
-
-            # Respect host pip mirror/proxy settings when provided.
-            for env_key in (
-                "PIP_INDEX_URL",
-                "PIP_EXTRA_INDEX_URL",
-                "PIP_TRUSTED_HOST",
-                "PIP_CERT",
-                "PIP_CLIENT_CERT",
-            ):
-                env_value = os.getenv(env_key)
-                if env_value:
-                    environment[env_key] = env_value
 
         config = ContainerConfig(
             agent_id=temp_agent_id,
@@ -694,6 +699,11 @@ class CodeExecutionSandbox:
 
         # Start the container
         self.container_manager.start_container(container_id)
+        write_sandbox_runtime_env_file(
+            container_id,
+            container_manager=self.container_manager,
+            raw_env=environment,
+        )
 
         self.logger.debug(
             "Sandbox created",

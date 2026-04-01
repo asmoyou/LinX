@@ -564,12 +564,50 @@ class TestCodeExecutionSandbox:
 
         assert result.success is True
         assert captured_base_image["value"] == "linx/code-exec-deps:python-deadbeef"
-        assert install_called["value"] is False
-        dep_manager.cache_dependencies.assert_called_once_with(
-            dependencies=dependencies,
-            image_tag="linx/code-exec-deps:python-deadbeef",
-            cache_scope=sandbox.dependency_cache_scope,
+
+    @pytest.mark.asyncio
+    async def test_execute_code_refreshes_runtime_metadata(self):
+        sandbox = CodeExecutionSandbox()
+        sandbox.code_validator = MagicMock()
+        sandbox.code_validator.validate_code.return_value = ValidationResult(
+            safe=True,
+            issues=[],
+            warnings=[],
         )
+        sandbox.container_manager = MagicMock()
+        sandbox.container_manager.get_container_status.return_value = ContainerStatus.RUNNING
+        sandbox.dependency_manager = MagicMock()
+        sandbox.dependency_manager.get_dependencies.return_value = set()
+
+        refreshed = {}
+
+        def _fake_refresh(*, sandbox_id, runtime_environment, network_enabled):
+            refreshed["sandbox_id"] = sandbox_id
+            refreshed["runtime_environment"] = dict(runtime_environment or {})
+            refreshed["network_enabled"] = network_enabled
+            return {}
+
+        async def _fake_inject(*args, **kwargs):
+            return "/tmp/code.py", "/tmp"
+
+        async def _fake_run(*args, **kwargs):
+            return {"output": "ok", "error": "", "return_value": None}
+
+        sandbox._inject_code = _fake_inject
+        sandbox._run_code = _fake_run
+        sandbox._refresh_runtime_metadata = _fake_refresh
+
+        result = await sandbox.execute_code(
+            code="print('ok')",
+            language="python",
+            context={"existing_sandbox_id": "sandbox-1", "workspace_root": "/tmp/workspace"},
+        )
+
+        assert result.success is True
+        assert refreshed["sandbox_id"] == "sandbox-1"
+        assert refreshed["runtime_environment"]["PIP_TARGET"] == "/opt/linx_python_deps"
+        assert refreshed["runtime_environment"]["PYTHONPATH"].startswith("/opt/linx_python_deps")
+        assert refreshed["network_enabled"] is True
 
     @pytest.mark.asyncio
     async def test_execute_safe_code(self):

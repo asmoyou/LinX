@@ -30,6 +30,8 @@ from langchain_core.tools import Tool
 
 from agent_framework.sandbox_policy import allow_host_execution_fallback
 from virtualization.container_manager import ContainerStatus, get_container_manager
+from virtualization.sandbox_capability_probe import probe_and_write_sandbox_capabilities
+from virtualization.sandbox_runtime_env import build_sandbox_runtime_env, write_sandbox_runtime_env_file
 
 logger = logging.getLogger(__name__)
 
@@ -85,6 +87,7 @@ class EnhancedBashTool:
         self._container_manager = get_container_manager()
         self.session_sandbox_id: Optional[str] = None
         self.network_access: bool = True
+        self._capability_snapshots_written: set[str] = set()
         if allow_host_fallback is None:
             self.allow_host_fallback = allow_host_execution_fallback()
         else:
@@ -254,10 +257,35 @@ class EnhancedBashTool:
                 f"{shlex.quote(container_config.command)}"
             )
 
-        env = dict(container_config.env or {})
+        env = build_sandbox_runtime_env(container_config.env or {})
         if container_config.pty:
             # Hint interactive-capable CLIs to preserve colorized output.
             env.setdefault("TERM", "xterm-256color")
+
+        try:
+            write_sandbox_runtime_env_file(
+                sandbox_id,
+                container_manager=self._container_manager,
+                raw_env=env,
+            )
+            if sandbox_id not in self._capability_snapshots_written:
+                probe_and_write_sandbox_capabilities(
+                    sandbox_id,
+                    container_manager=self._container_manager,
+                    runtime_environment=env,
+                    sandbox_backend="docker_enhanced",
+                    workspace_root_virtual="/workspace",
+                    network_access=self.network_access,
+                )
+                self._capability_snapshots_written.add(sandbox_id)
+        except Exception as runtime_metadata_error:
+            self.logger.warning(
+                "Failed to materialize sandbox runtime metadata for bash execution",
+                extra={
+                    "sandbox_id": sandbox_id,
+                    "error": str(runtime_metadata_error),
+                },
+            )
 
         try:
             exit_code, stdout, stderr = self._container_manager.exec_in_container(
