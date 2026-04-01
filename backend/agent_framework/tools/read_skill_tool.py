@@ -64,6 +64,51 @@ Output: Complete SKILL.md content with extracted code blocks ready for execution
     model_config = {"arbitrary_types_allowed": True}
 
     @staticmethod
+    def _skill_slug(skill_ref: Any) -> str:
+        return str(
+            getattr(skill_ref, "skill_slug", None)
+            or getattr(skill_ref, "name", None)
+            or ""
+        ).strip()
+
+    @staticmethod
+    def _skill_display_name(skill_ref: Any) -> str:
+        return str(
+            getattr(skill_ref, "display_name", None)
+            or getattr(skill_ref, "name", None)
+            or getattr(skill_ref, "skill_slug", None)
+            or "Skill"
+        ).strip()
+
+    @classmethod
+    def _skill_identifier_candidates(cls, skill_ref: Any) -> List[str]:
+        candidates: List[str] = []
+        for value in (
+            cls._skill_slug(skill_ref),
+            cls._skill_display_name(skill_ref),
+            str(getattr(skill_ref, "name", None) or "").strip(),
+        ):
+            if value and value not in candidates:
+                candidates.append(value)
+
+        slug = cls._skill_slug(skill_ref)
+        if "-installed-" in slug:
+            base_slug = slug.split("-installed-", 1)[0].strip()
+            if base_slug and base_slug not in candidates:
+                candidates.append(base_slug)
+
+        return candidates
+
+    @classmethod
+    def _matches_skill_request(cls, skill_ref: Any, requested_skill_name: str) -> bool:
+        requested = str(requested_skill_name or "").strip()
+        if not requested:
+            return False
+
+        requested_lower = requested.casefold()
+        return any(candidate.casefold() == requested_lower for candidate in cls._skill_identifier_candidates(skill_ref))
+
+    @staticmethod
     def _sanitize_skill_dir(skill_slug: str) -> str:
         """Normalize skill slug to a safe directory name."""
         candidate = re.sub(r"[^a-zA-Z0-9._-]+", "_", str(skill_slug or "")).strip("._")
@@ -143,7 +188,7 @@ Output: Complete SKILL.md content with extracted code blocks ready for execution
             return 0
 
         package_files = skill_ref.package_files or {}
-        skill_root = Path(workspace_root) / self._workspace_skill_root(skill_ref.skill_slug)
+        skill_root = Path(workspace_root) / self._workspace_skill_root(self._skill_slug(skill_ref))
         package_root_dir = self._infer_package_root_dir(package_files)
         copied = 0
 
@@ -179,21 +224,22 @@ Output: Complete SKILL.md content with extracted code blocks ready for execution
             # Get the skill reference from loaded agent skills
             agent_skills = skill_manager.get_agent_skill_docs()
             
-            requested_skill_slug = str(skill_name or "").strip()
+            requested_skill_name = str(skill_name or "").strip()
 
             # Find the skill by slug
             skill_ref = None
             for skill in agent_skills:
-                if skill.skill_slug == requested_skill_slug:
+                if self._matches_skill_request(skill, requested_skill_name):
                     skill_ref = skill
                     break
             
             if not skill_ref:
                 available_skills = ", ".join(
-                    f"{skill.display_name} ({skill.skill_slug})" for skill in agent_skills
+                    f"{self._skill_display_name(skill)} ({self._skill_slug(skill)})"
+                    for skill in agent_skills
                 )
                 return (
-                    f"Error: Skill slug '{requested_skill_slug}' not found or not configured for "
+                    f"Error: Skill '{requested_skill_name}' not found or not configured for "
                     f"this agent.\n\nAvailable skills: {available_skills}"
                 )
 
@@ -203,7 +249,7 @@ Output: Complete SKILL.md content with extracted code blocks ready for execution
                     "Materialized skill files into workspace for read_skill",
                     extra={
                         "agent_id": str(self.agent_id),
-                        "skill_slug": skill_ref.skill_slug,
+                        "skill_slug": self._skill_slug(skill_ref),
                         "file_count": materialized_count,
                     },
                 )
@@ -211,7 +257,7 @@ Output: Complete SKILL.md content with extracted code blocks ready for execution
             # Load skill package with code extraction
             skill_package = self.skill_loader.load_skill(
                 skill_id=skill_ref.skill_id,
-                skill_name=skill_ref.skill_slug,
+                skill_name=self._skill_slug(skill_ref),
                 skill_md_content=skill_ref.skill_md_content,
                 storage_path=None,
                 manifest=skill_ref.manifest,
@@ -219,7 +265,7 @@ Output: Complete SKILL.md content with extracted code blocks ready for execution
             )
 
             package_files = skill_ref.package_files or {}
-            workspace_skill_root = self._workspace_skill_root(skill_ref.skill_slug)
+            workspace_skill_root = self._workspace_skill_root(self._skill_slug(skill_ref))
             package_root_dir = self._infer_package_root_dir(package_files)
             skill_base_dir = workspace_skill_root
 
@@ -239,6 +285,11 @@ Output: Complete SKILL.md content with extracted code blocks ready for execution
             normalized_workspace_files = {
                 path: _workspace_package_path(path) for path in package_files
             }
+            shell_scripts: List[str] = sorted(
+                normalized_workspace_files[path]
+                for path in package_files
+                if path.endswith(".sh")
+            )
             python_scripts: List[str] = sorted(
                 normalized_workspace_files[path]
                 for path in package_files
@@ -249,13 +300,17 @@ Output: Complete SKILL.md content with extracted code blocks ready for execution
                 for path in package_files
                 if Path(path).name.startswith("requirements")
             )
+            preferred_shell_script = next(
+                (path for path in shell_scripts if path.endswith("render_document.sh")),
+                shell_scripts[0] if shell_scripts else None,
+            )
             preferred_script = next(
                 (path for path in python_scripts if path.endswith("weather_helper.py")),
                 python_scripts[0] if python_scripts else None,
             )
 
             # Format the skill documentation
-            output = f"""# Skill: {skill_ref.display_name} ({skill_ref.skill_slug})
+            output = f"""# Skill: {self._skill_display_name(skill_ref)} ({self._skill_slug(skill_ref)})
 
 ## Description
 {skill_ref.description}
@@ -268,18 +323,31 @@ Output: Complete SKILL.md content with extracted code blocks ready for execution
 
 """
 
-            if preferred_script or requirements_files:
+            if preferred_shell_script or preferred_script or requirements_files:
                 output += "## Execution Strategy (MANDATORY)\n\n"
                 output += "1. Run existing packaged scripts first; do NOT rewrite API logic first.\n"
-                if requirements_files:
+                if preferred_shell_script:
                     output += (
-                        f"2. If dependency is missing, install from `{requirements_files[0]}`.\n"
+                        "2. If a packaged shell entrypoint exists, run it before any Python "
+                        "or ReportLab rewrite.\n"
                     )
                 else:
-                    output += "2. If dependency is missing, install required package(s) before rerun.\n"
-                output += "3. Only write custom code when packaged scripts are unusable.\n\n"
+                    output += "2. Prefer packaged command entrypoints over code_execution rewrites.\n"
+                if requirements_files:
+                    output += (
+                        f"3. If dependency is missing, install from `{requirements_files[0]}`.\n"
+                    )
+                else:
+                    output += "3. If dependency is missing, install required package(s) before rerun.\n"
+                output += "4. Only write custom code when packaged scripts are unusable.\n\n"
                 if requirements_files:
                     output += f"```bash\npython3 -m pip install -r {requirements_files[0]}\n```\n\n"
+                if preferred_shell_script:
+                    output += f"```bash\nbash {preferred_shell_script} --help\n```\n\n"
+                    output += (
+                        "If this shell entrypoint matches the task, start there instead of "
+                        "writing a fresh ReportLab/Python renderer.\n\n"
+                    )
                 if preferred_script:
                     output += f"```bash\npython3 {preferred_script} --help\n```\n\n"
                     output += (
@@ -299,7 +367,7 @@ Output: Complete SKILL.md content with extracted code blocks ready for execution
                 for filename, content in sorted(package_files.items()):
                     if Path(filename).name == "SKILL.md":
                         continue
-                    if filename.endswith((".py", ".yaml", ".yml", ".json", ".txt", ".md")):
+                    if filename.endswith((".py", ".sh", ".yaml", ".yml", ".json", ".txt", ".md")):
                         output += (
                             f"### File: {_workspace_package_path(filename)}\n\n"
                             f"```text\n{content}\n```\n\n"
@@ -329,15 +397,16 @@ Output: Complete SKILL.md content with extracted code blocks ready for execution
                 output += "2. Use packaged script paths first (from file list above)\n"
                 output += "3. Install dependencies from requirements file when needed\n"
                 output += "4. Avoid placeholder API keys; rely on environment variables\n"
-                output += "5. Only fallback to ad-hoc code when packaged scripts fail\n"
+                output += "5. If a packaged shell script exists, prefer `bash <script>` over `code_execution`\n"
+                output += "6. Only fallback to ad-hoc code when packaged scripts fail\n"
             else:
                 output += "\n## Execution Note\n\nThis is a workflow/documentation skill. Follow the instructions to accomplish the task.\n"
             
             logger.info(
-                f"Agent read skill documentation: {requested_skill_slug}",
+                f"Agent read skill documentation: {self._skill_slug(skill_ref)}",
                 extra={
                     "agent_id": str(self.agent_id),
-                    "skill_slug": requested_skill_slug,
+                    "skill_slug": self._skill_slug(skill_ref),
                     "doc_length": len(output),
                     "code_blocks": len(skill_package.code_blocks),
                 }

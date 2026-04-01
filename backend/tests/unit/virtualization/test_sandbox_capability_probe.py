@@ -49,6 +49,7 @@ def test_probe_sandbox_capabilities_builds_expected_snapshot():
     assert snapshot["python_modules"]["reportlab"]["available"] is True
     assert snapshot["fonts"]["recommended_sans"]
     assert snapshot["renderers"]["libreoffice_pdf"]["available"] is True
+    assert snapshot["renderers"]["reportlab_text_pdf"]["input_extensions"] == [".txt", ".json", ".csv"]
     assert "pypdf" in snapshot["verifiers"]["pdf_text_extractors"]
 
 

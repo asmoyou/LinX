@@ -199,7 +199,7 @@ def probe_sandbox_capabilities(
         },
         "reportlab_text_pdf": {
             "available": bool(python_modules["reportlab"]["available"]),
-            "input_extensions": [".txt", ".md", ".json", ".csv"],
+            "input_extensions": [".txt", ".json", ".csv"],
         },
     }
     verifiers = {

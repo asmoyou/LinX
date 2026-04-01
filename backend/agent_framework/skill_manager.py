@@ -38,6 +38,7 @@ class SkillInfo:
     code: Optional[str] = None
     interface_definition: Optional[dict] = None
     manifest: Optional[dict] = None
+    config: Optional[dict] = None
 
     @property
     def name(self) -> str:
@@ -67,6 +68,7 @@ class AgentSkillReference:
     has_scripts: bool  # Whether package contains Python scripts
     storage_path: Optional[str] = None  # MinIO storage path for package skills
     manifest: Optional[dict] = None  # Parsed manifest for package skills
+    config: Optional[dict] = None  # Parsed config for skill prompt hints
     package_path: Optional[Path] = None  # Path to extracted package (if needed)
     package_files: Dict[str, str] = None  # filename -> content mapping for example code
 
@@ -87,7 +89,49 @@ class AgentSkillReference:
         Returns:
             Formatted string for system prompt (name + description only)
         """
-        return f"- {self.display_name} ({self.skill_slug}): {self.description}"
+        hints: List[str] = []
+
+        config = self.config or {}
+        when_to_use = str(
+            config.get("applicability") or config.get("when_to_use") or ""
+        ).strip()
+        if when_to_use:
+            hints.append(f"use when {when_to_use}")
+
+        supported_inputs = [
+            str(item).strip()
+            for item in (config.get("supported_inputs") or [])
+            if str(item).strip()
+        ]
+        if supported_inputs:
+            preview_inputs = ", ".join(supported_inputs[:6])
+            if len(supported_inputs) > 6:
+                preview_inputs += ", ..."
+            hints.append(f"inputs: {preview_inputs}")
+
+        supported_outputs = [
+            str(item).strip()
+            for item in (config.get("supported_outputs") or [])
+            if str(item).strip()
+        ]
+        if supported_outputs:
+            hints.append(f"outputs: {', '.join(supported_outputs[:4])}")
+
+        if not hints:
+            manifest = self.manifest or {}
+            skill_metadata = manifest.get("skill_metadata") or manifest.get("metadata") or {}
+            tags = [
+                str(item).strip()
+                for item in (skill_metadata.get("tags") or [])
+                if str(item).strip()
+            ]
+            if tags:
+                hints.append(f"tags: {', '.join(tags[:5])}")
+
+        summary = f"- {self.display_name} ({self.skill_slug}): {self.description}"
+        if hints:
+            summary += f" [Hints: {' | '.join(hints)}]"
+        return summary
 
 
 class SkillManager:
@@ -181,6 +225,7 @@ class SkillManager:
                     code=descriptor.tool_code,
                     interface_definition=descriptor.interface_definition,
                     manifest=descriptor.manifest,
+                    config=descriptor.config,
                 )
             )
 
@@ -205,6 +250,7 @@ class SkillManager:
                     code=descriptor.tool_code,
                     interface_definition=descriptor.interface_definition,
                     manifest=descriptor.manifest,
+                    config=descriptor.config,
                 )
             )
 
@@ -405,7 +451,7 @@ class SkillManager:
                     
                     # Read relevant files while preserving original package structure.
                     # Example: weather-forcast/scripts/weather_helper.py
-                    relevant_extensions = {'.py', '.yaml', '.yml', '.json', '.txt', '.md'}
+                    relevant_extensions = {'.py', '.sh', '.yaml', '.yml', '.json', '.txt', '.md'}
 
                     for file_path in extract_path.rglob('*'):
                         if file_path.is_file() and file_path.suffix in relevant_extensions:
@@ -512,6 +558,7 @@ class SkillManager:
                 has_scripts=has_scripts,
                 storage_path=skill_info.storage_path,
                 manifest=skill_info.manifest,
+                config=skill_info.config,
                 package_path=None,  # Not needed - we include files directly
                 package_files=package_files  # Include all package files
             )
@@ -590,8 +637,8 @@ class SkillManager:
 ## Skills (mandatory)
 
 Before replying: scan available skills below.
-- If exactly one skill clearly applies: read its SKILL.md with `read_skill`, then follow it.
-- If multiple could apply: choose the most specific one, then read/follow it.
+- If exactly one skill clearly applies: call `read_skill` with the exact slug shown in parentheses, then follow it.
+- If multiple could apply: choose the most specific one, then call `read_skill` with that skill's exact slug.
 - If none clearly apply: do not read any SKILL.md.
 
 Constraints: never read more than one skill up front; only read after selecting.

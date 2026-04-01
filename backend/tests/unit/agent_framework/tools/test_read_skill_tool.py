@@ -169,3 +169,54 @@ def test_read_skill_tool_materialization_strips_duplicate_skill_root(monkeypatch
         / "scripts"
         / "weather_helper.py"
     ).exists()
+
+
+def test_read_skill_tool_accepts_display_name_and_materializes_shell_script(
+    monkeypatch, tmp_path
+) -> None:
+    """read_skill should accept display names and materialize packaged shell scripts."""
+    skill_ref = SimpleNamespace(
+        skill_id=uuid4(),
+        skill_slug="document-artifact-rendering-installed-d4d838b4",
+        display_name="Document Artifact Rendering",
+        description="Render documents to PDF",
+        skill_md_content="Run {baseDir}/scripts/render_document.sh",
+        manifest=None,
+        has_scripts=True,
+        package_files={
+            "document-artifact-rendering/SKILL.md": "# Document Artifact Rendering",
+            "document-artifact-rendering/scripts/render_document.sh": "#!/bin/sh\necho render\n",
+            "document-artifact-rendering/scripts/verify_artifact.py": "print('verify')\n",
+        },
+    )
+    skill_manager = SimpleNamespace(get_agent_skill_docs=lambda: [skill_ref])
+    skill_loader = get_skill_loader()
+    monkeypatch.setattr(
+        skill_loader,
+        "load_skill",
+        lambda **_kwargs: SimpleNamespace(code_blocks=[]),
+    )
+
+    tool = ReadSkillTool(
+        agent_id=uuid4(),
+        user_id=uuid4(),
+        skill_manager=skill_manager,
+        skill_loader=skill_loader,
+    )
+
+    set_workspace_root(tmp_path)
+    try:
+        output = tool._run("Document Artifact Rendering")
+    finally:
+        clear_workspace_root()
+
+    script_path = (
+        tmp_path
+        / ".skills"
+        / "document-artifact-rendering-installed-d4d838b4"
+        / "scripts"
+        / "render_document.sh"
+    )
+    assert script_path.exists()
+    assert ".skills/document-artifact-rendering-installed-d4d838b4/scripts/render_document.sh" in output
+    assert "bash .skills/document-artifact-rendering-installed-d4d838b4/scripts/render_document.sh --help" in output
