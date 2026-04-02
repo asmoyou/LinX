@@ -3,10 +3,14 @@
 from __future__ import annotations
 
 import argparse
+import sys
 from pathlib import Path
 from xml.sax.saxutils import escape
 
 from common_capabilities import first_available_font, load_capabilities, resolve_font_path
+
+_TEXT_ONLY_EXTENSIONS = {'.txt', '.json', '.csv'}
+_REDIRECT_EXTENSIONS = {'.md', '.markdown'}
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -15,6 +19,21 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--output", required=True)
     parser.add_argument("--capabilities", required=False)
     return parser
+
+
+def _guard_supported_input(input_path: Path) -> None:
+    suffix = input_path.suffix.lower()
+    if suffix in _REDIRECT_EXTENSIONS:
+        raise ValueError(
+            "Markdown inputs must use render_document.sh instead of render_text_pdf.py. "
+            "Run the packaged shell entrypoint so pandoc/libreoffice can preserve document layout."
+        )
+    if suffix not in _TEXT_ONLY_EXTENSIONS:
+        allowed = ", ".join(sorted(_TEXT_ONLY_EXTENSIONS))
+        raise ValueError(
+            f"Unsupported direct ReportLab input type: {suffix or '(none)'}. "
+            f"Use render_document.sh for document-like formats. Direct ReportLab inputs are limited to: {allowed}."
+        )
 
 
 def _register_font(capabilities: dict) -> str:
@@ -42,6 +61,12 @@ def main() -> int:
     input_path = Path(args.input)
     output_path = Path(args.output)
     output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    try:
+        _guard_supported_input(input_path)
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
 
     capabilities = load_capabilities(args.capabilities)
     font_name = _register_font(capabilities)
