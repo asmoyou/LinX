@@ -4,6 +4,9 @@
 FROM python:3.12-bookworm
 
 ARG NODE_MAJOR=24
+ARG LXGW_WENKAI_VERSION=v1.522
+
+COPY infrastructure/docker/fonts.local.conf /etc/fonts/local.conf
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
@@ -11,37 +14,57 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1
 
 RUN set -eux; \
+    if [ -f /etc/apt/sources.list.d/debian.sources ]; then \
+        sed -i 's|http://deb.debian.org|https://deb.debian.org|g' /etc/apt/sources.list.d/debian.sources; \
+    fi; \
+    if [ -f /etc/apt/sources.list ]; then \
+        sed -i 's|http://deb.debian.org|https://deb.debian.org|g' /etc/apt/sources.list; \
+        sed -i 's|http://security.debian.org|https://security.debian.org|g' /etc/apt/sources.list; \
+    fi; \
     for attempt in 1 2 3 4 5; do \
-        apt-get -o Acquire::Retries=6 -o Acquire::http::Timeout=30 update; \
+        apt-get -o Acquire::Retries=6 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 update; \
         if apt-get -o Acquire::Retries=6 -o Acquire::http::Timeout=30 install -y --no-install-recommends --fix-missing \
             build-essential \
             ca-certificates \
             curl \
             file \
             fontconfig \
-            fonts-dejavu-core \
-            fonts-liberation \
             fonts-arphic-ukai \
             fonts-arphic-uming \
+            fonts-dejavu-core \
+            fonts-liberation \
             fonts-noto-cjk \
             fonts-noto-cjk-extra \
+            fonts-unifont \
             fonts-wqy-microhei \
             fonts-wqy-zenhei \
             ghostscript \
             git \
             imagemagick \
             jq \
+            libffi-dev \
+            libgdk-pixbuf-2.0-0 \
+            libharfbuzz0b \
+            libpango-1.0-0 \
+            libpangocairo-1.0-0 \
             libreoffice \
             libreoffice-calc \
             libreoffice-impress \
             libreoffice-writer \
             pandoc \
+            pango1.0-tools \
             p7zip-full \
             poppler-utils \
+            qpdf \
+            shared-mime-info \
             tesseract-ocr \
+            texlive-fonts-recommended \
+            texlive-latex-recommended \
+            texlive-xetex \
             unoconv \
             unzip \
             wget \
+            wkhtmltopdf \
             xz-utils \
             zip; then \
             break; \
@@ -56,126 +79,6 @@ RUN set -eux; \
     rm -rf /var/lib/apt/lists/*
 
 RUN set -eux; \
-    mkdir -p /usr/share/fonts/truetype/noto; \
-    link_font() { \
-        target="$1"; shift; \
-        for candidate in "$@"; do \
-            if [ -f "$candidate" ]; then \
-                ln -sf "$candidate" "$target"; \
-                return 0; \
-            fi; \
-        done; \
-        return 0; \
-    }; \
-    link_font /usr/share/fonts/truetype/noto/NotoSansSC-Regular.ttf \
-        /usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc \
-        /usr/share/fonts/truetype/wqy/wqy-microhei.ttc \
-        /usr/share/fonts/truetype/wqy/wqy-zenhei.ttc; \
-    link_font /usr/share/fonts/truetype/noto/NotoSansSC-Bold.ttf \
-        /usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc \
-        /usr/share/fonts/truetype/wqy/wqy-zenhei.ttc; \
-    link_font /usr/share/fonts/truetype/noto/NotoSerifSC-Regular.ttf \
-        /usr/share/fonts/opentype/noto/NotoSerifCJK-Regular.ttc \
-        /usr/share/fonts/truetype/arphic/uming.ttc; \
-    link_font /usr/share/fonts/truetype/noto/SimHei.ttf \
-        /usr/share/fonts/truetype/wqy/wqy-zenhei.ttc \
-        /usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc; \
-    link_font /usr/share/fonts/truetype/noto/SimSun.ttf \
-        /usr/share/fonts/truetype/arphic/uming.ttc \
-        /usr/share/fonts/opentype/noto/NotoSerifCJK-Regular.ttc; \
-    link_font /usr/share/fonts/truetype/noto/NSimSun.ttf \
-        /usr/share/fonts/truetype/arphic/uming.ttc \
-        /usr/share/fonts/opentype/noto/NotoSerifCJK-Regular.ttc; \
-    link_font /usr/share/fonts/truetype/noto/FangSong.ttf \
-        /usr/share/fonts/truetype/arphic/uming.ttc \
-        /usr/share/fonts/opentype/noto/NotoSerifCJK-Regular.ttc; \
-    link_font /usr/share/fonts/truetype/noto/KaiTi.ttf \
-        /usr/share/fonts/truetype/arphic/ukai.ttc \
-        /usr/share/fonts/opentype/noto/NotoSerifCJK-Regular.ttc; \
-    link_font /usr/share/fonts/truetype/noto/msyh.ttc \
-        /usr/share/fonts/truetype/wqy/wqy-microhei.ttc \
-        /usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc; \
-    link_font /usr/share/fonts/truetype/noto/msyhbd.ttc \
-        /usr/share/fonts/truetype/wqy/wqy-zenhei.ttc \
-        /usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc; \
-    link_font /usr/share/fonts/truetype/noto/msjh.ttc \
-        /usr/share/fonts/truetype/wqy/wqy-microhei.ttc \
-        /usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc; \
-    link_font /usr/share/fonts/truetype/noto/PingFangSC-Regular.ttf \
-        /usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc; \
-    cat > /etc/fonts/local.conf <<'EOF'; \
-<?xml version="1.0"?>
-<!DOCTYPE fontconfig SYSTEM "fonts.dtd">
-<fontconfig>
-  <alias>
-    <family>SimHei</family>
-    <prefer>
-      <family>Noto Sans CJK SC</family>
-      <family>WenQuanYi Zen Hei</family>
-      <family>WenQuanYi Micro Hei</family>
-    </prefer>
-  </alias>
-  <alias>
-    <family>Microsoft YaHei</family>
-    <prefer>
-      <family>WenQuanYi Micro Hei</family>
-      <family>Noto Sans CJK SC</family>
-    </prefer>
-  </alias>
-  <alias>
-    <family>PingFang SC</family>
-    <prefer>
-      <family>Noto Sans CJK SC</family>
-      <family>WenQuanYi Micro Hei</family>
-    </prefer>
-  </alias>
-  <alias>
-    <family>Source Han Sans SC</family>
-    <prefer>
-      <family>Noto Sans CJK SC</family>
-    </prefer>
-  </alias>
-  <alias>
-    <family>SimSun</family>
-    <prefer>
-      <family>Noto Serif CJK SC</family>
-      <family>AR PL UMing CN</family>
-    </prefer>
-  </alias>
-  <alias>
-    <family>NSimSun</family>
-    <prefer>
-      <family>Noto Serif CJK SC</family>
-      <family>AR PL UMing CN</family>
-    </prefer>
-  </alias>
-  <alias>
-    <family>FangSong</family>
-    <prefer>
-      <family>Noto Serif CJK SC</family>
-      <family>AR PL UMing CN</family>
-    </prefer>
-  </alias>
-  <alias>
-    <family>KaiTi</family>
-    <prefer>
-      <family>AR PL UKai CN</family>
-      <family>Noto Serif CJK SC</family>
-    </prefer>
-  </alias>
-  <alias>
-    <family>Source Han Serif SC</family>
-    <prefer>
-      <family>Noto Serif CJK SC</family>
-    </prefer>
-  </alias>
-</fontconfig>
-EOF
-    if command -v fc-cache >/dev/null 2>&1; then \
-        fc-cache -f; \
-    fi
-
-RUN set -eux; \
     case "$(dpkg --print-architecture)" in \
         amd64) node_arch="x64" ;; \
         arm64) node_arch="arm64" ;; \
@@ -184,11 +87,11 @@ RUN set -eux; \
     node_version="$(curl -fsSL https://nodejs.org/dist/index.json | jq -r --arg major "${NODE_MAJOR}" '[.[] | select((.version | ltrimstr("v") | split(".")[0]) == $major) | .version][0]')"; \
     test "${node_version}" != "null"; \
     node_base_url="https://nodejs.org/dist/${node_version}"; \
-    node_tarball="$(curl -fsSL "${node_base_url}/SHASUMS256.txt" | awk '{print $2}' | grep -E "linux-${node_arch}\\.tar\\.(xz|gz)\$" | head -n1)"; \
+    node_tarball="$(curl -fsSL "${node_base_url}/SHASUMS256.txt" | awk '{print $2}' | grep -E "linux-${node_arch}\\.tar\\.(xz|gz)$" | head -n1)"; \
     test -n "${node_tarball}"; \
     curl -fsSLO "${node_base_url}/${node_tarball}"; \
     curl -fsSLO "${node_base_url}/SHASUMS256.txt"; \
-    grep " ${node_tarball}\$" SHASUMS256.txt | sha256sum -c -; \
+    grep " ${node_tarball}$" SHASUMS256.txt | sha256sum -c -; \
     case "${node_tarball}" in \
         *.tar.xz) tar -xJf "${node_tarball}" -C /usr/local --strip-components=1 --no-same-owner ;; \
         *.tar.gz) tar -xzf "${node_tarball}" -C /usr/local --strip-components=1 --no-same-owner ;; \
@@ -200,6 +103,7 @@ RUN set -eux; \
 RUN python -m pip install --no-cache-dir --upgrade pip setuptools wheel && \
     python -m pip install --no-cache-dir \
     beautifulsoup4 \
+    fonttools \
     lxml \
     markdown \
     numpy \
@@ -216,7 +120,116 @@ RUN python -m pip install --no-cache-dir --upgrade pip setuptools wheel && \
     reportlab \
     requests \
     sqlalchemy \
+    weasyprint \
     xlrd
+
+RUN set -eux; \
+    mkdir -p /usr/share/fonts/truetype/linx-cjk /usr/share/fonts/truetype/lxgw /usr/share/fonts/truetype/noto; \
+    curl -fsSL -o /usr/share/fonts/truetype/lxgw/LXGWWenKai-Regular.ttf \
+        "https://raw.githubusercontent.com/lxgw/LxgwWenKai/${LXGW_WENKAI_VERSION}/fonts/TTF/LXGWWenKai-Regular.ttf"; \
+    curl -fsSL -o /usr/share/fonts/truetype/lxgw/LXGWWenKaiMono-Regular.ttf \
+        "https://raw.githubusercontent.com/lxgw/LxgwWenKai/${LXGW_WENKAI_VERSION}/fonts/TTF/LXGWWenKaiMono-Regular.ttf"; \
+    python - <<'PY'
+from pathlib import Path
+from fontTools.ttLib import TTCollection
+
+OUT_DIR = Path('/usr/share/fonts/truetype/linx-cjk')
+OUT_DIR.mkdir(parents=True, exist_ok=True)
+
+SOURCES = [
+    ('/usr/share/fonts/truetype/wqy/wqy-microhei.ttc', 'WenQuanYiMicroHei-Regular.ttf'),
+    ('/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc', 'WenQuanYiZenHei-Regular.ttf'),
+    ('/usr/share/fonts/truetype/arphic/uming.ttc', 'ARPLUMingCN-Regular.ttf'),
+    ('/usr/share/fonts/truetype/arphic/ukai.ttc', 'ARPLUKaiCN-Regular.ttf'),
+]
+
+for src, dst in SOURCES:
+    source_path = Path(src)
+    if not source_path.exists():
+        continue
+    try:
+        collection = TTCollection(str(source_path))
+        if not collection.fonts:
+            continue
+        font = collection.fonts[0]
+        if getattr(font, 'flavor', None):
+            font.flavor = None
+        font.save(str(OUT_DIR / dst))
+        print(f'[font-extract] wrote {dst} from {src}')
+    except Exception as exc:
+        print(f'[font-extract] skip {src}: {exc}')
+PY
+
+RUN set -eux; \
+    link_font() { \
+        target="$1"; shift; \
+        for candidate in "$@"; do \
+            if [ -f "$candidate" ]; then \
+                ln -sf "$candidate" "$target"; \
+                return 0; \
+            fi; \
+        done; \
+        return 0; \
+    }; \
+    link_font /usr/share/fonts/truetype/noto/NotoSansSC-Regular.ttf \
+        /usr/share/fonts/truetype/linx-cjk/WenQuanYiMicroHei-Regular.ttf \
+        /usr/share/fonts/truetype/lxgw/LXGWWenKai-Regular.ttf \
+        /usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc \
+        /usr/share/fonts/truetype/wqy/wqy-microhei.ttc \
+        /usr/share/fonts/truetype/wqy/wqy-zenhei.ttc; \
+    link_font /usr/share/fonts/truetype/noto/NotoSansSC-Bold.ttf \
+        /usr/share/fonts/truetype/linx-cjk/WenQuanYiZenHei-Regular.ttf \
+        /usr/share/fonts/truetype/linx-cjk/WenQuanYiMicroHei-Regular.ttf \
+        /usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc \
+        /usr/share/fonts/truetype/wqy/wqy-zenhei.ttc; \
+    link_font /usr/share/fonts/truetype/noto/NotoSerifSC-Regular.ttf \
+        /usr/share/fonts/truetype/lxgw/LXGWWenKai-Regular.ttf \
+        /usr/share/fonts/truetype/linx-cjk/ARPLUMingCN-Regular.ttf \
+        /usr/share/fonts/opentype/noto/NotoSerifCJK-Regular.ttc \
+        /usr/share/fonts/truetype/arphic/uming.ttc; \
+    link_font /usr/share/fonts/truetype/noto/SimHei.ttf \
+        /usr/share/fonts/truetype/linx-cjk/WenQuanYiZenHei-Regular.ttf \
+        /usr/share/fonts/truetype/linx-cjk/WenQuanYiMicroHei-Regular.ttf \
+        /usr/share/fonts/truetype/wqy/wqy-zenhei.ttc \
+        /usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc; \
+    link_font /usr/share/fonts/truetype/noto/SimSun.ttf \
+        /usr/share/fonts/truetype/linx-cjk/ARPLUMingCN-Regular.ttf \
+        /usr/share/fonts/truetype/lxgw/LXGWWenKai-Regular.ttf \
+        /usr/share/fonts/truetype/arphic/uming.ttc \
+        /usr/share/fonts/opentype/noto/NotoSerifCJK-Regular.ttc; \
+    link_font /usr/share/fonts/truetype/noto/NSimSun.ttf \
+        /usr/share/fonts/truetype/linx-cjk/ARPLUMingCN-Regular.ttf \
+        /usr/share/fonts/truetype/arphic/uming.ttc \
+        /usr/share/fonts/opentype/noto/NotoSerifCJK-Regular.ttc; \
+    link_font /usr/share/fonts/truetype/noto/FangSong.ttf \
+        /usr/share/fonts/truetype/lxgw/LXGWWenKai-Regular.ttf \
+        /usr/share/fonts/truetype/linx-cjk/ARPLUMingCN-Regular.ttf \
+        /usr/share/fonts/truetype/arphic/uming.ttc \
+        /usr/share/fonts/opentype/noto/NotoSerifCJK-Regular.ttc; \
+    link_font /usr/share/fonts/truetype/noto/KaiTi.ttf \
+        /usr/share/fonts/truetype/lxgw/LXGWWenKai-Regular.ttf \
+        /usr/share/fonts/truetype/linx-cjk/ARPLUKaiCN-Regular.ttf \
+        /usr/share/fonts/truetype/arphic/ukai.ttc \
+        /usr/share/fonts/opentype/noto/NotoSerifCJK-Regular.ttc; \
+    link_font /usr/share/fonts/truetype/noto/msyh.ttc \
+        /usr/share/fonts/truetype/linx-cjk/WenQuanYiMicroHei-Regular.ttf \
+        /usr/share/fonts/truetype/wqy/wqy-microhei.ttc \
+        /usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc; \
+    link_font /usr/share/fonts/truetype/noto/msyhbd.ttc \
+        /usr/share/fonts/truetype/linx-cjk/WenQuanYiZenHei-Regular.ttf \
+        /usr/share/fonts/truetype/wqy/wqy-zenhei.ttc \
+        /usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc; \
+    link_font /usr/share/fonts/truetype/noto/msjh.ttc \
+        /usr/share/fonts/truetype/linx-cjk/WenQuanYiMicroHei-Regular.ttf \
+        /usr/share/fonts/truetype/wqy/wqy-microhei.ttc \
+        /usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc; \
+    link_font /usr/share/fonts/truetype/noto/PingFangSC-Regular.ttf \
+        /usr/share/fonts/truetype/linx-cjk/WenQuanYiMicroHei-Regular.ttf \
+        /usr/share/fonts/truetype/lxgw/LXGWWenKai-Regular.ttf \
+        /usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc; \
+    if command -v fc-cache >/dev/null 2>&1; then \
+        fc-cache -f; \
+    fi
 
 RUN npm config set fund false && \
     npm config set audit false

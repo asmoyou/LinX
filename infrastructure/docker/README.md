@@ -86,12 +86,12 @@ docker build -f infrastructure/docker/Dockerfile.funasr-service -t dwp-funasr-se
 **Purpose**: Feature-rich base image for agent sandbox/code execution containers
 
 **Features**:
-- Preinstalled office and document tooling (`libreoffice`, `unoconv`, `pandoc`)
+- Preinstalled office and document tooling (`libreoffice`, `unoconv`, `pandoc`, `wkhtmltopdf`, `qpdf`, `texlive-xetex`)
 - PDF and OCR utilities (`poppler-utils`, `ghostscript`, `tesseract-ocr`)
-- Chinese font support (`fonts-noto-cjk`, `fonts-noto-cjk-extra`, `fonts-wqy-*`, `fonts-arphic-*`) with compatibility aliases (for example `NotoSansSC`, `SimHei`, `SimSun`, `Microsoft YaHei`) and Fontconfig family mapping
+- Chinese font support with both packaged CJK fonts and extracted/downloaded single-font files suitable for Python renderers (`fonts-noto-cjk*`, `fonts-wqy-*`, `fonts-arphic-*`, `fonts-unifont`, `LXGW WenKai`) plus compatibility aliases (for example `NotoSansSC`, `SimHei`, `SimSun`, `Microsoft YaHei`) and Fontconfig family mapping
 - Common archive and CLI tools (`zip`, `unzip`, `p7zip`, `jq`, `file`)
 - Frontend runtime tooling (`node` 24.x, `npm`, `npx`)
-- Preinstalled Python stack for files/data/web (`requests`, `numpy`, `pandas`, `openpyxl`, `sqlalchemy`, `python-dotenv`, `PyYAML`, `plotly`, `beautifulsoup4`, `lxml`, `reportlab`, `pypdf`, `pdfplumber`, `python-docx`, `python-pptx`)
+- Preinstalled Python stack for files/data/web/rendering (`requests`, `numpy`, `pandas`, `openpyxl`, `sqlalchemy`, `python-dotenv`, `PyYAML`, `plotly`, `beautifulsoup4`, `lxml`, `reportlab`, `pypdf`, `pdfplumber`, `python-docx`, `python-pptx`, `fonttools`, `weasyprint`, `Pillow`)
 
 **Build**:
 ```bash

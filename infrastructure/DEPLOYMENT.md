@@ -207,8 +207,9 @@ SANDBOX_MEMORY_LIMIT=512M
 SANDBOX_TIMEOUT=30
 
 # Optional: override sandbox runtime image (prebuilt, tool-rich)
-# Example: linx/sandbox-runtime:py311-office
-LINX_SANDBOX_PYTHON_IMAGE=python:3.11-bookworm
+# Recommended: use the prebuilt LinX sandbox runtime with CJK fonts and PDF tooling
+# Example: linx/sandbox-runtime:py312-office
+LINX_SANDBOX_PYTHON_IMAGE=linx/sandbox-runtime:py312-office
 
 # Sandbox isolation policy (recommended)
 # true = deny host subprocess fallback when sandbox is unavailable
