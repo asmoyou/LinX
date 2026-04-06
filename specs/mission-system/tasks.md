@@ -1,5 +1,11 @@
 # Mission Execution System - Tasks
 
+> Superseded by the project-execution-platform spec under
+> [specs/project-execution-platform/requirements.md](/Users/youqilin/VIbeCodingProjects/linX/specs/project-execution-platform/requirements.md),
+> [design.md](/Users/youqilin/VIbeCodingProjects/linX/specs/project-execution-platform/design.md),
+> and [tasks.md](/Users/youqilin/VIbeCodingProjects/linX/specs/project-execution-platform/tasks.md).
+> Historical completion state is kept below for reference only; new planning work should move to the project-execution-platform spec.
+
 ## Phase 1: Database Schema & Models
 - [x] 1.1 Create `Mission` SQLAlchemy model with all columns and relationships
 - [x] 1.2 Create `MissionAttachment` model with file reference storage

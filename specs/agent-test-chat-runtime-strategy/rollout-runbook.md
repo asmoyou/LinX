@@ -3,7 +3,7 @@
 ## 1. Feature Flags
 
 1. `AGENT_TEST_CHAT_UNIFIED_RUNTIME_ENABLED` (default: `true`)
-2. `MISSION_TASK_UNIFIED_RUNTIME_ENABLED` (default: `true`)
+2. `EXECUTION_TASK_UNIFIED_RUNTIME_ENABLED` (default: `true`, legacy alias still accepted)
 
 ## 2. Rollout Steps
 
@@ -22,7 +22,7 @@
 1. Disable test chat unified runtime:
    - set `AGENT_TEST_CHAT_UNIFIED_RUNTIME_ENABLED=false`
 2. Disable mission unified runtime:
-   - set `MISSION_TASK_UNIFIED_RUNTIME_ENABLED=false`
+   - set `EXECUTION_TASK_UNIFIED_RUNTIME_ENABLED=false`
 3. Verify rollback:
    - confirm adapter paths continue operating with legacy fallback behavior.
 

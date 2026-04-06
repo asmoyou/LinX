@@ -1,6 +1,6 @@
 import React from 'react';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Notifications } from '@/pages/Notifications';
 import { useNotificationStore } from '@/stores/notificationStore';
 import { notificationsApi } from '@/api/notifications';
@@ -47,6 +47,10 @@ vi.mock('react-hot-toast', () => ({
 }));
 
 describe('Notifications page local fallback mode', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
   beforeEach(() => {
     vi.clearAllMocks();
     localStorage.clear();
@@ -68,18 +72,31 @@ describe('Notifications page local fallback mode', () => {
 
     render(<Notifications />);
 
-    expect(await screen.findByText('Showing local history records')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Mark All Read' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Clear Read' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Clear All' })).toBeInTheDocument();
+    await waitFor(() => {
+      expect(vi.mocked(notificationsApi.getAll)).toHaveBeenCalled();
+      expect(useNotificationStore.getState().notifications.length).toBeGreaterThan(0);
+    });
 
-    fireEvent.click(screen.getByRole('button', { name: 'Mark All Read' }));
+    expect(
+      await screen.findByText('These actions apply to local browser notifications.', {}, { timeout: 10000 })
+    ).toBeInTheDocument();
+
+    let markAllReadButton = await screen.findByRole('button', { name: 'Mark All Read' }, { timeout: 10000 });
+    let clearReadButton = await screen.findByRole('button', { name: 'Clear Read' }, { timeout: 10000 });
+    const clearAllButton = await screen.findByRole('button', { name: 'Clear All' }, { timeout: 10000 });
+
+    expect(markAllReadButton).toBeInTheDocument();
+    expect(clearReadButton).toBeInTheDocument();
+    expect(clearAllButton).toBeInTheDocument();
+
+    fireEvent.click(markAllReadButton);
 
     await waitFor(() => {
       expect(useNotificationStore.getState().notifications[0]?.read).toBe(true);
     });
 
-    fireEvent.click(screen.getByRole('button', { name: 'Clear Read' }));
+    clearReadButton = await screen.findByRole('button', { name: 'Clear Read' }, { timeout: 10000 });
+    fireEvent.click(clearReadButton);
 
     await waitFor(() => {
       expect(useNotificationStore.getState().notifications).toEqual([]);

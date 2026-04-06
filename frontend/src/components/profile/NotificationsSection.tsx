@@ -136,7 +136,7 @@ export const NotificationsSection = () => {
                     <p className="text-sm text-zinc-600 dark:text-zinc-400 mt-1">
                       {t(
                         'profileSettings.notifications.enableDescription',
-                        'Receive in-app alerts for missions and system updates.'
+                        'Receive in-app alerts for runs and system updates.'
                       )}
                     </p>
                   </div>

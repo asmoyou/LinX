@@ -50,6 +50,11 @@ class AgentInfo:
     # Department
     department_id: Optional[UUID] = None
 
+    is_ephemeral: bool = False
+    lifecycle_scope: Optional[str] = None
+    runtime_preference: Optional[str] = None
+    project_scope_id: Optional[UUID] = None
+    retired_at: Optional[datetime] = None
     created_at: datetime = None
     updated_at: datetime = None
     
@@ -79,6 +84,11 @@ class AgentRegistry:
         access_level: str = "private",
         allowed_knowledge: Optional[List[str]] = None,
         department_id: Optional[str] = None,
+        is_ephemeral: bool = False,
+        lifecycle_scope: Optional[str] = None,
+        runtime_preference: Optional[str] = None,
+        project_scope_id: Optional[UUID] = None,
+        retired_at: Optional[datetime] = None,
     ) -> AgentInfo:
         """Register a new agent in the registry.
 
@@ -119,6 +129,11 @@ class AgentRegistry:
                 access_level=normalize_agent_access_level(access_level),
                 allowed_knowledge=allowed_knowledge or [],
                 department_id=UUID(department_id) if department_id else None,
+                is_ephemeral=is_ephemeral,
+                lifecycle_scope=lifecycle_scope,
+                runtime_preference=runtime_preference,
+                project_scope_id=project_scope_id,
+                retired_at=retired_at,
             )
             session.add(agent)
             session.commit()
@@ -196,6 +211,11 @@ class AgentRegistry:
         top_k: Optional[int] = None,
         similarity_threshold: Optional[float] = None,
         department_id: Optional[str] = None,
+        runtime_preference: Optional[str] = None,
+        project_scope_id: Optional[UUID] = None,
+        is_ephemeral: Optional[bool] = None,
+        lifecycle_scope: Optional[str] = None,
+        retired_at: Optional[datetime] = None,
     ) -> Optional[AgentInfo]:
         """Update agent properties.
 
@@ -259,6 +279,16 @@ class AgentRegistry:
                 agent.similarity_threshold = similarity_threshold
             if department_id is not None:
                 agent.department_id = UUID(department_id) if department_id else None
+            if runtime_preference is not None:
+                agent.runtime_preference = runtime_preference
+            if project_scope_id is not None:
+                agent.project_scope_id = project_scope_id
+            if is_ephemeral is not None:
+                agent.is_ephemeral = is_ephemeral
+            if lifecycle_scope is not None:
+                agent.lifecycle_scope = lifecycle_scope
+            if retired_at is not None:
+                agent.retired_at = retired_at
 
             session.commit()
             session.refresh(agent)
@@ -331,6 +361,11 @@ class AgentRegistry:
             top_k=getattr(agent, 'top_k', None),
             similarity_threshold=getattr(agent, 'similarity_threshold', None),
             department_id=getattr(agent, 'department_id', None),
+            is_ephemeral=getattr(agent, 'is_ephemeral', False),
+            lifecycle_scope=getattr(agent, 'lifecycle_scope', None),
+            runtime_preference=getattr(agent, 'runtime_preference', None),
+            project_scope_id=getattr(agent, 'project_scope_id', None),
+            retired_at=getattr(agent, 'retired_at', None),
             created_at=agent.created_at,
             updated_at=agent.updated_at,
         )

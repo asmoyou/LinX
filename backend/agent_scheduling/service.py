@@ -40,7 +40,7 @@ from database.models import (
     ExternalConversationLink,
     User,
 )
-from mission_system.notification_repository import create_user_notification
+from project_execution.notification_repository import create_user_notification
 from shared.config import get_config
 from shared.platform_settings import PLATFORM_BOOTSTRAP_SETTINGS_KEY, get_platform_setting
 
@@ -359,7 +359,6 @@ def _notify_schedule_event(
 ) -> None:
     create_user_notification(
         user_id=user_id,
-        mission_id=None,
         notification_type=notification_type,
         severity=severity,
         title=title,

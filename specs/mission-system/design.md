@@ -1,5 +1,11 @@
 # Mission Execution System - Design
 
+> Superseded by the project-execution-platform spec under
+> [specs/project-execution-platform/requirements.md](/Users/youqilin/VIbeCodingProjects/linX/specs/project-execution-platform/requirements.md),
+> [design.md](/Users/youqilin/VIbeCodingProjects/linX/specs/project-execution-platform/design.md),
+> and [tasks.md](/Users/youqilin/VIbeCodingProjects/linX/specs/project-execution-platform/tasks.md).
+> This document is preserved as historical mission-centric planning material and is no longer the active target architecture.
+
 ## Related Specs
 
 - Runtime unification and profile strategy: `../agent-test-chat-runtime-strategy/`

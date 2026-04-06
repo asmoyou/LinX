@@ -1,4 +1,4 @@
-import type { HTMLAttributes, PropsWithChildren } from 'react';
+import type { ComponentPropsWithoutRef, PropsWithChildren } from 'react';
 import { motion } from 'framer-motion';
 
 import { getPageTransitionProps } from './presets';
@@ -7,7 +7,7 @@ import { useMotionPolicy } from './useMotionPolicy';
 export const PageTransition = ({
   children,
   ...rest
-}: PropsWithChildren<HTMLAttributes<HTMLDivElement>>) => {
+}: PropsWithChildren<ComponentPropsWithoutRef<'div'>>) => {
   const { effectiveTier } = useMotionPolicy();
 
   if (effectiveTier === 'off') {
@@ -15,7 +15,7 @@ export const PageTransition = ({
   }
 
   return (
-    <motion.div {...getPageTransitionProps(effectiveTier)} {...rest}>
+    <motion.div {...getPageTransitionProps(effectiveTier)} {...(rest as Record<string, unknown>)}>
       {children}
     </motion.div>
   );

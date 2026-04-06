@@ -56,6 +56,8 @@ config.set_main_option("sqlalchemy.url", _resolve_database_url())
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
+import database.project_execution_models  # noqa: F401
+
 # add your model's MetaData object here
 # for 'autogenerate' support
 # from myapp import mymodel

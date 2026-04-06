@@ -7,7 +7,7 @@ export interface DashboardStats {
   total_agents: number;
   goals_completed: number;
   goals_completed_in_window: number;
-  missions_in_progress: number;
+  runs_in_progress: number;
   tasks_completed: number;
   tasks_completed_24h: number;
   tasks_failed: number;

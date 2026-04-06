@@ -4,11 +4,11 @@ import { useSearchParams } from 'react-router-dom';
 import { Settings as SettingsIcon, Cpu, KeyRound, SlidersHorizontal, Building2, Sparkles } from 'lucide-react';
 import { LLMSettings } from '../components/settings/LLMSettings';
 import { EnvVarsSettings } from '../components/settings/EnvVarsSettings';
-import { MissionPolicySettings } from '../components/settings/MissionPolicySettings';
+import { ProjectExecutionPolicySettings } from '../components/settings/ProjectExecutionPolicySettings';
 import { BusinessBaselineSettings } from '../components/settings/BusinessBaselineSettings';
 import { ExperienceSettings } from '../components/settings/ExperienceSettings';
 
-export type SettingsTab = 'baseline' | 'experience' | 'llm' | 'envVars' | 'missionPolicy';
+export type SettingsTab = 'baseline' | 'experience' | 'llm' | 'envVars' | 'projectExecution';
 
 interface TabConfig {
   id: SettingsTab;
@@ -19,7 +19,7 @@ interface TabConfig {
 
 const DEFAULT_TAB: SettingsTab = 'baseline';
 const TAB_PARAM = 'tab';
-const VALID_TABS: SettingsTab[] = ['baseline', 'experience', 'llm', 'envVars', 'missionPolicy'];
+const VALID_TABS: SettingsTab[] = ['baseline', 'experience', 'llm', 'envVars', 'projectExecution'];
 
 const getSettingsTab = (value: string | null): SettingsTab =>
   VALID_TABS.includes(value as SettingsTab) ? (value as SettingsTab) : DEFAULT_TAB;
@@ -67,10 +67,10 @@ export const Settings: React.FC = () => {
       component: <EnvVarsSettings />,
     },
     {
-      id: 'missionPolicy',
-      label: t('settings.tabs.missionPolicy', 'Mission Policy'),
+      id: 'projectExecution',
+      label: t('settings.tabs.projectExecution', 'Project Execution'),
       icon: <SlidersHorizontal className="w-5 h-5" />,
-      component: <MissionPolicySettings />,
+      component: <ProjectExecutionPolicySettings />, 
     },
   ];
 

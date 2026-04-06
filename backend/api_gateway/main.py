@@ -12,6 +12,7 @@ References:
 import logging
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -32,10 +33,10 @@ from api_gateway.routers import (
     knowledge,
     llm,
     mcp_servers,
-    missions,
     monitoring,
     notifications,
     platform_settings,
+    project_execution,
     roles,
     schedules,
     skill_bindings,
@@ -346,16 +347,6 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
     except Exception as e:
         logger.warning(f"Failed to initialize knowledge storage cleanup manager: {e}")
 
-    # Recover stale non-terminal missions left by previous process exits.
-    try:
-        from mission_system.orchestrator import get_orchestrator
-
-        recovery_summary = await get_orchestrator().recover_stale_missions_after_restart()
-        if recovery_summary.get("recovered", 0) > 0:
-            logger.warning("Recovered stale missions after startup", extra=recovery_summary)
-    except Exception as e:
-        logger.error(f"Failed to recover stale missions after startup: {e}")
-
     # Initialize MCP connection manager if enabled
     try:
         mcp_config = config.get_section("mcp") or {}
@@ -381,17 +372,6 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
         logger.info("MCP connections cleaned up")
     except Exception as e:
         logger.warning(f"Failed to clean up MCP connections: {e}")
-
-    # Cancel active missions first so runtime state is persisted before
-    # SessionManager/DB teardown during hot reload or shutdown.
-    try:
-        from mission_system.orchestrator import get_orchestrator
-
-        summary = await get_orchestrator().cancel_all_active_missions()
-        if summary.get("active", 0) > 0:
-            logger.info("Active missions cancelled during shutdown", extra=summary)
-    except Exception as e:
-        logger.error(f"Failed to cancel active missions during shutdown: {e}")
 
     # Stop document processor worker
     try:
@@ -589,7 +569,9 @@ def create_app() -> FastAPI:
     cors_allow_methods = config.get("api.cors.allow_methods", default=["*"])
     cors_allow_headers = config.get("api.cors.allow_headers", default=["*"])
 
-    cors_expose_headers = config.get("api.cors.expose_headers", default=["Content-Disposition", "X-Total-Count"])
+    cors_expose_headers = config.get(
+        "api.cors.expose_headers", default=["Content-Disposition", "X-Total-Count"]
+    )
 
     app.add_middleware(
         CORSMiddleware,
@@ -642,7 +624,61 @@ def create_app() -> FastAPI:
         prefix="/api/v1/skills/bindings",
         tags=["Skill Bindings"],
     )
-    app.include_router(missions.router, prefix="/api/v1/missions", tags=["Missions"])
+    app.include_router(
+        project_execution.projects_router,
+        prefix="/api/v1/projects",
+        tags=["Projects"],
+    )
+    app.include_router(
+        project_execution.project_tasks_router,
+        prefix="/api/v1/project-tasks",
+        tags=["Project Tasks"],
+    )
+    app.include_router(
+        project_execution.plans_router,
+        prefix="/api/v1/plans",
+        tags=["Project Plans"],
+    )
+    app.include_router(
+        project_execution.runs_router,
+        prefix="/api/v1/runs",
+        tags=["Project Runs"],
+    )
+    app.include_router(
+        project_execution.run_steps_router,
+        prefix="/api/v1/run-steps",
+        tags=["Run Steps"],
+    )
+    app.include_router(
+        project_execution.project_space_router,
+        prefix="/api/v1/project-space",
+        tags=["Project Space"],
+    )
+    app.include_router(
+        project_execution.execution_nodes_router,
+        prefix="/api/v1/execution-nodes",
+        tags=["Execution Nodes"],
+    )
+    app.include_router(
+        project_execution.extensions_router,
+        prefix="/api/v1/extensions",
+        tags=["Extensions"],
+    )
+    app.include_router(
+        project_execution.skills_import_router,
+        prefix="/api/v1/skills",
+        tags=["Project Skill Imports"],
+    )
+    app.include_router(
+        project_execution.agent_runtime_bindings_router,
+        prefix="/api/v1/agents",
+        tags=["Agent Runtime Bindings"],
+    )
+    app.include_router(
+        project_execution.external_agent_sessions_router,
+        prefix="/api/v1/external-agent-sessions",
+        tags=["External Agent Sessions"],
+    )
     app.include_router(schedules.router, prefix="/api/v1/schedules", tags=["Schedules"])
     app.include_router(notifications.router, prefix="/api/v1/notifications", tags=["Notifications"])
     app.include_router(skills.router, prefix="/api/v1/skills", tags=["Skills"])
@@ -652,9 +688,7 @@ def create_app() -> FastAPI:
         tags=["Platform Settings"],
     )
     app.include_router(telemetry.router, prefix="/api/v1/telemetry", tags=["Telemetry"])
-    app.include_router(
-        mcp_servers.router, prefix="/api/v1/mcp-servers", tags=["MCP Servers"]
-    )
+    app.include_router(mcp_servers.router, prefix="/api/v1/mcp-servers", tags=["MCP Servers"])
     app.include_router(llm.router, prefix="/api/v1/llm", tags=["LLM Providers"])
     app.include_router(
         integrations.router,

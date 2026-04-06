@@ -223,7 +223,16 @@ export default function Register() {
       {/* Static background effects */}
       <div className="absolute inset-0 overflow-hidden pointer-events-none" style={{ zIndex: 1 }}>
         {/* Subtle grid pattern overlay */}
-        <div className="absolute inset-0 bg-[linear-gradient(to_right,#80808008_1px,transparent_1px),linear-gradient(to_bottom,#80808008_1px,transparent_1px)] bg-[size:4rem_4rem] [mask-image:radial-gradient(ellipse_80%_50%_at_50%_50%,#000_70%,transparent_110%)]" />
+        <div
+          className="absolute inset-0"
+          style={{
+            backgroundImage:
+              'linear-gradient(to right, #80808008 1px, transparent 1px), linear-gradient(to bottom, #80808008 1px, transparent 1px)',
+            backgroundSize: '4rem 4rem',
+            maskImage:
+              'radial-gradient(ellipse 80% 50% at 50% 50%, #000 70%, transparent 110%)',
+          }}
+        />
       </div>
 
       {/* Register card */}

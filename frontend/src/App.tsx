@@ -36,6 +36,28 @@ import { useAuthStore } from './stores';
 const Dashboard = lazy(() =>
   import('./pages/Dashboard').then((module) => ({ default: module.Dashboard })),
 );
+const Projects = lazy(() =>
+  import('./pages/Projects').then((module) => ({ default: module.Projects })),
+);
+const ProjectDetail = lazy(() =>
+  import('./pages/ProjectDetail').then((module) => ({ default: module.ProjectDetail })),
+);
+const ProjectTaskDetail = lazy(() =>
+  import('./pages/ProjectTaskDetail').then((module) => ({
+    default: module.ProjectTaskDetail,
+  })),
+);
+const RunCenter = lazy(() =>
+  import('./pages/RunCenter').then((module) => ({ default: module.RunCenter })),
+);
+const RunDetail = lazy(() =>
+  import('./pages/RunDetail').then((module) => ({ default: module.RunDetail })),
+);
+const ExecutionNodes = lazy(() =>
+  import('./pages/ExecutionNodes').then((module) => ({
+    default: module.ExecutionNodes,
+  })),
+);
 const Workforce = lazy(() =>
   import('./pages/Workforce').then((module) => ({ default: module.Workforce })),
 );
@@ -43,9 +65,6 @@ const AgentConversation = lazy(() =>
   import('./pages/AgentConversation').then((module) => ({
     default: module.AgentConversation,
   })),
-);
-const Tasks = lazy(() =>
-  import('./pages/Missions').then((module) => ({ default: module.Missions })),
 );
 const Schedules = lazy(() =>
   import('./pages/Schedules').then((module) => ({ default: module.Schedules })),
@@ -136,7 +155,7 @@ const AnimatedRoutes = ({ setupStatus, onSetupStatusRefresh }: AnimatedRoutesPro
           path="/setup"
           element={
             isAuthenticated ? (
-              <Navigate to="/dashboard" replace />
+              <Navigate to="/projects" replace />
             ) : requiresSetup ? (
               <Suspense fallback={<PageLoader />}>
                 <Setup
@@ -153,7 +172,7 @@ const AnimatedRoutes = ({ setupStatus, onSetupStatusRefresh }: AnimatedRoutesPro
           path="/login"
           element={
             isAuthenticated ? (
-              <Navigate to="/dashboard" replace />
+              <Navigate to="/projects" replace />
             ) : requiresSetup ? (
               <Navigate to="/setup" replace />
             ) : (
@@ -167,7 +186,7 @@ const AnimatedRoutes = ({ setupStatus, onSetupStatusRefresh }: AnimatedRoutesPro
           path="/register"
           element={
             isAuthenticated ? (
-              <Navigate to="/dashboard" replace />
+              <Navigate to="/projects" replace />
             ) : requiresSetup ? (
               <Navigate to="/setup" replace />
             ) : (
@@ -190,7 +209,24 @@ const AnimatedRoutes = ({ setupStatus, onSetupStatusRefresh }: AnimatedRoutesPro
             )
           }
         >
-          <Route index element={<Navigate to="/dashboard" replace />} />
+          <Route index element={<Navigate to="/projects" replace />} />
+          <Route path="projects" element={wrapPage('Projects', <Projects />)} />
+          <Route
+            path="projects/:projectId"
+            element={wrapPage('Project Detail', <ProjectDetail />)}
+          />
+          <Route
+            path="projects/:projectId/tasks/:taskId"
+            element={wrapPage('Project Task Detail', <ProjectTaskDetail />)}
+          />
+          <Route path="runs" element={wrapPage('Run Center', <RunCenter />)} />
+          <Route path="runs/:runId" element={wrapPage('Run Detail', <RunDetail />)} />
+          <Route
+            path="execution-nodes"
+            element={wrapPage('Execution Nodes', <ExecutionNodes />)}
+          />
+          <Route path="skill-hub" element={<Navigate to="/skills/library?section=library" replace />} />
+          <Route path="extensions" element={<Navigate to="/skills/library?section=mcp_servers" replace />} />
           <Route path="dashboard" element={wrapPage('仪表盘', <Dashboard />)} />
           <Route path="workforce" element={wrapPage('智能体', <Workforce />)} />
           <Route
@@ -201,7 +237,7 @@ const AnimatedRoutes = ({ setupStatus, onSetupStatusRefresh }: AnimatedRoutesPro
             path="workforce/:agentId/conversations/:conversationId"
             element={wrapPage('持久化对话', <AgentConversation />)}
           />
-          <Route path="tasks" element={wrapPage('任务', <Tasks />)} />
+          <Route path="tasks" element={<Navigate to="/projects" replace />} />
           <Route path="schedules" element={wrapPage('定时任务', <Schedules />)} />
           <Route
             path="schedules/:scheduleId"
@@ -210,7 +246,8 @@ const AnimatedRoutes = ({ setupStatus, onSetupStatusRefresh }: AnimatedRoutesPro
           <Route path="knowledge" element={wrapPage('知识库', <Knowledge />)} />
           <Route path="memory" element={wrapPage('记忆', <Memory />)} />
           <Route path="memory/user-memory" element={<Navigate to="/memory" replace />} />
-          <Route path="skills" element={wrapPage('技能库', <Skills />)} />
+          <Route path="skills" element={<Navigate to="/skills/library?section=library" replace />} />
+          <Route path="skills/library" element={wrapPage('技能库', <Skills />)} />
           <Route path="robots" element={wrapPage('机器人', <Robots />)} />
           <Route path="departments" element={wrapPage('部门', <Departments />)} />
           <Route

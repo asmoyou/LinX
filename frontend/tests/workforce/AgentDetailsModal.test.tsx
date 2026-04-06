@@ -1,5 +1,5 @@
 import React from 'react';
-import { render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { AgentDetailsModal } from '@/components/workforce/AgentDetailsModal';
 import { agentsApi } from '@/api/agents';
@@ -98,9 +98,14 @@ describe('AgentDetailsModal', () => {
       expect(agentsApi.getLogs).toHaveBeenCalledWith('agent-123', 50);
     });
 
-    expect(await screen.findByText('Task completed: Finalize quarterly report')).toBeInTheDocument();
     expect(screen.getByText('3 pending / 1 running')).toBeInTheDocument();
     expect(screen.getByText('75.0%')).toBeInTheDocument();
     expect(screen.getByText('openai / gpt-4o-mini')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'agent.details.recentLogs' }));
+
+    expect(
+      await screen.findByText('Task completed: Finalize quarterly report', {}, { timeout: 10000 })
+    ).toBeInTheDocument();
   });
 });

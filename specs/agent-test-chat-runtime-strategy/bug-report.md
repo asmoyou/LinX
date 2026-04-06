@@ -30,10 +30,10 @@ Multi-turn context was not consistently preserved in agent test chat and mission
    - recovery path can run without stream callback
 4. Updated adapters:
    - `/agents/{id}/test` passes `ExecutionProfile.DEBUG_CHAT`
-   - mission orchestration passes `ExecutionProfile.MISSION_TASK` / `MISSION_CONTROL`
+   - mission orchestration passes `ExecutionProfile.EXECUTION_TASK` / `EXECUTION_CONTROL`
 5. Added feature flags:
    - `AGENT_TEST_CHAT_UNIFIED_RUNTIME_ENABLED`
-   - `MISSION_TASK_UNIFIED_RUNTIME_ENABLED`
+   - `EXECUTION_TASK_UNIFIED_RUNTIME_ENABLED` (legacy env alias still accepted)
 6. Added/updated unit and integration tests for context/history/profile propagation.
 
 ## 5. Verification

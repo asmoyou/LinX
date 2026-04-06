@@ -23,11 +23,6 @@ active_connections: Dict[Any, Set[WebSocket]] = {}
 # Store task flow subscriptions: task_id -> set of websockets
 task_flow_subscriptions: Dict[UUID, Set[WebSocket]] = {}
 
-# Store mission subscriptions: mission_id -> set of websockets
-mission_subscriptions: Dict[UUID, Set[WebSocket]] = {}
-
-# Store global mission subscriptions (all mission events)
-mission_global_subscriptions: Set[WebSocket] = set()
 offline_message_queue: DefaultDict[str, List[dict[str, Any]]] = defaultdict(list)
 
 
@@ -344,142 +339,12 @@ async def broadcast_task_flow_update(task_id: UUID, update_type: str, data: dict
 # ------------------------------------------------------------------
 
 
-def _remove_mission_subscription(mission_id: UUID, websocket: WebSocket) -> None:
-    subscriptions = mission_subscriptions.get(mission_id)
-    if not subscriptions:
-        return
-    subscriptions.discard(websocket)
-    if not subscriptions:
-        mission_subscriptions.pop(mission_id, None)
-
-
-def _remove_global_mission_subscription(websocket: WebSocket) -> None:
-    mission_global_subscriptions.discard(websocket)
-
-
-@router.websocket("/missions")
-async def websocket_all_mission_updates(websocket: WebSocket):
-    """WebSocket endpoint for global mission event streaming."""
-    await websocket.accept()
-    mission_global_subscriptions.add(websocket)
-
-    logger.info("WebSocket connected to global missions stream", extra={"endpoint": "missions_all"})
-
-    try:
-        while True:
-            await websocket.receive_text()
-    except WebSocketDisconnect:
-        logger.info("WebSocket disconnected from global missions stream")
-    except Exception as e:
-        logger.error(
-            "WebSocket global missions error",
-            extra={"endpoint": "missions_all", "error": str(e)},
-        )
-    finally:
-        _remove_global_mission_subscription(websocket)
-
-
-@router.websocket("/missions/{mission_id}")
-async def websocket_mission_updates(websocket: WebSocket, mission_id: str):
-    """WebSocket endpoint for real-time mission event streaming."""
-    await websocket.accept()
-
-    mission_uuid: Optional[UUID] = None
-    try:
-        mission_uuid = UUID(mission_id)
-    except ValueError:
-        await websocket.send_json({"type": "error", "message": "Invalid mission ID format"})
-        await websocket.close()
-        return
-
-    if mission_uuid not in mission_subscriptions:
-        mission_subscriptions[mission_uuid] = set()
-    mission_subscriptions[mission_uuid].add(websocket)
-
-    logger.info(
-        "WebSocket connected to mission",
-        extra={"mission_id": mission_id, "endpoint": "missions"},
-    )
-
-    # Send current mission state as the initial message
-    try:
-        from mission_system.mission_repository import get_mission
-
-        mission = get_mission(mission_uuid)
-        if mission:
-            await websocket.send_json({
-                "type": "mission_state",
-                "data": {
-                    "mission_id": str(mission.mission_id),
-                    "status": mission.status,
-                    "total_tasks": mission.total_tasks,
-                    "completed_tasks": mission.completed_tasks,
-                    "failed_tasks": mission.failed_tasks,
-                },
-            })
-    except Exception as e:
-        logger.error(
-            "Failed to send initial mission state",
-            extra={"mission_id": mission_id, "error": str(e)},
-        )
-
-    try:
-        while True:
-            await websocket.receive_text()
-    except WebSocketDisconnect:
-        logger.info(
-            "WebSocket disconnected from mission",
-            extra={"mission_id": mission_id},
-        )
-    except Exception as e:
-        logger.error(
-            "WebSocket mission error",
-            extra={"mission_id": mission_id, "error": str(e)},
-        )
-    finally:
-        if mission_uuid is not None:
-            _remove_mission_subscription(mission_uuid, websocket)
+# ------------------------------------------------------------------
+# Mission WebSocket (legacy runtime path removed)
+# ------------------------------------------------------------------
 
 
 def broadcast_mission_event(mission_id: UUID, event: dict) -> None:
-    """Broadcast a mission event to all WebSocket subscribers.
-
-    This is a synchronous helper; it schedules the send on the running
-    event loop (safe to call from sync code inside an async app).
-    """
-    import asyncio
-
-    scoped_subs = mission_subscriptions.get(mission_id, set())
-    global_subs = mission_global_subscriptions
-    if not scoped_subs and not global_subs:
-        return
-
-    payload = dict(event)
-    payload.setdefault("mission_id", str(mission_id))
-    message = {"type": "mission_event", "data": payload}
-
-    async def _send():
-        stale_scoped: Set[WebSocket] = set()
-        stale_global: Set[WebSocket] = set()
-        for ws in list(scoped_subs):
-            try:
-                await ws.send_json(message)
-            except Exception:
-                stale_scoped.add(ws)
-
-        for ws in list(global_subs):
-            try:
-                await ws.send_json(message)
-            except Exception:
-                stale_global.add(ws)
-
-        for ws in stale_scoped:
-            _remove_mission_subscription(mission_id, ws)
-        for ws in stale_global:
-            _remove_global_mission_subscription(ws)
-
-    try:
-        loop = asyncio.get_running_loop()
-        loop.create_task(_send())
-    except RuntimeError:
-        pass
+    """Legacy no-op kept only so historical mission-system callers do not crash."""
+    del mission_id, event
+    return

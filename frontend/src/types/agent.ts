@@ -35,6 +35,11 @@ export type Agent = {
   topP?: number;
   departmentId?: string;
   departmentName?: string | null;
+  runtimeType?: string | null;
+  isEphemeral?: boolean;
+  lifecycleScope?: string | null;
+  projectScopeId?: string | null;
+  retiredAt?: string | null;
   accessLevel?: 'private' | 'department' | 'public' | 'team';
   allowedKnowledge?: string[];
   ownerUserId: string;

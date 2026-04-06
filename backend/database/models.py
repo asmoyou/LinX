@@ -201,6 +201,18 @@ class Agent(Base):
     top_k = Column(Integer, nullable=True)  # top K results for retrieval
     similarity_threshold = Column(Float, nullable=True)  # similarity threshold (0.0-1.0)
 
+    # Runtime / lifecycle semantics
+    is_ephemeral = Column(Boolean, nullable=False, default=False, index=True)
+    lifecycle_scope = Column(String(50), nullable=True, index=True)
+    runtime_preference = Column(String(50), nullable=True, index=True)
+    project_scope_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("projects.project_id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    retired_at = Column(DateTime(timezone=True), nullable=True, index=True)
+
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
@@ -925,12 +937,6 @@ class Task(Base):
         nullable=False,
         index=True,
     )
-    mission_id = Column(
-        UUID(as_uuid=True),
-        ForeignKey("missions.mission_id", ondelete="SET NULL"),
-        nullable=True,
-        index=True,
-    )
     acceptance_criteria = Column(Text, nullable=True)
     task_metadata = Column(JSONB, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
@@ -940,7 +946,6 @@ class Task(Base):
     creator = relationship("User", back_populates="tasks")
     assigned_agent = relationship("Agent", back_populates="tasks")
     parent_task = relationship("Task", remote_side=[task_id], backref="subtasks")
-    mission = relationship("Mission", back_populates="tasks")
 
     # Indexes
     __table_args__ = (
@@ -948,7 +953,6 @@ class Task(Base):
         Index("idx_task_agent_status", "assigned_agent_id", "status"),
         Index("idx_task_created_at", "created_at"),
         Index("idx_task_parent", "parent_task_id"),
-        Index("idx_task_mission", "mission_id"),
     )
 
     def __repr__(self):

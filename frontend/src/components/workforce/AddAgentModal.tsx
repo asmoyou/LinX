@@ -7,7 +7,7 @@ import { LayoutModal } from '@/components/LayoutModal';
 interface AddAgentModalProps {
   isOpen: boolean;
   onClose: () => void;
-  onAdd: (name: string, systemPrompt: string) => void;
+  onAdd: (payload: { name: string; systemPrompt: string; runtimePreference: string }) => void;
 }
 
 export const AddAgentModal: React.FC<AddAgentModalProps> = ({ isOpen, onClose, onAdd }) => {
@@ -15,6 +15,7 @@ export const AddAgentModal: React.FC<AddAgentModalProps> = ({ isOpen, onClose, o
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [name, setName] = useState('');
   const [systemPrompt, setSystemPrompt] = useState('');
+  const [runtimePreference, setRuntimePreference] = useState('project_sandbox');
   const [nameError, setNameError] = useState('');
 
   if (!isOpen) return null;
@@ -22,6 +23,7 @@ export const AddAgentModal: React.FC<AddAgentModalProps> = ({ isOpen, onClose, o
   const handleClose = () => {
     setName('');
     setSystemPrompt('');
+    setRuntimePreference('project_sandbox');
     setNameError('');
     onClose();
   };
@@ -31,19 +33,23 @@ export const AddAgentModal: React.FC<AddAgentModalProps> = ({ isOpen, onClose, o
     
     // Validate name
     if (!name.trim()) {
-      setNameError('Agent name is required');
+      setNameError(t('agent.errors.nameRequired', 'Agent name is required'));
       return;
     }
     
     if (name.trim().length < 2) {
-      setNameError('Agent name must be at least 2 characters');
+      setNameError(t('agent.errors.nameTooShort', 'Agent name must be at least 2 characters'));
       return;
     }
     
     setIsSubmitting(true);
     
     try {
-      onAdd(name.trim(), systemPrompt.trim());
+      onAdd({
+        name: name.trim(),
+        systemPrompt: systemPrompt.trim(),
+        runtimePreference,
+      });
       toast.success(t('agent.success', 'Agent created successfully!'));
       handleClose();
     } catch (error: any) {
@@ -123,6 +129,75 @@ export const AddAgentModal: React.FC<AddAgentModalProps> = ({ isOpen, onClose, o
           )}
         </div>
 
+        <div className="space-y-4">
+          <div>
+            <label
+              className="block text-sm font-semibold text-zinc-700 dark:text-zinc-300 mb-2"
+            >
+              {t('agent.runtimeEnvironment', 'Agent Category')}
+            </label>
+            <div className="grid gap-3 md:grid-cols-2">
+              <button
+                type="button"
+                onClick={() => setRuntimePreference('project_sandbox')}
+                className={`rounded-2xl border px-4 py-4 text-left transition ${
+                  runtimePreference === 'project_sandbox'
+                    ? 'border-emerald-500 bg-emerald-500/10'
+                    : 'border-zinc-200 bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-900/40'
+                }`}
+              >
+                <p className="text-sm font-semibold text-zinc-900 dark:text-zinc-100">
+                  {t('agent.internalAgentBadge', 'Internal Agent')}
+                </p>
+                <p className="mt-2 text-xs text-zinc-600 dark:text-zinc-400">
+                  {t('agent.runtimeSelectionInternalHint', 'Internal agents run inside a project run sandbox. They are later bound to projects from the project workspace.')}
+                </p>
+              </button>
+              <button
+                type="button"
+                onClick={() => setRuntimePreference((current) => current === 'project_sandbox' ? 'external_worktree' : current)}
+                className={`rounded-2xl border px-4 py-4 text-left transition ${
+                  runtimePreference !== 'project_sandbox'
+                    ? 'border-indigo-500 bg-indigo-500/10'
+                    : 'border-zinc-200 bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-900/40'
+                }`}
+              >
+                <p className="text-sm font-semibold text-zinc-900 dark:text-zinc-100">
+                  {t('agent.externalAgentBadge', 'External Agent')}
+                </p>
+                <p className="mt-2 text-xs text-zinc-600 dark:text-zinc-400">
+                  {t('agent.runtimeSelectionExternalHint', 'External agents are still normal agents, but they run through external runtime hosts such as worktree/same-dir sessions. Bind them to projects later from the project workspace.')}
+                </p>
+              </button>
+            </div>
+          </div>
+
+          {runtimePreference !== 'project_sandbox' ? (
+            <div>
+              <label
+                htmlFor="agentRuntimeMode"
+                className="block text-sm font-semibold text-zinc-700 dark:text-zinc-300 mb-2"
+              >
+                {t('agent.externalRuntimeMode', 'External Runtime Mode')}
+              </label>
+              <select
+                id="agentRuntimeMode"
+                value={runtimePreference}
+                onChange={(e) => setRuntimePreference(e.target.value)}
+                disabled={isSubmitting}
+                className="w-full px-4 py-3 bg-zinc-50 dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-xl text-zinc-900 dark:text-zinc-100 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                <option value="external_worktree">{t('agent.runtimeTypeValue.external_worktree', 'external_worktree')}</option>
+                <option value="external_same_dir">{t('agent.runtimeTypeValue.external_same_dir', 'external_same_dir')}</option>
+                <option value="remote_session">{t('agent.runtimeTypeValue.remote_session', 'remote_session')}</option>
+              </select>
+              <div className="mt-3 rounded-xl border border-amber-500/20 bg-amber-500/5 px-4 py-3 text-xs text-amber-700 dark:text-amber-300">
+                {t('agent.externalAgentFootnote', 'External agents are created here, but they only become active for project work after being bound from the project workspace and paired with a runtime host.')}
+              </div>
+            </div>
+          ) : null}
+        </div>
+
         {/* System Prompt */}
         <div>
           <label 
@@ -141,7 +216,7 @@ export const AddAgentModal: React.FC<AddAgentModalProps> = ({ isOpen, onClose, o
             placeholder={t('agent.systemPromptPlaceholder', 'Define the agent\'s role, behavior, and capabilities...')}
           />
           <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
-            You can configure the model, temperature, and other settings after creating the agent.
+            {t('agent.createAgentFollowupHint', 'You can configure the model, runtime behavior, and skills after creating the agent.')}
           </p>
         </div>
 
@@ -152,7 +227,7 @@ export const AddAgentModal: React.FC<AddAgentModalProps> = ({ isOpen, onClose, o
           <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
             {t(
               'agent.boundDepartmentHint',
-              'This agent will automatically bind to your current department. You can change sharing visibility after creation.',
+              'This agent automatically belongs to your current department for visibility and access control. Project usage is managed later from each project workspace.',
             )}
           </p>
         </div>

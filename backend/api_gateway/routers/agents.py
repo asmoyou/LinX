@@ -319,7 +319,7 @@ def _platform_skill_id_strings(
     agent_id: Optional[str] = None,
 ) -> List[str]:
     """Return configured platform skill IDs from agent capabilities."""
-    if agent_type == "mission_temp_worker":
+    if agent_type in {"execution_temp_worker", "mission_temp_worker"}:
         return []
     return _normalize_skill_id_strings(
         capabilities,
@@ -398,12 +398,7 @@ def _to_positive_int(value: Any) -> Optional[int]:
     return parsed if parsed > 0 else None
 
 
-_NON_TERMINAL_TASK_STATUSES = {"pending", "in_progress"}
-
-
-def _mission_bound_tasks_only(task_model: Any):
-    """Restrict task stats/logs to mission-generated tasks only."""
-    return task_model.mission_id.isnot(None)
+_NON_TERMINAL_TASK_STATUSES = {"pending", "in_progress", "draft", "planning", "running", "reviewing"}
 
 
 def _default_agent_task_stats() -> Dict[str, Any]:
@@ -430,14 +425,17 @@ def _collect_agent_task_stats(agent_ids: List[UUID]) -> Dict[UUID, Dict[str, Any
         from sqlalchemy import func
 
         from database.connection import get_db_session
-        from database.models import Task
+        from database.project_execution_models import ProjectTask
 
         with get_db_session() as session:
             rows = (
-                session.query(Task.assigned_agent_id, Task.status, func.count(Task.task_id))
-                .filter(Task.assigned_agent_id.in_(unique_agent_ids))
-                .filter(_mission_bound_tasks_only(Task))
-                .group_by(Task.assigned_agent_id, Task.status)
+                session.query(
+                    ProjectTask.assignee_agent_id,
+                    ProjectTask.status,
+                    func.count(ProjectTask.project_task_id),
+                )
+                .filter(ProjectTask.assignee_agent_id.in_(unique_agent_ids))
+                .group_by(ProjectTask.assignee_agent_id, ProjectTask.status)
                 .all()
             )
 
@@ -479,7 +477,7 @@ def _normalize_event_timestamp(value: Any) -> datetime:
 def _normalize_task_status(task_status: Any) -> str:
     """Normalize task status aliases to canonical API values."""
     normalized_status = str(task_status or "").strip().lower()
-    if normalized_status in {"in progress", "in-progress"}:
+    if normalized_status in {"in progress", "in-progress", "running", "reviewing", "planning", "draft"}:
         return "in_progress"
     return normalized_status
 
@@ -2264,6 +2262,8 @@ class CreateAgentRequest(BaseModel):
     accessLevel: Optional[str] = Field(default="private")
     allowedKnowledge: List[str] = Field(default_factory=list)
     department_id: Optional[str] = None
+    runtimePreference: Optional[str] = None
+    projectScopeId: Optional[str] = None
 
 
 class UpdateAgentRequest(BaseModel):
@@ -2285,6 +2285,8 @@ class UpdateAgentRequest(BaseModel):
     similarityThreshold: Optional[float] = Field(None, ge=0.0, le=1.0)
     # Department
     department_id: Optional[str] = None
+    runtimePreference: Optional[str] = None
+    projectScopeId: Optional[str] = None
 
 
 class AgentResponse(BaseModel):
@@ -2321,6 +2323,11 @@ class AgentResponse(BaseModel):
     isOwned: bool = False
     canManage: bool = False
     canExecute: bool = False
+    runtimeType: Optional[str] = None
+    isEphemeral: bool = False
+    lifecycleScope: Optional[str] = None
+    projectScopeId: Optional[str] = None
+    retiredAt: Optional[datetime] = None
     createdAt: datetime
     updatedAt: datetime
 
@@ -2423,6 +2430,11 @@ def _build_agent_response(
             str(agent_info.department_id) if getattr(agent_info, "department_id", None) else None
         ),
         departmentName=department_name,
+        runtimeType=getattr(agent_info, "runtime_preference", None),
+        isEphemeral=bool(getattr(agent_info, "is_ephemeral", False)),
+        lifecycleScope=getattr(agent_info, "lifecycle_scope", None),
+        projectScopeId=(str(getattr(agent_info, "project_scope_id", "")) or None) if getattr(agent_info, "project_scope_id", None) else None,
+        retiredAt=getattr(agent_info, "retired_at", None),
         ownerUserId=str(agent_info.owner_user_id),
         ownerUsername=owner_username,
         isOwned=str(agent_info.owner_user_id) == str(current_user.user_id),
@@ -2541,6 +2553,8 @@ async def create_agent(
             access_level=normalized_access_level,
             allowed_knowledge=validated_allowed_knowledge,
             department_id=owner_department_id,
+            runtime_preference=payload.runtimePreference,
+            project_scope_id=UUID(payload.projectScopeId) if payload.projectScopeId else None,
         )
 
         # Update status to idle after creation
@@ -2646,20 +2660,18 @@ async def get_agent_metrics(
         from sqlalchemy import func
 
         from database.connection import get_db_session
-        from database.models import Task
+        from database.project_execution_models import ProjectTask
 
         with get_db_session() as session:
             task_status_rows = (
-                session.query(Task.status, func.count(Task.task_id))
-                .filter(Task.assigned_agent_id == agent_uuid)
-                .filter(_mission_bound_tasks_only(Task))
-                .group_by(Task.status)
+                session.query(ProjectTask.status, func.count(ProjectTask.project_task_id))
+                .filter(ProjectTask.assignee_agent_id == agent_uuid)
+                .group_by(ProjectTask.status)
                 .all()
             )
             last_activity_at = (
-                session.query(func.max(func.coalesce(Task.completed_at, Task.created_at)))
-                .filter(Task.assigned_agent_id == agent_uuid)
-                .filter(_mission_bound_tasks_only(Task))
+                session.query(func.max(ProjectTask.updated_at))
+                .filter(ProjectTask.assignee_agent_id == agent_uuid)
                 .scalar()
             )
 
@@ -2692,14 +2704,19 @@ async def get_agent_logs(
         from sqlalchemy import and_, func, or_
 
         from database.connection import get_db_session
-        from database.models import AuditLog, Task
+        from database.models import AuditLog
+        from database.project_execution_models import ProjectTask
 
         with get_db_session() as session:
             task_rows = (
-                session.query(Task.goal_text, Task.status, Task.created_at, Task.completed_at)
-                .filter(Task.assigned_agent_id == agent_uuid)
-                .filter(_mission_bound_tasks_only(Task))
-                .order_by(func.coalesce(Task.completed_at, Task.created_at).desc())
+                session.query(
+                    ProjectTask.title,
+                    ProjectTask.status,
+                    ProjectTask.created_at,
+                    ProjectTask.updated_at,
+                )
+                .filter(ProjectTask.assignee_agent_id == agent_uuid)
+                .order_by(ProjectTask.updated_at.desc())
                 .limit(limit)
                 .all()
             )
@@ -2787,6 +2804,8 @@ async def update_agent(
             top_k=payload.topK,
             similarity_threshold=payload.similarityThreshold,
             department_id=owner_department_id,
+            runtime_preference=payload.runtimePreference,
+            project_scope_id=UUID(payload.projectScopeId) if payload.projectScopeId else None,
         )
 
         if not updated_agent:

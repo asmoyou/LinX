@@ -50,11 +50,22 @@ export const Workforce: React.FC = () => {
     }
   };
 
+  const summary = {
+    total: agents.length,
+    internal: agents.filter((agent) => !agent.runtimeType || agent.runtimeType === "project_sandbox").length,
+    external: agents.filter((agent) => String(agent.runtimeType || "").startsWith("external") || agent.runtimeType === "remote_session").length,
+    ephemeral: agents.filter((agent) => agent.isEphemeral).length,
+  };
+
   // Filter agents
   const filteredAgents = agents.filter((agent) => {
+    const lowerQuery = searchQuery.toLowerCase();
     const matchesSearch =
-      agent.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      agent.type.toLowerCase().includes(searchQuery.toLowerCase());
+      agent.name.toLowerCase().includes(lowerQuery) ||
+      agent.type.toLowerCase().includes(lowerQuery) ||
+      String(agent.runtimeType || "").toLowerCase().includes(lowerQuery) ||
+      String(agent.lifecycleScope || "").toLowerCase().includes(lowerQuery) ||
+      String(agent.projectScopeId || "").toLowerCase().includes(lowerQuery);
     const matchesDepartment =
       !departmentFilter || agent.departmentId === departmentFilter;
     const matchesScope =
@@ -66,16 +77,18 @@ export const Workforce: React.FC = () => {
     return matchesSearch && matchesDepartment && matchesScope;
   });
 
-  const handleAddAgent = async (name: string, systemPrompt: string) => {
+  const handleAddAgent = async (payload: { name: string; systemPrompt: string; runtimePreference: string }) => {
     try {
+      const runtimePreference = payload.runtimePreference || "project_sandbox";
       const newAgent = await agentsApi.create({
-        name,
-        type: "general", // Default type
-        systemPrompt: systemPrompt || undefined,
+        name: payload.name,
+        type: runtimePreference === "project_sandbox" ? "general" : "external_general",
+        systemPrompt: payload.systemPrompt || undefined,
+        runtimePreference,
       });
 
       setAgents([...agents, newAgent]);
-      toast.success(`Agent "${name}" created successfully`);
+      toast.success(`Agent "${payload.name}" created successfully`);
     } catch (error) {
       console.error("Failed to create agent:", error);
       toast.error("Failed to create agent. Please try again.");
@@ -126,6 +139,8 @@ export const Workforce: React.FC = () => {
         topK: updatedAgent.topK,
         similarityThreshold: updatedAgent.similarityThreshold,
         department_id: updatedAgent.departmentId || null,
+        runtimePreference: updatedAgent.runtimeType || undefined,
+        projectScopeId: updatedAgent.projectScopeId || null,
       });
 
       await skillsApi.updateAgentBindings(updatedAgent.id, bindings);
@@ -251,6 +266,25 @@ export const Workforce: React.FC = () => {
             </option>
             <option value="public">{t("agent.scopeFilterPublic", "Public")}</option>
           </select>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+        <div className="glass-panel rounded-2xl p-4">
+          <p className="text-xs uppercase tracking-[0.16em] text-zinc-500 dark:text-zinc-400">{t("agent.summary.total", "Total")}</p>
+          <p className="mt-2 text-2xl font-bold text-zinc-900 dark:text-zinc-100">{summary.total}</p>
+        </div>
+        <div className="glass-panel rounded-2xl p-4">
+          <p className="text-xs uppercase tracking-[0.16em] text-zinc-500 dark:text-zinc-400">{t("agent.summary.internal", "Internal")}</p>
+          <p className="mt-2 text-2xl font-bold text-zinc-900 dark:text-zinc-100">{summary.internal}</p>
+        </div>
+        <div className="glass-panel rounded-2xl p-4">
+          <p className="text-xs uppercase tracking-[0.16em] text-zinc-500 dark:text-zinc-400">{t("agent.summary.external", "External")}</p>
+          <p className="mt-2 text-2xl font-bold text-zinc-900 dark:text-zinc-100">{summary.external}</p>
+        </div>
+        <div className="glass-panel rounded-2xl p-4">
+          <p className="text-xs uppercase tracking-[0.16em] text-zinc-500 dark:text-zinc-400">{t("agent.summary.ephemeral", "Ephemeral")}</p>
+          <p className="mt-2 text-2xl font-bold text-zinc-900 dark:text-zinc-100">{summary.ephemeral}</p>
         </div>
       </div>
 

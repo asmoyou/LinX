@@ -14,6 +14,7 @@ export { authApi } from "./auth";
 export type { SetupStatusResponse } from "./auth";
 export { usersApi } from "./users";
 export { platformApi } from "./platform";
+export { projectExecutionApi } from "./projectExecution";
 export { telemetryApi } from "./telemetry";
 export { agentsApi } from "./agents";
 export { schedulesApi } from "./schedules";

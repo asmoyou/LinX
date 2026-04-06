@@ -282,7 +282,7 @@ export const evaluateMotionRuntimeWindow = ({
         lowWindowCount: 0,
         stableWindowMs: 0,
         downgraded: false,
-        upgraded: runtimeTier !== 'full',
+        upgraded: runtimeTier === 'off' || runtimeTier === 'reduced',
       };
     }
 

@@ -30,6 +30,7 @@ import type { Collection } from "@/types/document";
 import { ModelMetadataCard } from "@/components/settings/ModelMetadataCard";
 import { ImageCropModal } from "@/components/common/ImageCropModal";
 import { LayoutModal } from "@/components/LayoutModal";
+import { getAgentKind } from "@/utils/agentPresentation";
 
 const resolveDefaultBindingMode = (
   skill: AgentSkillSummary,
@@ -84,7 +85,7 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
 }) => {
   const { t, i18n } = useTranslation();
   const [activeTab, setActiveTab] = useState<
-    "basic" | "capabilities" | "model" | "knowledge" | "access" | "channels"
+    "basic" | "runtime" | "capabilities" | "model" | "knowledge" | "access" | "channels"
   >("basic");
   const [saveError, setSaveError] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
@@ -146,7 +147,13 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
     allowedKnowledge: [],
     topK: 5,
     similarityThreshold: 0.3,
+    runtimeType: "project_sandbox",
+    projectScopeId: "",
   });
+
+  const agentKind = getAgentKind({
+    runtimeType: String(formData.runtimeType || agent?.runtimeType || "project_sandbox"),
+  } as Agent);
 
   // Initialize form data when agent changes
   useEffect(() => {
@@ -177,6 +184,8 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
         allowedKnowledge: agent.allowedKnowledge || [],
         topK: agent.topK || 5,
         similarityThreshold: agent.similarityThreshold ?? 0.3,
+        runtimeType: agent.runtimeType || "project_sandbox",
+        projectScopeId: agent.projectScopeId || "",
       });
       setSkillBindings([]);
       setShowAdvancedSkillBindings(false);
@@ -590,6 +599,7 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
 
   const tabs = [
     { id: "basic", label: t("agent.basicInfo") },
+    { id: "runtime", label: agentKind === "external" ? t("agent.runtimeTabExternal", "Runtime Host") : t("agent.runtimeTab", "Runtime") },
     { id: "capabilities", label: t("agent.capabilities") },
     { id: "model", label: t("agent.modelConfig") },
     { id: "knowledge", label: t("agent.knowledgeBase") },
@@ -842,6 +852,16 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
           {/* Basic Info Tab */}
           {activeTab === "basic" && (
             <div className="space-y-4">
+              <div className="rounded-xl border border-indigo-500/20 bg-indigo-500/5 p-4">
+                <p className="text-sm font-semibold text-zinc-700 dark:text-zinc-300">
+                  {agentKind === "external" ? t("agent.externalAgentBadge", "External Agent") : t("agent.internalAgentBadge", "Internal Agent")}
+                </p>
+                <p className="mt-2 text-sm text-zinc-600 dark:text-zinc-400">
+                  {agentKind === "external"
+                    ? t("agent.runtimeBannerExternal", "This agent runs through an external runtime host. Host-specific deployment and runner settings are configured from Execution Nodes.")
+                    : t("agent.runtimeBannerInternal", "This agent runs inside project run sandboxes and is attached to projects later from Project Agent Pool.")}
+                </p>
+              </div>
               {/* Avatar Upload */}
               <div>
                 <label className="block text-sm font-semibold text-zinc-700 dark:text-zinc-300 mb-2">
@@ -906,6 +926,29 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
                 />
               </div>
 
+              <div className="rounded-xl border border-indigo-500/20 bg-indigo-500/5 p-4">
+                <label className="block text-sm font-semibold text-zinc-700 dark:text-zinc-300 mb-2">
+                  {t("agent.runtimeConfigTitle", "Runtime Configuration")}
+                </label>
+                <select
+                  value={String(formData.runtimeType || "project_sandbox")}
+                  onChange={(e) =>
+                    setFormData({ ...formData, runtimeType: e.target.value, projectScopeId: e.target.value === "project_sandbox" ? "" : formData.projectScopeId })
+                  }
+                  className="w-full px-4 py-3 bg-white/80 dark:bg-zinc-900/60 border border-indigo-500/20 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500/20 text-zinc-800 dark:text-zinc-200"
+                >
+                  <option value="project_sandbox">{t("agent.runtimeTypeValue.project_sandbox", "project_sandbox")}</option>
+                  <option value="external_worktree">{t("agent.runtimeTypeValue.external_worktree", "external_worktree")}</option>
+                  <option value="external_same_dir">{t("agent.runtimeTypeValue.external_same_dir", "external_same_dir")}</option>
+                  <option value="remote_session">{t("agent.runtimeTypeValue.remote_session", "remote_session")}</option>
+                </select>
+                <p className="mt-3 text-xs text-zinc-500 dark:text-zinc-400">
+                  {String(formData.runtimeType || "project_sandbox") === "project_sandbox"
+                    ? t("agent.runtimeConfigInternalDescription", "This agent runs inside project run sandboxes. Project assignment happens from the project workspace, not here.")
+                    : t("agent.runtimeConfigExternalDescription", "This agent is an external agent. It still behaves like a normal agent, but it needs a runtime host and may affect an external machine.")}
+                </p>
+              </div>
+
               <div className="rounded-xl border border-zinc-500/10 bg-zinc-500/5 p-4">
                 <label className="block text-sm font-semibold text-zinc-700 dark:text-zinc-300 mb-2">
                   {t("departments.label", "Department")}
@@ -946,6 +989,80 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
                   <option value="public">{t("agent.accessLevelPublic")}</option>
                 </select>
               </div>
+            </div>
+          )}
+
+          {activeTab === "runtime" && (
+            <div className="space-y-4">
+              <div className="rounded-xl border border-indigo-500/20 bg-indigo-500/5 p-4">
+                <label className="block text-sm font-semibold text-zinc-700 dark:text-zinc-300 mb-2">
+                  {t("agent.runtimeConfigTitle", "Runtime Configuration")}
+                </label>
+                <select
+                  value={String(formData.runtimeType || "project_sandbox")}
+                  onChange={(e) =>
+                    setFormData({
+                      ...formData,
+                      runtimeType: e.target.value,
+                    })
+                  }
+                  className="w-full px-4 py-3 bg-white/80 dark:bg-zinc-900/60 border border-indigo-500/20 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500/20 text-zinc-800 dark:text-zinc-200"
+                >
+                  <option value="project_sandbox">{t("agent.runtimeTypeValue.project_sandbox", "project_sandbox")}</option>
+                  <option value="external_worktree">{t("agent.runtimeTypeValue.external_worktree", "external_worktree")}</option>
+                  <option value="external_same_dir">{t("agent.runtimeTypeValue.external_same_dir", "external_same_dir")}</option>
+                  <option value="remote_session">{t("agent.runtimeTypeValue.remote_session", "remote_session")}</option>
+                </select>
+                <p className="mt-3 text-xs text-zinc-500 dark:text-zinc-400">
+                  {String(formData.runtimeType || "project_sandbox") === "project_sandbox"
+                    ? t("agent.runtimeConfigInternalDescription", "This agent runs inside project run sandboxes. Project assignment happens from the project workspace, not here.")
+                    : t("agent.runtimeConfigExternalDescription", "This agent is an external agent. It still behaves like a normal agent, but it needs a runtime host and may affect an external machine.")}
+                </p>
+              </div>
+
+              {String(formData.runtimeType || "project_sandbox") !== "project_sandbox" ? (
+                <div className="space-y-4">
+                  <div className="grid gap-4 lg:grid-cols-2">
+                    <div className="rounded-xl border border-zinc-500/10 bg-zinc-500/5 p-4">
+                      <label className="block text-sm font-semibold text-zinc-700 dark:text-zinc-300 mb-2">
+                        {t("agent.externalConfigProjectBindingTitle", "Project Usage")}
+                      </label>
+                      <p className="text-sm text-zinc-700 dark:text-zinc-300">
+                        {t("agent.externalConfigProjectBindingDescription", "External agents are not bound to a project here. Add them to a project from Project Detail → Project Agent Pool.")}
+                      </p>
+                    </div>
+                    <div className="rounded-xl border border-zinc-500/10 bg-zinc-500/5 p-4">
+                      <label className="block text-sm font-semibold text-zinc-700 dark:text-zinc-300 mb-2">
+                        {t("agent.externalConfigNodeBindingTitle", "Runtime Host")}
+                      </label>
+                      <p className="text-sm text-zinc-700 dark:text-zinc-300">
+                        {t("agent.externalConfigNodeBindingDescription", "External agents use runtime hosts from the Execution Nodes page. Host-specific runner commands and path allowlists are configured there.")}
+                      </p>
+                    </div>
+                  </div>
+                  <div className="rounded-xl border border-indigo-500/20 bg-indigo-500/5 p-4">
+                    <label className="block text-sm font-semibold text-zinc-700 dark:text-zinc-300 mb-2">
+                      {t("agent.externalDeploymentGuideTitle", "How to deploy to a target host")}
+                    </label>
+                    <ol className="list-decimal space-y-2 pl-5 text-sm text-zinc-700 dark:text-zinc-300">
+                      <li>{t("agent.externalDeploymentGuideStep1", "Create the external agent here and save it.")}</li>
+                      <li>{t("agent.externalDeploymentGuideStep2", "Go to Execution Nodes and register a runtime host on the target machine or a reachable host.")}</li>
+                      <li>{t("agent.externalDeploymentGuideStep3", "Configure the host's external runner command, path allowlist, and supported runtime modes.")}</li>
+                      <li>{t("agent.externalDeploymentGuideStep4", "Open your project and add this external agent into Project Agent Pool.")}</li>
+                      <li>{t("agent.externalDeploymentGuideStep5", "For host-affecting tasks, LinX will schedule the external agent onto a compatible runtime host.")}</li>
+                    </ol>
+                  </div>
+                </div>
+              ) : (
+                <div className="rounded-xl border border-zinc-500/10 bg-zinc-500/5 p-4">
+                  <label className="block text-sm font-semibold text-zinc-700 dark:text-zinc-300 mb-2">
+                    {t("agent.internalConfigProjectBindingTitle", "Project Usage")}
+                  </label>
+                  <p className="text-sm text-zinc-700 dark:text-zinc-300">
+                    {t("agent.internalConfigProjectBindingDescription", "Internal agents run in project run sandboxes. Bind them to projects later from the project workspace when you want them to participate in project execution.")}
+                  </p>
+                </div>
+              )}
             </div>
           )}
 

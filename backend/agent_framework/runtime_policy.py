@@ -39,8 +39,10 @@ class ExecutionProfile(str, Enum):
     """High-level runtime profile for agent execution."""
 
     DEBUG_CHAT = "debug_chat"
-    MISSION_TASK = "mission_task"
-    MISSION_CONTROL = "mission_control"
+    EXECUTION_TASK = "execution_task"
+    EXECUTION_CONTROL = "execution_control"
+    MISSION_TASK = "execution_task"
+    MISSION_CONTROL = "execution_control"
     LEGACY = "legacy"
 
 
@@ -155,8 +157,8 @@ class RuntimePolicyRegistry:
                 stream_output=True,
                 file_delivery_guard_mode=FileDeliveryGuardMode.SOFT,
             ),
-            ExecutionProfile.MISSION_TASK: RuntimePolicy(
-                profile=ExecutionProfile.MISSION_TASK,
+            ExecutionProfile.EXECUTION_TASK: RuntimePolicy(
+                profile=ExecutionProfile.EXECUTION_TASK,
                 loop_mode=LoopMode.RECOVERY_MULTI_TURN,
                 max_rounds=20,
                 retry_iteration_cap=0,
@@ -168,8 +170,8 @@ class RuntimePolicyRegistry:
                 stream_output=False,
                 file_delivery_guard_mode=FileDeliveryGuardMode.STRICT,
             ),
-            ExecutionProfile.MISSION_CONTROL: RuntimePolicy(
-                profile=ExecutionProfile.MISSION_CONTROL,
+            ExecutionProfile.EXECUTION_CONTROL: RuntimePolicy(
+                profile=ExecutionProfile.EXECUTION_CONTROL,
                 loop_mode=LoopMode.SINGLE_TURN,
                 max_rounds=1,
                 retry_iteration_cap=1,
@@ -279,6 +281,11 @@ def is_agent_test_chat_unified_runtime_enabled() -> bool:
     return _get_env_bool("AGENT_TEST_CHAT_UNIFIED_RUNTIME_ENABLED", True)
 
 
+def is_execution_task_unified_runtime_enabled() -> bool:
+    """Feature flag: enable unified runtime in execution task handling."""
+    return _get_env_bool("EXECUTION_TASK_UNIFIED_RUNTIME_ENABLED", _get_env_bool("MISSION_TASK_UNIFIED_RUNTIME_ENABLED", True))
+
+
+# Backward-compatible alias for historical callers.
 def is_mission_task_unified_runtime_enabled() -> bool:
-    """Feature flag: enable unified runtime in mission task execution."""
-    return _get_env_bool("MISSION_TASK_UNIFIED_RUNTIME_ENABLED", True)
+    return is_execution_task_unified_runtime_enabled()

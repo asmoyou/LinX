@@ -248,6 +248,28 @@ class TestTaskEndpoints:
         assert response.status_code == 404
 
 
+class TestMissionEndpoints:
+    """Test legacy mission endpoint removal."""
+
+    def test_list_missions_endpoint_not_registered(self, client, auth_token):
+        """Legacy /missions endpoint should be removed from the primary runtime path."""
+        response = client.get(
+            "/api/v1/missions", headers={"Authorization": f"Bearer {auth_token}"}
+        )
+
+        assert response.status_code == 404
+
+
+class TestMissionWebSocketEndpoints:
+    """Test legacy mission websocket endpoint removal."""
+
+    def test_mission_websocket_routes_not_registered(self, app):
+        registered_paths = {route.path for route in app.routes}
+
+        assert '/api/v1/ws/missions' not in registered_paths
+        assert '/api/v1/ws/missions/{mission_id}' not in registered_paths
+
+
 class TestDashboardEndpoints:
     """Test dashboard endpoints."""
 

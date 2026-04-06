@@ -43,6 +43,8 @@ const hasRefreshableSession = (): boolean => {
   return Boolean(token && isAuthenticated);
 };
 
+export const getAuthToken = (): string | null => useAuthStore.getState().token || null;
+
 /**
  * API Client Configuration
  */

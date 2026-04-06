@@ -1,4 +1,4 @@
-import apiClient from "./client";
+import apiClient, { getAuthToken } from "./client";
 import type { RequestConfigWithMeta } from "./client";
 import type { Agent } from "../types/agent";
 import type {
@@ -27,6 +27,8 @@ export interface CreateAgentRequest {
   capabilities?: string[];
   config?: Record<string, any>;
   department_id?: string;
+  runtimePreference?: string;
+  projectScopeId?: string;
 }
 
 export interface UpdateAgentRequest {
@@ -45,6 +47,8 @@ export interface UpdateAgentRequest {
   capabilities?: string[];
   config?: Record<string, any>;
   department_id?: string | null;
+  runtimePreference?: string;
+  projectScopeId?: string | null;
 }
 
 export interface AgentTemplate {
@@ -258,9 +262,7 @@ export const agentsApi = {
     sessionId?: string, // Session ID for persistent execution environment
   ): Promise<void> => {
     try {
-      // Get token from auth store (same way apiClient does)
-      const { useAuthStore } = await import("../stores/authStore");
-      const token = useAuthStore.getState().token;
+      const token = getAuthToken();
 
       // Prepare form data for multipart/form-data request
       const formData = new FormData();
@@ -616,8 +618,7 @@ export const agentsApi = {
     signal?: AbortSignal,
   ): Promise<void> => {
     try {
-      const { useAuthStore } = await import("../stores/authStore");
-      const token = useAuthStore.getState().token;
+      const token = getAuthToken();
 
       const formData = new FormData();
       formData.append("message", message);

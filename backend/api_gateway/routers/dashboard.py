@@ -17,8 +17,8 @@ from shared.logging import get_logger
 logger = get_logger(__name__)
 router = APIRouter()
 
-_NON_TERMINAL_TASK_STATUSES = {"pending", "in_progress"}
-_ACTIVE_MISSION_STATUSES = {"requirements", "planning", "executing", "reviewing", "qa"}
+_NON_TERMINAL_TASK_STATUSES = {"draft", "planning", "pending", "running", "reviewing"}
+_ACTIVE_RUN_STATUSES = {"queued", "planning", "provisioning", "running", "reviewing"}
 
 
 class DashboardStats(BaseModel):
@@ -28,7 +28,7 @@ class DashboardStats(BaseModel):
     total_agents: int
     goals_completed: int
     goals_completed_in_window: int
-    missions_in_progress: int
+    runs_in_progress: int
     tasks_completed: int
     tasks_completed_24h: int
     tasks_failed: int
@@ -81,14 +81,16 @@ def _humanize_event_type(event_type: str) -> str:
 def _build_event_message(
     event_type: str,
     message: str | None,
-    mission_title: str | None,
+    project_title: str | None = None,
+    mission_title: str | None = None,
 ) -> str:
     if message and message.strip():
         return message.strip()
 
     event_label = _humanize_event_type(event_type)
-    if mission_title and mission_title.strip():
-        return f"{mission_title.strip()}: {event_label}"
+    resolved_title = project_title or mission_title
+    if resolved_title and resolved_title.strip():
+        return f"{resolved_title.strip()}: {event_label}"
     return event_label
 
 
@@ -128,8 +130,8 @@ async def get_dashboard_overview(
 ):
     """Get user-scoped dashboard metrics and recent activity."""
     from database.connection import get_db_session
-    from database.mission_models import Mission, MissionEvent
-    from database.models import Agent, Task
+    from database.models import Agent
+    from database.project_execution_models import Project, ProjectAuditEvent, ProjectRun, ProjectTask
     from sqlalchemy import func
 
     user_id = UUID(current_user.user_id)
@@ -151,81 +153,80 @@ async def get_dashboard_overview(
                 .all()
             )
             task_status_rows = (
-                session.query(Task.status, func.count(Task.task_id))
-                .filter(Task.created_by_user_id == user_id)
-                .group_by(Task.status)
+                session.query(ProjectTask.status, func.count(ProjectTask.project_task_id))
+                .filter(ProjectTask.created_by_user_id == user_id)
+                .group_by(ProjectTask.status)
                 .all()
             )
             goals_completed = (
-                session.query(func.count(Mission.mission_id))
+                session.query(func.count(ProjectRun.run_id))
                 .filter(
-                    Mission.created_by_user_id == user_id,
-                    Mission.status == "completed",
+                    ProjectRun.requested_by_user_id == user_id,
+                    ProjectRun.status == "completed",
                 )
                 .scalar()
                 or 0
             )
             goals_completed_in_window = (
-                session.query(func.count(Mission.mission_id))
+                session.query(func.count(ProjectRun.run_id))
                 .filter(
-                    Mission.created_by_user_id == user_id,
-                    Mission.status == "completed",
-                    Mission.completed_at.isnot(None),
-                    Mission.completed_at >= start_ts,
+                    ProjectRun.requested_by_user_id == user_id,
+                    ProjectRun.status == "completed",
+                    ProjectRun.completed_at.isnot(None),
+                    ProjectRun.completed_at >= start_ts,
                 )
                 .scalar()
                 or 0
             )
-            missions_in_progress = (
-                session.query(func.count(Mission.mission_id))
+            runs_in_progress = (
+                session.query(func.count(ProjectRun.run_id))
                 .filter(
-                    Mission.created_by_user_id == user_id,
-                    Mission.status.in_(_ACTIVE_MISSION_STATUSES),
+                    ProjectRun.requested_by_user_id == user_id,
+                    ProjectRun.status.in_(_ACTIVE_RUN_STATUSES),
                 )
                 .scalar()
                 or 0
             )
             tasks_completed_24h = (
-                session.query(func.count(Task.task_id))
+                session.query(func.count(ProjectTask.project_task_id))
                 .filter(
-                    Task.created_by_user_id == user_id,
-                    Task.status == "completed",
-                    Task.completed_at.isnot(None),
-                    Task.completed_at >= throughput_boundary,
+                    ProjectTask.created_by_user_id == user_id,
+                    ProjectTask.status == "completed",
+                    ProjectTask.updated_at >= throughput_boundary,
                 )
                 .scalar()
                 or 0
             )
             task_distribution_rows = (
-                session.query(func.date(Task.created_at), func.count(Task.task_id))
+                session.query(func.date(ProjectTask.created_at), func.count(ProjectTask.project_task_id))
                 .filter(
-                    Task.created_by_user_id == user_id,
-                    Task.created_at >= start_ts,
+                    ProjectTask.created_by_user_id == user_id,
+                    ProjectTask.created_at >= start_ts,
                 )
-                .group_by(func.date(Task.created_at))
+                .group_by(func.date(ProjectTask.created_at))
                 .all()
             )
             task_completion_distribution_rows = (
-                session.query(func.date(Task.completed_at), func.count(Task.task_id))
+                session.query(func.date(ProjectTask.updated_at), func.count(ProjectTask.project_task_id))
                 .filter(
-                    Task.created_by_user_id == user_id,
-                    Task.completed_at.isnot(None),
-                    Task.completed_at >= start_ts,
+                    ProjectTask.created_by_user_id == user_id,
+                    ProjectTask.status == "completed",
+                    ProjectTask.updated_at >= start_ts,
                 )
-                .group_by(func.date(Task.completed_at))
+                .group_by(func.date(ProjectTask.updated_at))
                 .all()
             )
             recent_event_rows = (
                 session.query(
-                    MissionEvent.event_id,
-                    MissionEvent.event_type,
-                    MissionEvent.message,
-                    MissionEvent.created_at,
-                    Mission.title,
+                    ProjectAuditEvent.audit_event_id,
+                    ProjectAuditEvent.action,
+                    func.cast(None, Project.name.type),
+                    ProjectAuditEvent.created_at,
+                    Project.name,
                 )
-                .join(Mission, Mission.mission_id == MissionEvent.mission_id)
-                .filter(Mission.created_by_user_id == user_id)
-                .order_by(MissionEvent.created_at.desc())
+                .outerjoin(Project, Project.project_id == ProjectAuditEvent.project_id)
+                .filter(ProjectAuditEvent.actor_user_id == user_id)
+                .order_by(ProjectAuditEvent.created_at.desc())
                 .limit(event_limit)
                 .all()
             )
@@ -301,11 +302,11 @@ async def get_dashboard_overview(
             message=_build_event_message(
                 event_type=str(event_type or ""),
                 message=message,
-                mission_title=mission_title,
+                project_title=project_title,
             ),
             timestamp=_format_utc_iso(created_at or now_utc),
         )
-        for event_id, event_type, message, created_at, mission_title in recent_event_rows
+        for event_id, event_type, message, created_at, project_title in recent_event_rows
     ]
 
     return DashboardOverviewResponse(
@@ -316,7 +317,7 @@ async def get_dashboard_overview(
             total_agents=total_agents,
             goals_completed=int(goals_completed),
             goals_completed_in_window=int(goals_completed_in_window),
-            missions_in_progress=int(missions_in_progress),
+            runs_in_progress=int(runs_in_progress),
             tasks_completed=tasks_completed,
             tasks_completed_24h=int(tasks_completed_24h),
             tasks_failed=tasks_failed,

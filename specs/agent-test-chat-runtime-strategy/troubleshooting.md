@@ -14,7 +14,7 @@ Checks:
 
 Checks:
 
-1. Ensure `MISSION_TASK_UNIFIED_RUNTIME_ENABLED=true`.
+1. Ensure `EXECUTION_TASK_UNIFIED_RUNTIME_ENABLED=true` (or legacy alias).
 2. Confirm mission task path passes `execution_profile=mission_task`.
 3. Check logs for resolved loop mode and context presence.
 

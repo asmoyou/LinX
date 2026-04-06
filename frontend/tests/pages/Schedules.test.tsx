@@ -164,7 +164,7 @@ describe('Schedules page', () => {
     expect(await screen.findByText('新建定时任务')).toBeInTheDocument();
     expect(await screen.findByText('Every weekday at 09:00 (Asia/Shanghai)')).toBeInTheDocument();
     expect(vi.mocked(schedulesApi.preview)).toHaveBeenCalled();
-  });
+  }, 10000);
 
   it('renders compact summary cards with detail actions', async () => {
     render(

@@ -85,7 +85,7 @@ export const useStoreSync = (
           taskStore.setLoading(true);
           try {
             // Legacy /goals and /tasks APIs are deprecated.
-            // Mission orchestration data is handled by missionStore.
+            // Project execution data is handled by the project execution store.
             taskStore.setGoals([]);
             taskStore.setTasks([]);
           } catch (error) {

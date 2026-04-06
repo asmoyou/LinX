@@ -19,7 +19,7 @@ vi.mock('@/components/settings/BusinessBaselineSettings', () => ({
   BusinessBaselineSettings: ({
     onOpenTab,
   }: {
-    onOpenTab: (tab: 'experience' | 'llm' | 'envVars' | 'missionPolicy') => void;
+    onOpenTab: (tab: 'experience' | 'llm' | 'envVars' | 'projectExecution') => void;
   }) => (
     <div>
       <p>Business Baseline Panel</p>
@@ -42,8 +42,8 @@ vi.mock('@/components/settings/EnvVarsSettings', () => ({
   EnvVarsSettings: () => <div>Env Vars Panel</div>,
 }));
 
-vi.mock('@/components/settings/MissionPolicySettings', () => ({
-  MissionPolicySettings: () => <div>Mission Policy Panel</div>,
+vi.mock('@/components/settings/ProjectExecutionPolicySettings', () => ({
+  ProjectExecutionPolicySettings: () => <div>Project Execution Panel</div>,
 }));
 
 const LocationDisplay = () => {
@@ -95,10 +95,10 @@ describe('Settings page', () => {
       </MemoryRouter>,
     );
 
-    fireEvent.click(screen.getByRole('button', { name: 'Mission Policy' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Project Execution' }));
 
-    expect(screen.getByText('Mission Policy Panel')).toBeInTheDocument();
-    expect(screen.getByTestId('location')).toHaveTextContent('/settings?tab=missionPolicy');
+    expect(screen.getByText('Project Execution Panel')).toBeInTheDocument();
+    expect(screen.getByTestId('location')).toHaveTextContent('/settings?tab=projectExecution');
   });
 
   it('lets baseline shortcuts open the experience tab without local-only state', () => {

@@ -19,7 +19,7 @@ def resolve_shared_sandbox_image() -> str:
     return _resolve_image("LINX_SANDBOX_PYTHON_IMAGE")
 
 
-def resolve_mission_sandbox_image() -> str:
+def resolve_execution_sandbox_image() -> str:
     return _resolve_image(
         "LINX_MISSION_SANDBOX_IMAGE",
         "LINX_SANDBOX_PYTHON_IMAGE",
@@ -36,7 +36,12 @@ def resolve_persistent_conversation_sandbox_image() -> str:
 
 __all__ = [
     "DEFAULT_FALLBACK_SANDBOX_IMAGE",
-    "resolve_mission_sandbox_image",
+    "resolve_execution_sandbox_image",
     "resolve_persistent_conversation_sandbox_image",
     "resolve_shared_sandbox_image",
 ]
+
+
+# Backward-compatible alias for historical callers.
+def resolve_mission_sandbox_image() -> str:
+    return resolve_execution_sandbox_image()

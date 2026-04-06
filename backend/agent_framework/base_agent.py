@@ -2691,7 +2691,7 @@ class BaseAgent:
         """Enable native tool fast path only for safe runtime/profile combinations."""
         if runtime_policy.profile not in {
             ExecutionProfile.DEBUG_CHAT,
-            ExecutionProfile.MISSION_TASK,
+            ExecutionProfile.EXECUTION_TASK,
         }:
             return False
 
@@ -2700,7 +2700,7 @@ class BaseAgent:
 
         # Mission tasks often require durable deliverables and reviewer handoff.
         # Keep those on the guarded multi-turn path so file delivery is still enforced.
-        if runtime_policy.profile == ExecutionProfile.MISSION_TASK:
+        if runtime_policy.profile == ExecutionProfile.EXECUTION_TASK:
             file_delivery_guard_mode = self._resolve_file_delivery_guard_mode(runtime_policy)
             if (
                 file_delivery_guard_mode == FileDeliveryGuardMode.STRICT

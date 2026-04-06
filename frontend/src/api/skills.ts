@@ -3,7 +3,7 @@
  * Handles all skill-related API calls
  */
 
-import apiClient from "./client";
+import apiClient, { getAuthToken } from "./client";
 import type { AgentSkillSummary } from "../types/agent";
 
 export interface SkillMetadata {
@@ -819,8 +819,7 @@ export const skillsApi = {
     signal?: AbortSignal,
   ): Promise<void> {
     try {
-      const { useAuthStore } = await import("../stores/authStore");
-      const token = useAuthStore.getState().token;
+      const token = getAuthToken();
 
       const url = `${apiClient.defaults.baseURL}/skills/${skillId}/test?stream=true`;
       const response = await fetch(url, {

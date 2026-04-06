@@ -3,7 +3,6 @@ export type NotificationSeverity = 'info' | 'success' | 'warning' | 'error';
 export interface ServerNotification {
   notification_id: string;
   user_id: string;
-  mission_id?: string;
   notification_type: string;
   severity: NotificationSeverity;
   title: string;

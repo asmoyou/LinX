@@ -13,12 +13,12 @@ import { useAgentStore } from './agentStore';
 import { useTaskStore } from './taskStore';
 import { useKnowledgeStore } from './knowledgeStore';
 import { useMemoryWorkbenchStore } from './memoryWorkbenchStore';
-import { useMissionStore } from './missionStore';
 import { useHealthStore } from './healthStore';
 import { usePreferencesStore } from './preferencesStore';
 import { usePrivacyStore } from './privacyStore';
 import { useNotificationStore } from './notificationStore';
 import { useScheduleStore } from './scheduleStore';
+import { useProjectExecutionStore } from './projectExecutionStore';
 
 // Authentication and user management
 export { useAuthStore } from './authStore';
@@ -35,9 +35,9 @@ export { useAgentStore } from './agentStore';
 export { useTaskStore } from './taskStore';
 export { useKnowledgeStore } from './knowledgeStore';
 export { useMemoryWorkbenchStore } from './memoryWorkbenchStore';
-export { useMissionStore } from './missionStore';
 export { useHealthStore } from './healthStore';
 export { useScheduleStore } from './scheduleStore';
+export { useProjectExecutionStore } from './projectExecutionStore';
 
 // UI and preferences
 export { useThemeStore } from './themeStore';
@@ -80,17 +80,21 @@ export type { Notification, NotificationType } from './notificationStore';
  *    - Supports filtering by product tab, date, tags
  *    - Usage: const { records, activeTab } = useMemoryWorkbenchStore();
  * 
- * 7. Theme Store (useThemeStore):
+ * 7. Project Execution Store (useProjectExecutionStore):
+ *    - Manages project, run, node, and capability shell state
+ *    - Usage: const { projects, loadProjects } = useProjectExecutionStore();
+ * 
+ * 8. Theme Store (useThemeStore):
  *    - Manages light/dark/system theme
  *    - Persists to localStorage
  *    - Usage: const { theme, setTheme } = useThemeStore();
  * 
- * 8. Preferences Store (usePreferencesStore):
+ * 9. Preferences Store (usePreferencesStore):
  *    - Manages user preferences (language, layout, etc.)
  *    - Persists to localStorage
  *    - Usage: const { language, setLanguage } = usePreferencesStore();
  * 
- * 9. Notification Store (useNotificationStore):
+ * 10. Notification Store (useNotificationStore):
  *    - Manages in-app notifications
  *    - Tracks read/unread status
  *    - Usage: const { notifications, addNotification } = useNotificationStore();
@@ -107,12 +111,12 @@ export const resetAllStores = () => {
   const taskStore = useTaskStore.getState();
   const knowledgeStore = useKnowledgeStore.getState();
   const memoryWorkbenchStore = useMemoryWorkbenchStore.getState();
-  const missionStore = useMissionStore.getState();
   const healthStore = useHealthStore.getState();
   const preferencesStore = usePreferencesStore.getState();
   const privacyStore = usePrivacyStore.getState();
   const notificationStore = useNotificationStore.getState();
   const scheduleStore = useScheduleStore.getState();
+  const projectExecutionStore = useProjectExecutionStore.getState();
 
   authStore.logout();
   userStore.reset();
@@ -121,11 +125,11 @@ export const resetAllStores = () => {
   taskStore.reset();
   knowledgeStore.reset();
   memoryWorkbenchStore.reset();
-  missionStore.reset();
   healthStore.reset();
   preferencesStore.reset();
   privacyStore.reset();
   notificationStore.reset();
   scheduleStore.reset();
+  projectExecutionStore.reset();
   // Note: Theme is intentionally not reset
 };

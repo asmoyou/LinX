@@ -15,11 +15,10 @@ import {
 } from 'lucide-react';
 import { llmApi } from '@/api/llm';
 import { skillsApi } from '@/api/skills';
-import { missionsApi } from '@/api/missions';
 import { platformApi } from '@/api/platform';
 import { useAuthStore } from '@/stores';
 
-type PlatformTab = 'experience' | 'llm' | 'envVars' | 'missionPolicy';
+type PlatformTab = 'experience' | 'llm' | 'envVars' | 'projectExecution';
 
 interface BusinessBaselineSettingsProps {
   onOpenTab: (tab: PlatformTab) => void;
@@ -30,7 +29,7 @@ interface BaselineSummary {
   healthyProviderCount: number;
   hasDefaultProvider: boolean;
   envVarCount: number;
-  hasMissionPolicy: boolean;
+  hasProjectExecutionPolicy: boolean;
   hasUiExperiencePolicy: boolean;
   defaultMotionPreference: string;
   emergencyMotionDisabled: boolean;
@@ -41,7 +40,7 @@ const INITIAL_SUMMARY: BaselineSummary = {
   healthyProviderCount: 0,
   hasDefaultProvider: false,
   envVarCount: 0,
-  hasMissionPolicy: false,
+  hasProjectExecutionPolicy: true,
   hasUiExperiencePolicy: false,
   defaultMotionPreference: 'auto',
   emergencyMotionDisabled: false,
@@ -69,11 +68,10 @@ export const BusinessBaselineSettings = ({ onOpenTab }: BusinessBaselineSettings
     const loadBaseline = async () => {
       setLoading(true);
       try {
-        const [llmResult, envResult, missionResult, experienceResult] =
+        const [llmResult, envResult, experienceResult] =
           await Promise.allSettled([
           llmApi.getProvidersConfig(),
           skillsApi.listEnvVars(),
-          missionsApi.getSettings(),
           platformApi.getUiExperience(),
         ]);
 
@@ -92,9 +90,6 @@ export const BusinessBaselineSettings = ({ onOpenTab }: BusinessBaselineSettings
           nextSummary.envVarCount = envResult.value.length;
         }
 
-        if (missionResult.status === 'fulfilled') {
-          nextSummary.hasMissionPolicy = Boolean(missionResult.value.execution_config);
-        }
 
         if (experienceResult.status === 'fulfilled') {
           nextSummary.hasUiExperiencePolicy = true;
@@ -233,20 +228,20 @@ export const BusinessBaselineSettings = ({ onOpenTab }: BusinessBaselineSettings
             <div className="flex items-center gap-2">
               <SlidersHorizontal className="w-4 h-4 text-emerald-500" />
               <p className="text-sm font-medium text-zinc-800 dark:text-zinc-100">
-                {t('settings.baseline.missionPolicy', 'Mission Policy')}
+                {t('settings.baseline.projectExecution', 'Project Execution')}
               </p>
             </div>
-            {statusIcon(summary.hasMissionPolicy)}
+            {statusIcon(summary.hasProjectExecutionPolicy)}
           </div>
           <p className="mt-2 text-xs text-zinc-600 dark:text-zinc-400">
             {t(
-              'settings.baseline.missionSummary',
-              'Execution defaults are {{status}}',
-              { status: summary.hasMissionPolicy ? t('settings.enabled', 'Enabled') : t('settings.disabled', 'Disabled') }
+              'settings.baseline.projectExecutionSummary',
+              'Project execution defaults are {{status}}',
+              { status: summary.hasProjectExecutionPolicy ? t('settings.enabled', 'Enabled') : t('settings.disabled', 'Disabled') }
             )}
           </p>
           <button
-            onClick={() => onOpenTab('missionPolicy')}
+            onClick={() => onOpenTab('projectExecution')}
             className="mt-3 inline-flex items-center gap-1 text-xs font-medium text-emerald-600 dark:text-emerald-400 hover:underline"
           >
             {t('settings.baseline.configure', 'Configure')}

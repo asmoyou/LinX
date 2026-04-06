@@ -19,6 +19,7 @@ import {
   resolveMotionPreferenceSource,
 } from './policyResolver';
 import { MotionContext } from './context';
+import type { MotionContextValue } from './context';
 import type {
   MotionPreference,
   MotionTier,

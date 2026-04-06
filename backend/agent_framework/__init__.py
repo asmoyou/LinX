@@ -83,9 +83,9 @@ _EXPORTS = {
         "agent_framework.runtime_policy",
         "is_agent_test_chat_unified_runtime_enabled",
     ),
-    "is_mission_task_unified_runtime_enabled": (
+    "is_execution_task_unified_runtime_enabled": (
         "agent_framework.runtime_policy",
-        "is_mission_task_unified_runtime_enabled",
+        "is_execution_task_unified_runtime_enabled",
     ),
     "RuntimeAdapterRequest": (
         "agent_framework.runtime_service",

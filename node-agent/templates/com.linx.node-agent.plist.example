@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.linx.node-agent</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/YOUR_USER/.local/bin/linx-node-agent</string>
+    <string>--base-url</string>
+    <string>http://YOUR_SERVER:8000/api/v1</string>
+    <string>--token</string>
+    <string>YOUR_BEARER_TOKEN</string>
+    <string>--project-id</string>
+    <string>YOUR_PROJECT_ID</string>
+    <string>--name</string>
+    <string>YOUR_HOST_NAME</string>
+    <string>--capability</string>
+    <string>host_execution</string>
+    <string>--capability</string>
+    <string>shell</string>
+    <string>--capability</string>
+    <string>ops</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>LINX_EXTERNAL_AGENT_COMMAND</key>
+    <string>external-agent --prompt-file "$LINX_AGENT_PROMPT_FILE"</string>
+  </dict>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>/tmp/linx-node-agent.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>/tmp/linx-node-agent.err.log</string>
+</dict>
+</plist>

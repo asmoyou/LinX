@@ -18,6 +18,8 @@ import {
   ShieldCheck,
   ChevronDown,
   GripVertical,
+  FolderOpen,
+  Network,
 } from 'lucide-react';
 import { useAuthStore, useUserStore } from '@/stores';
 
@@ -31,7 +33,7 @@ const MAX_QUICK_ACCESS_ITEMS = 5;
 const MIN_DYNAMIC_QUICK_ACCESS_USAGE = 2;
 const QUICK_ACCESS_STORAGE_KEY_PREFIX = 'linx-sidebar-nav-usage';
 const QUICK_ACCESS_ORDER_STORAGE_KEY_PREFIX = 'linx-sidebar-quick-order';
-const DEFAULT_QUICK_ACCESS_PATHS = ['/workforce', '/schedules', '/dashboard'] as const;
+const DEFAULT_QUICK_ACCESS_PATHS = ['/projects', '/runs', '/execution-nodes'] as const;
 
 type NavItem = {
   path: string;
@@ -113,6 +115,8 @@ export const Sidebar: React.FC<SidebarProps> = ({ isCollapsed }) => {
     typeof window !== 'undefined' && window.innerHeight < COMPACT_HEIGHT_BREAKPOINT
   );
   const [expandedSections, setExpandedSections] = useState<Record<string, boolean>>({
+    platform: true,
+    operations: false,
     assets: true,
     organization: true,
     governance: true,
@@ -151,12 +155,24 @@ export const Sidebar: React.FC<SidebarProps> = ({ isCollapsed }) => {
   const navSections = useMemo<NavSection[]>(
     () => [
       {
+        id: 'platform',
+        label: t('nav.groups.platform', 'Project Execution'),
+        items: [
+          { path: '/projects', icon: FolderOpen, label: t('nav.projects', 'Projects') },
+          { path: '/runs', icon: Rocket, label: t('nav.runCenter', 'Run Center') },
+          {
+            path: '/execution-nodes',
+            icon: Network,
+            label: t('nav.executionNodes', 'Execution Nodes'),
+          },
+        ],
+      },
+      {
         id: 'operations',
-        label: t('nav.groups.operations', 'Operations'),
+        label: t('nav.groups.workspace', 'Workspace'),
         items: [
           { path: '/dashboard', icon: LayoutDashboard, label: t('nav.dashboard') },
           { path: '/workforce', icon: Users, label: t('nav.workforce') },
-          { path: '/tasks', icon: Rocket, label: t('nav.tasks') },
           { path: '/schedules', icon: CalendarClock, label: t('nav.schedules', 'Schedules') },
         ],
       },
@@ -166,7 +182,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ isCollapsed }) => {
         items: [
           { path: '/knowledge', icon: Database, label: t('nav.knowledge') },
           { path: '/memory', icon: Brain, label: t('nav.memory') },
-          { path: '/skills', icon: Code2, label: t('nav.skills') },
+          { path: '/skills/library', icon: Code2, label: t('nav.skills') },
         ],
       },
       {

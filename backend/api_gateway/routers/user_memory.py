@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Set
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from fastapi.params import Query as QueryParam
 from sqlalchemy import and_, func
 
 from access_control.permissions import CurrentUser, get_current_user
@@ -35,13 +36,23 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+def _coerce_query_default(value: Any) -> Any:
+    """Allow direct function calls in tests to pass through FastAPI Query defaults."""
+    if isinstance(value, QueryParam):
+        return value.default
+    return value
+
+
 def _resolve_user_name(owner_id: str, current_user: CurrentUser) -> Optional[str]:
     """Resolve display name, preferring display_name from User table."""
+    fallback_name = str(current_user.username or '').strip() or None
+    if str(owner_id) == str(current_user.user_id):
+        return fallback_name
     try:
         with get_db_session() as session:
-            return _lookup_user_name(session, owner_id)
+            return _lookup_user_name(session, owner_id) or fallback_name
     except Exception:
-        return str(current_user.username or "").strip() or None
+        return fallback_name
 
 
 def _batch_resolve_user_names(user_ids: Set[str]) -> Dict[str, Optional[str]]:
@@ -425,7 +436,7 @@ def _delete_user_memory_record_sync(
 
 @router.get("", response_model=List[MemoryItemResponse])
 async def list_user_memory(
-    response: Response,
+    response: Response = Response(),
     query_text: str = Query("*", alias="query"),
     user_id: Optional[str] = Query(None),
     limit: int = Query(20, ge=1, le=100),
@@ -449,6 +460,15 @@ async def list_user_memory(
     Admin/manager users can pass ``user_id=all`` to query across all users.
     Returns ``X-Total-Count`` header for pagination.
     """
+    offset = int(_coerce_query_default(offset) or 0)
+    fact_kind = _coerce_query_default(fact_kind)
+    record_type = _coerce_query_default(record_type)
+    date_from = _coerce_query_default(date_from)
+    date_to = _coerce_query_default(date_to)
+    importance_min = _coerce_query_default(importance_min)
+    importance_max = _coerce_query_default(importance_max)
+    status_filter = _coerce_query_default(status_filter)
+
     is_all_users = str(user_id or "").strip().lower() == "all"
     if is_all_users:
         if not _is_admin_or_manager(current_user):
@@ -463,21 +483,45 @@ async def list_user_memory(
             _require_user_memory_read_access_sync, owner_id, current_user
         )
 
+    use_retriever_search = (
+        str(query_text or '').strip() not in {'', '*'}
+        and offset == 0
+        and fact_kind is None
+        and record_type is None
+        and date_from is None
+        and date_to is None
+        and importance_min is None
+        and importance_max is None
+        and status_filter is None
+    )
+
     try:
-        results, total_count = await asyncio.to_thread(
-            _list_user_memory_filtered_sync,
-            user_id=owner_id,
-            query_text=query_text,
-            limit=limit,
-            offset=offset,
-            fact_kind=fact_kind,
-            record_type=record_type,
-            date_from=date_from,
-            date_to=date_to,
-            importance_min=importance_min,
-            importance_max=importance_max,
-            status_filter=status_filter,
-        )
+        if use_retriever_search:
+            results = await asyncio.to_thread(
+                get_user_memory_retriever().search_user_memory,
+                user_id=owner_id,
+                query_text=query_text,
+                limit=limit,
+                min_score=min_score,
+                planner_mode='api_full',
+                allow_reflection=True,
+            )
+            total_count = len(results)
+        else:
+            results, total_count = await asyncio.to_thread(
+                _list_user_memory_filtered_sync,
+                user_id=owner_id,
+                query_text=query_text,
+                limit=limit,
+                offset=offset,
+                fact_kind=fact_kind,
+                record_type=record_type,
+                date_from=date_from,
+                date_to=date_to,
+                importance_min=importance_min,
+                importance_max=importance_max,
+                status_filter=status_filter,
+            )
     except Exception as exc:
         logger.error("Failed to list user memory: %s", exc, exc_info=True)
         raise HTTPException(
@@ -485,7 +529,8 @@ async def list_user_memory(
             detail=f"Failed to list user memory: {exc}",
         ) from exc
 
-    response.headers["X-Total-Count"] = str(total_count)
+    if response is not None:
+        response.headers["X-Total-Count"] = str(total_count)
 
     if is_all_users:
         all_user_ids = {str(item.user_id) for item in results if item.user_id}
@@ -604,13 +649,13 @@ async def update_user_memory_config(
 
 @router.delete("/{memory_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_user_memory(
-    memory_id: str,
+    memory_id: Any,
     memory_source: str = Query(..., pattern=r"^(entry|user_memory_view)$"),
     current_user: CurrentUser = Depends(get_current_user),
 ):
     """Hide one user-memory record and its linked entry/view/relation surfaces."""
     # Accept both prefixed (entry_36, view_36) and plain numeric IDs
-    raw_id = memory_id
+    raw_id = str(memory_id)
     for prefix in ("entry_", "view_"):
         if raw_id.startswith(prefix):
             raw_id = raw_id[len(prefix):]

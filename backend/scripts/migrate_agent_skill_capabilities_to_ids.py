@@ -90,7 +90,7 @@ def migrate_agent_capabilities(*, dry_run: bool) -> int:
                     changed = True
                     continue
 
-                if str(agent.agent_type or "") == "mission_temp_worker":
+                if str(agent.agent_type or "") == "execution_temp_worker":
                     updated_capabilities.append(capability)
                     report["preserved_internal_capabilities"] += 1
                     continue

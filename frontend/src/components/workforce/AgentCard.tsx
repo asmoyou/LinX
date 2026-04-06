@@ -1,6 +1,7 @@
 import React from "react";
 import { MoreVertical, Shield, Zap, Eye, Settings, Trash2 } from "lucide-react";
 import type { Agent } from "@/types/agent";
+import { getAgentKind, getAgentTypeToken } from "@/utils/agentPresentation";
 import { useTranslation } from "react-i18next";
 
 interface AgentCardProps {
@@ -55,6 +56,21 @@ export const AgentCard: React.FC<AgentCardProps> = ({
   const visibilityLabel = t(`agent.details.accessLevelValue.${normalizedAccessLevel}`, {
     defaultValue: normalizedAccessLevel,
   });
+  const runtimeLabel = agent.runtimeType
+    ? t(`agent.runtimeTypeValue.${agent.runtimeType}`, {
+        defaultValue: agent.runtimeType,
+      })
+    : t("agent.runtimeTypeValue.project_sandbox", "project_sandbox");
+  const lifecycleLabel = agent.lifecycleScope
+    ? t(`agent.lifecycleScopeValue.${agent.lifecycleScope}`, {
+        defaultValue: agent.lifecycleScope,
+      })
+    : t("agent.lifecycleScopeValue.persistent", "persistent");
+  const agentKind = getAgentKind(agent);
+  const deploymentLabel = agentKind === "external"
+    ? t("agent.externalAgentBadge", "External Agent")
+    : t("agent.internalAgentBadge", "Internal Agent");
+  const typeLabel = t(`agent.typeLabel.${getAgentTypeToken(agent)}`, { defaultValue: agent.type });
 
   const getStatusColor = (status: Agent["status"]) => {
     switch (status) {
@@ -179,7 +195,7 @@ export const AgentCard: React.FC<AgentCardProps> = ({
           <div className="flex items-center gap-1.5">
             <Shield className="w-3 h-3 text-emerald-600 dark:text-emerald-500" />
             <span className="text-[9px] font-bold uppercase tracking-wider text-emerald-600 dark:text-emerald-500">
-              {agent.type}
+              {typeLabel}
             </span>
           </div>
           <p className="mt-1 text-[11px] text-zinc-500 dark:text-zinc-400">
@@ -219,6 +235,25 @@ export const AgentCard: React.FC<AgentCardProps> = ({
               {t("departments.label", "Department")} · {agent.departmentName}
             </span>
           )}
+          <span className="px-2 py-1 bg-violet-500/10 rounded-md text-[9px] font-bold text-violet-700 dark:text-violet-300 uppercase tracking-tight border border-violet-500/20">
+            {deploymentLabel}
+          </span>
+          <span className="px-2 py-1 bg-amber-500/10 rounded-md text-[9px] font-bold text-amber-700 dark:text-amber-300 uppercase tracking-tight border border-amber-500/20">
+            {t("agent.runtimeLabel", "Runtime")} · {runtimeLabel}
+          </span>
+          <span className="px-2 py-1 bg-zinc-500/5 rounded-md text-[9px] font-bold text-zinc-700 dark:text-zinc-300 uppercase tracking-tight border border-zinc-500/5">
+            {t("agent.lifecycleLabel", "Lifecycle")} · {lifecycleLabel}
+          </span>
+          {agent.isEphemeral ? (
+            <span className="px-2 py-1 bg-rose-500/10 rounded-md text-[9px] font-bold text-rose-700 dark:text-rose-300 uppercase tracking-tight border border-rose-500/20">
+              {t("agent.ephemeralBadge", "Ephemeral")}
+            </span>
+          ) : null}
+          {agent.projectScopeId ? (
+            <span className="px-2 py-1 bg-zinc-500/5 rounded-md text-[9px] font-bold text-zinc-700 dark:text-zinc-300 uppercase tracking-tight border border-zinc-500/5">
+              {t("agent.projectScopeBadge", "Project Scoped")}
+            </span>
+          ) : null}
         </div>
       </div>
 

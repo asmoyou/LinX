@@ -14,7 +14,6 @@ router = APIRouter()
 class NotificationResponse(BaseModel):
     notification_id: UUID
     user_id: UUID
-    mission_id: Optional[UUID] = None
     notification_type: str
     severity: str
     title: str
@@ -48,7 +47,6 @@ def _notification_to_response(notification) -> NotificationResponse:
     return NotificationResponse(
         notification_id=notification.notification_id,
         user_id=notification.user_id,
-        mission_id=notification.mission_id,
         notification_type=notification.notification_type,
         severity=notification.severity,
         title=notification.title,
@@ -73,7 +71,7 @@ async def list_notifications(
     current_user: CurrentUser = Depends(get_current_user),
 ):
     """List current user's notifications."""
-    from mission_system.notification_repository import list_user_notifications
+    from project_execution.notification_repository import list_user_notifications
 
     notifications, total, unread_count = list_user_notifications(
         user_id=UUID(current_user.user_id),
@@ -96,7 +94,7 @@ async def mark_notification_read(
     current_user: CurrentUser = Depends(get_current_user),
 ):
     """Mark a notification as read."""
-    from mission_system.notification_repository import mark_user_notification_read
+    from project_execution.notification_repository import mark_user_notification_read
 
     item = mark_user_notification_read(
         user_id=UUID(current_user.user_id),
@@ -112,7 +110,7 @@ async def mark_all_notifications_read(
     current_user: CurrentUser = Depends(get_current_user),
 ):
     """Mark all unread notifications as read."""
-    from mission_system.notification_repository import mark_all_user_notifications_read
+    from project_execution.notification_repository import mark_all_user_notifications_read
 
     updated = mark_all_user_notifications_read(user_id=UUID(current_user.user_id))
     return MarkAllReadResponse(updated=updated)
@@ -124,7 +122,7 @@ async def delete_notification(
     current_user: CurrentUser = Depends(get_current_user),
 ):
     """Delete one notification."""
-    from mission_system.notification_repository import delete_user_notification
+    from project_execution.notification_repository import delete_user_notification
 
     deleted = delete_user_notification(
         user_id=UUID(current_user.user_id),
@@ -141,7 +139,7 @@ async def clear_notifications(
     current_user: CurrentUser = Depends(get_current_user),
 ):
     """Clear notifications for current user."""
-    from mission_system.notification_repository import clear_user_notifications
+    from project_execution.notification_repository import clear_user_notifications
 
     deleted = clear_user_notifications(
         user_id=UUID(current_user.user_id),

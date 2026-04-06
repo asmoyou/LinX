@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
 import toast from 'react-hot-toast';
@@ -95,8 +95,16 @@ export const Notifications = () => {
   const [notifications, setNotifications] = useState<ServerNotification[]>([]);
   const [total, setTotal] = useState(0);
   const [unreadCount, setUnreadCount] = useState(0);
+  const isMountedRef = useRef(true);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [pendingIds, setPendingIds] = useState<Set<string>>(new Set());
+
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+    };
+  }, []);
 
   const localFilteredNotifications = useMemo(() => {
     const keyword = searchQuery.trim().toLowerCase();
@@ -230,8 +238,8 @@ export const Notifications = () => {
 
   const loadNotifications = useCallback(
     async (silent = false) => {
-      if (!silent) setIsLoading(true);
-      setErrorMessage(null);
+      if (!silent && isMountedRef.current) setIsLoading(true);
+      if (isMountedRef.current) setErrorMessage(null);
 
       try {
         const response = await notificationsApi.getAll({
@@ -241,17 +249,20 @@ export const Notifications = () => {
           limit: pageSize,
           offset: (page - 1) * pageSize,
         });
+        if (!isMountedRef.current) return;
         setNotifications(response.items);
         setTotal(response.total);
         setUnreadCount(response.unread_count);
       } catch (error: any) {
-        setErrorMessage(
-          error?.response?.data?.detail ||
-            error?.message ||
-            t('notificationsPage.loadFailed', 'Failed to load notifications')
-        );
+        if (isMountedRef.current) {
+          setErrorMessage(
+            error?.response?.data?.detail ||
+              error?.message ||
+              t('notificationsPage.loadFailed', 'Failed to load notifications')
+          );
+        }
       } finally {
-        if (!silent) setIsLoading(false);
+        if (!silent && isMountedRef.current) setIsLoading(false);
       }
     },
     [page, pageSize, searchQuery, severityFilter, statusFilter, t]

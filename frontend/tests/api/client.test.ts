@@ -14,7 +14,7 @@ describe('apiClient token refresh guard', () => {
 
   it('still allows refresh for protected business endpoints', () => {
     expect(shouldAttemptTokenRefresh('/users/me')).toBe(true);
-    expect(shouldAttemptTokenRefresh('/missions/123')).toBe(true);
+    expect(shouldAttemptTokenRefresh('/projects/123')).toBe(true);
     expect(shouldAttemptTokenRefresh(undefined)).toBe(true);
   });
 });

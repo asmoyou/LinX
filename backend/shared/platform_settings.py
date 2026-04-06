@@ -8,6 +8,7 @@ from database.models import PlatformSetting
 
 PLATFORM_BOOTSTRAP_SETTINGS_KEY = "platform_bootstrap"
 PLATFORM_UI_EXPERIENCE_SETTINGS_KEY = "ui_experience"
+PLATFORM_PROJECT_EXECUTION_SETTINGS_KEY = "project_execution"
 
 MOTION_PREFERENCES = {"auto", "full", "reduced", "off"}
 DEFAULT_UI_EXPERIENCE_SETTINGS: dict[str, Any] = {
@@ -116,4 +117,33 @@ def upsert_ui_experience_settings(
         session=session,
         key=PLATFORM_UI_EXPERIENCE_SETTINGS_KEY,
         value=merge_ui_experience_settings(value),
+    )
+
+
+DEFAULT_PROJECT_EXECUTION_SETTINGS: dict[str, Any] = {
+    "external_agent_command_template": "",
+}
+
+
+def merge_project_execution_settings(value: dict[str, Any] | None) -> dict[str, Any]:
+    payload = value if isinstance(value, dict) else {}
+    return {
+        "external_agent_command_template": str(payload.get("external_agent_command_template") or "").strip(),
+    }
+
+
+def get_project_execution_settings(session: Session) -> dict[str, Any]:
+    return merge_project_execution_settings(
+        get_platform_setting(session, PLATFORM_PROJECT_EXECUTION_SETTINGS_KEY)
+    )
+
+
+def upsert_project_execution_settings(
+    session: Session,
+    value: dict[str, Any],
+) -> PlatformSetting:
+    return upsert_platform_setting(
+        session=session,
+        key=PLATFORM_PROJECT_EXECUTION_SETTINGS_KEY,
+        value=merge_project_execution_settings(value),
     )

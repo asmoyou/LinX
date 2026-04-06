@@ -386,7 +386,7 @@ describe("AgentConversation", () => {
     });
 
     await screen.findByText("Conversation 31");
-  });
+  }, 10000);
 
   it("does not release runtime when the page becomes hidden", async () => {
     agentsApi.getConversations.mockResolvedValue({

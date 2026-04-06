@@ -39,7 +39,7 @@ const defaultStats: DashboardStats = {
   total_agents: 0,
   goals_completed: 0,
   goals_completed_in_window: 0,
-  missions_in_progress: 0,
+  runs_in_progress: 0,
   tasks_completed: 0,
   tasks_completed_24h: 0,
   tasks_failed: 0,
@@ -252,7 +252,7 @@ export const Dashboard: React.FC = () => {
               colorClass="bg-emerald-500 text-emerald-600"
             />
             <StatCard
-              title={t("dashboard.completedMissions", "Completed Missions")}
+              title={t("dashboard.completedRuns", "Completed Runs")}
               value={stats.goals_completed}
               subtitle={`${t("dashboard.completedInLastDays", {
                 value: stats.goals_completed_in_window,
@@ -261,11 +261,11 @@ export const Dashboard: React.FC = () => {
               })} · ${t("dashboard.completedTasksTotal", {
                 value: stats.tasks_completed,
                 defaultValue: `tasks completed ${stats.tasks_completed}`,
-              })} · ${stats.missions_in_progress} ${t("dashboard.inProgress", "in progress")}`}
-              definition={t("dashboard.completedMissionsDefinition", {
+              })} · ${stats.runs_in_progress} ${t("dashboard.inProgress", "in progress")}`}
+              definition={t("dashboard.completedRunsDefinition", {
                 days: DASHBOARD_WINDOW_DAYS,
                 defaultValue:
-                  "Mission-level metric. Counts missions with status = completed. This is different from task counts.",
+                  "Run-level metric. Counts completed execution runs. This is different from task counts.",
               })}
               icon={CheckCircle2}
               colorClass="bg-blue-500 text-blue-600"
@@ -325,7 +325,7 @@ export const Dashboard: React.FC = () => {
               definition={t("dashboard.recentEventsDefinition", {
                 limit: 8,
                 defaultValue:
-                  "Latest mission events for your account, including phase transitions and completion/failure updates.",
+                  "Latest execution events for your account, including run progress and completion/failure updates.",
               })}
             />
           </div>
