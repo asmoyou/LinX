@@ -439,7 +439,6 @@ async def create_agent_provisioning_profile(
             default_provider=request.default_provider,
             default_model=request.default_model,
             runtime_type=request.runtime_type,
-            preferred_node_selector=request.preferred_node_selector,
             temperature=request.temperature,
             max_tokens=request.max_tokens,
             sandbox_mode=request.sandbox_mode,
@@ -502,7 +501,6 @@ async def update_agent_provisioning_profile(
                 "default_provider",
                 "default_model",
                 "runtime_type",
-                "preferred_node_selector",
                 "temperature",
                 "max_tokens",
                 "sandbox_mode",
@@ -562,7 +560,10 @@ async def create_project_task_and_launch(
                 description=request.description,
                 priority=request.priority,
                 assignee_agent_id=request.assignee_agent_id,
-                input_payload=request.input_payload,
+                input_payload={
+                    **(request.input_payload or {}),
+                    **({"execution_mode": request.execution_mode} if request.execution_mode else {}),
+                },
                 current_user=current_user,
             )
         except IntegrityError as exc:
@@ -622,7 +623,10 @@ async def create_project_task(
             status=request.status,
             priority=request.priority,
             sort_order=request.sort_order,
-            input_payload=request.input_payload,
+            input_payload={
+                **(request.input_payload or {}),
+                **({"execution_mode": request.execution_mode} if request.execution_mode else {}),
+            },
             created_by_user_id=actor_user_id,
         )
         session.add(task)
@@ -1040,6 +1044,8 @@ async def start_run(run_id: str, current_user: CurrentUser = Depends(get_current
     with get_db_session() as session:
         run = get_or_404(session, ProjectRun, ProjectRun.run_id, parsed_run_id, "Run not found")
         run.status = "running"
+        run.error_message = None
+        run.completed_at = None
         if run.started_at is None:
             run.started_at = _utc_now()
         flush_and_refresh(session, run)

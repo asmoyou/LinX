@@ -1,6 +1,10 @@
 import apiClient, { type RequestConfigWithMeta } from './client';
 import { agentsApi } from './agents';
 import { skillsApi } from './skills';
+import {
+  getProjectExecutionPlanPreview,
+  type ProjectExecutionMode,
+} from '@/utils/projectExecutionPlanning';
 import type {
   PlatformExtension,
   PlatformQueryResult,
@@ -142,7 +146,6 @@ type SkeletonAgentProvisioningProfileRecord = {
   default_provider?: string | null;
   default_model?: string | null;
   runtime_type: string;
-  preferred_node_selector?: string | null;
   sandbox_mode: string;
   ephemeral: boolean;
   created_at: string;
@@ -682,6 +685,37 @@ const latestIsoString = (values: Array<string | null | undefined>): string | nul
   return filtered.sort((left, right) => new Date(right).getTime() - new Date(left).getTime())[0];
 };
 
+const getRunHandledAtFromRuntimeContext = (runtimeContext: Record<string, unknown>): string | null => {
+  const alertState = asUnknownRecord(runtimeContext.alert_state);
+  return (
+    pickFirstString(alertState, ['handled_at', 'handledAt']) ||
+    pickFirstString(runtimeContext, ['handled_at', 'handledAt'])
+  );
+};
+
+const getRunHandledSignatureFromRuntimeContext = (
+  runtimeContext: Record<string, unknown>,
+): string | null => {
+  const alertState = asUnknownRecord(runtimeContext.alert_state);
+  return pickFirstString(alertState, ['handled_signature', 'handledSignature']);
+};
+
+const buildRunAlertSignature = (input: {
+  status: string;
+  taskId?: string | null;
+  taskTitle?: string | null;
+  failureReason?: string | null;
+  latestSignal?: string | null;
+}): string => {
+  return JSON.stringify({
+    status: input.status,
+    taskId: input.taskId || null,
+    taskTitle: input.taskTitle || null,
+    failureReason: input.failureReason || null,
+    latestSignal: input.latestSignal || null,
+  });
+};
+
 const skeletonRequestConfig: RequestConfigWithMeta = {
   suppressErrorToast: true,
 };
@@ -899,6 +933,13 @@ const humanizeToken = (value: string): string =>
     .map((token) => token.charAt(0).toUpperCase() + token.slice(1).toLowerCase())
     .join(' ');
 
+const isTerminalRunStatus = (status: string): boolean => {
+  const normalized = (status || '').toLowerCase();
+  return ['completed', 'done', 'success', 'succeeded', 'failed', 'cancelled', 'canceled', 'blocked'].includes(
+    normalized,
+  );
+};
+
 const summarizeRecord = (value?: Record<string, unknown> | null): string | null => {
   if (!value) {
     return null;
@@ -1023,6 +1064,9 @@ const seedToRunSummary = (seed: SeedProject): RunSummary => ({
   status: seed.status,
   createdAt: seed.runCreatedAt,
   triggerSource: seed.runTriggerSource,
+  taskId: seed.tasks[0]?.id || null,
+  taskTitle: seed.tasks[0]?.title || null,
+  failureReason: seed.failedTasks > 0 ? seed.runTimeline[seed.runTimeline.length - 1]?.description || null : null,
   startedAt: seed.startedAt || null,
   completedAt: seed.completedAt || null,
   updatedAt: seed.updatedAt,
@@ -1257,6 +1301,7 @@ const skeletonApi = {
     title: string;
     description?: string | null;
     sortOrder?: number;
+    executionMode?: ProjectExecutionMode;
   }): Promise<SkeletonProjectTaskRecord> {
     const response = await apiClient.post<SkeletonProjectTaskRecord>(
       '/project-tasks',
@@ -1267,7 +1312,10 @@ const skeletonApi = {
         status: 'planning',
         priority: 'normal',
         sort_order: input.sortOrder ?? 0,
-        input_payload: {},
+        input_payload: {
+          execution_mode: input.executionMode || 'auto',
+        },
+        execution_mode: input.executionMode || 'auto',
       },
       skeletonRequestConfig,
     );
@@ -1278,6 +1326,7 @@ const skeletonApi = {
     projectId: string;
     title: string;
     description?: string | null;
+    executionMode?: ProjectExecutionMode;
   }): Promise<SkeletonTaskLaunchBundleRecord> {
     const response = await apiClient.post<SkeletonTaskLaunchBundleRecord>(
       '/project-tasks/create-and-launch',
@@ -1286,7 +1335,10 @@ const skeletonApi = {
         title: input.title,
         description: input.description || undefined,
         priority: 'normal',
-        input_payload: {},
+        input_payload: {
+          execution_mode: input.executionMode || 'auto',
+        },
+        execution_mode: input.executionMode || 'auto',
       },
       skeletonRequestConfig,
     );
@@ -1299,6 +1351,7 @@ const skeletonApi = {
       plan_id: string;
       run_id: string;
       status: string;
+      input_payload: Record<string, unknown>;
     }>,
   ): Promise<SkeletonProjectTaskRecord> {
     const response = await apiClient.patch<SkeletonProjectTaskRecord>(
@@ -1372,11 +1425,34 @@ const skeletonApi = {
     return response.data;
   },
 
+  async updateRun(
+    runId: string,
+    payload: Partial<{
+      status: string;
+      triggerSource: string;
+      runtimeContext: Record<string, unknown>;
+      errorMessage: string | null;
+    }>,
+  ): Promise<SkeletonRunRecord> {
+    const response = await apiClient.patch<SkeletonRunRecord>(
+      `/runs/${runId}`,
+      {
+        status: payload.status,
+        trigger_source: payload.triggerSource,
+        runtime_context: payload.runtimeContext,
+        error_message: payload.errorMessage === null ? undefined : payload.errorMessage,
+      },
+      skeletonRequestConfig,
+    );
+    return response.data;
+  },
+
   async createRunStep(input: {
     runId: string;
     projectTaskId: string;
     name: string;
     sequenceNumber?: number;
+    inputPayload?: Record<string, unknown>;
   }): Promise<SkeletonRunStepRecord> {
     const response = await apiClient.post<SkeletonRunStepRecord>(
       '/run-steps',
@@ -1387,7 +1463,7 @@ const skeletonApi = {
         step_type: 'task',
         status: 'pending',
         sequence_number: input.sequenceNumber ?? 0,
-        input_payload: { project_task_id: input.projectTaskId },
+        input_payload: input.inputPayload || { project_task_id: input.projectTaskId },
       },
       skeletonRequestConfig,
     );
@@ -1516,6 +1592,19 @@ const getTaskAssigneeNameFromPayload = (payloads: Array<Record<string, unknown>>
   return null;
 };
 
+const getTaskExecutionModeFromPayload = (
+  payloads: Array<Record<string, unknown>>,
+): string | null => {
+  for (const payload of payloads) {
+    const executionMode = pickFirstString(payload, ['execution_mode', 'executionMode']);
+    if (executionMode) {
+      return executionMode;
+    }
+  }
+
+  return null;
+};
+
 const toProjectTaskSummaryFromSkeleton = (
   task: SkeletonProjectTaskRecord,
 ): ProjectTaskSummary => {
@@ -1632,7 +1721,6 @@ const toProvisioningProfileFromSkeleton = (
   defaultProvider: profile.default_provider || null,
   defaultModel: profile.default_model || null,
   runtimeType: profile.runtime_type,
-  preferredNodeSelector: profile.preferred_node_selector || null,
   sandboxMode: profile.sandbox_mode,
   ephemeral: profile.ephemeral,
   createdAt: profile.created_at,
@@ -1800,6 +1888,54 @@ const buildRunSummaryFromSkeleton = (
   runSteps: SkeletonRunStepRecord[],
 ): RunSummary => {
   const lifecycle = resolveRunLifecycle(run, tasks, runSteps);
+  const runtimeContext = asUnknownRecord(run.runtime_context);
+  const failedStep = runSteps
+    .slice()
+    .sort((left, right) => new Date(right.updated_at).getTime() - new Date(left.updated_at).getTime())
+    .find((step) => isFailedStatus(step.status) || step.error_message);
+  const failedTask = tasks
+    .slice()
+    .sort((left, right) => new Date(right.updated_at).getTime() - new Date(left.updated_at).getTime())
+    .find((task) => isFailedStatus(task.status) || task.error_message);
+  const primaryTask = tasks
+    .slice()
+    .sort((left, right) => new Date(right.updated_at).getTime() - new Date(left.updated_at).getTime())[0];
+  const taskId =
+    pickFirstString(runtimeContext, ['project_task_id']) ||
+    primaryTask?.project_task_id ||
+    null;
+  const taskTitle =
+    pickFirstString(runtimeContext, ['task_title']) ||
+    primaryTask?.title ||
+    null;
+  const executionMode =
+    pickFirstString(runtimeContext, ['execution_mode']) ||
+    pickFirstString(asUnknownRecord(primaryTask?.input_payload), ['execution_mode']) ||
+    (pickFirstString(runtimeContext, ['runtime_type'])?.startsWith('external') ? 'external_runtime' : null) ||
+    null;
+  const failureReason =
+    run.error_message ||
+    failedTask?.error_message ||
+    failedStep?.error_message ||
+    null;
+  const handledAt = getRunHandledAtFromRuntimeContext(runtimeContext);
+  const latestSignal =
+    failureReason ||
+    summarizeRecord(runtimeContext) ||
+    runSteps
+      .slice()
+      .sort(
+        (left, right) => new Date(right.updated_at).getTime() - new Date(left.updated_at).getTime(),
+      )[0]?.error_message ||
+    null;
+  const handledSignature = getRunHandledSignatureFromRuntimeContext(runtimeContext);
+  const alertSignature = buildRunAlertSignature({
+    status: lifecycle.status,
+    taskId,
+    taskTitle,
+    failureReason,
+    latestSignal,
+  });
 
   return {
     id: run.run_id,
@@ -1808,6 +1944,13 @@ const buildRunSummaryFromSkeleton = (
     status: lifecycle.status,
     createdAt: run.created_at,
     triggerSource: run.trigger_source,
+    executionMode,
+    taskId,
+    taskTitle,
+    failureReason,
+    handledAt,
+    handledSignature: handledSignature || null,
+    alertSignature,
     startedAt: run.started_at || null,
     completedAt: lifecycle.completedAt,
     updatedAt: run.updated_at,
@@ -1828,15 +1971,7 @@ const buildRunSummaryFromSkeleton = (
         )
         .map((item) => item.agentId),
     ).size,
-    latestSignal:
-      run.error_message ||
-      summarizeRecord(asUnknownRecord(run.runtime_context)) ||
-      runSteps
-        .slice()
-        .sort(
-          (left, right) => new Date(right.updated_at).getTime() - new Date(left.updated_at).getTime(),
-        )[0]?.error_message ||
-      null,
+    latestSignal,
   };
 };
 
@@ -1863,6 +1998,7 @@ const buildRunDetailFromSkeleton = (
   projectSpace: SkeletonProjectSpaceRecord | null = null,
   externalDispatches: SkeletonExternalAgentDispatchRecord[] = [],
 ): RunDetail => {
+  const summary = buildRunSummaryFromSkeleton(run, project, tasks, steps);
   const timeline: ProjectActivityItem[] = [
     {
       id: `run-${run.run_id}-created`,
@@ -1881,15 +2017,15 @@ const buildRunDetailFromSkeleton = (
         }]
       : []),
     ...steps.map((step) => activityFromRunStep(step)),
-    ...(run.completed_at
+    ...((run.completed_at || isTerminalRunStatus(run.status) || Boolean(summary.failureReason))
       ? [{
-          id: `run-${run.run_id}-completed`,
+          id: `run-${run.run_id}-status`,
           title: `Run ${humanizeToken(run.status)}`,
           description:
-            run.error_message ||
+            summary.failureReason ||
             summarizeRecord(asUnknownRecord(run.runtime_context)) ||
             'Run completed.',
-          timestamp: run.completed_at,
+          timestamp: run.completed_at || run.updated_at,
           level: activityLevelFromStatus(run.status) as ProjectActivityItem['level'],
         }]
       : []),
@@ -1913,7 +2049,7 @@ const buildRunDetailFromSkeleton = (
   const assignment = assignmentCandidate && typeof assignmentCandidate === "object" ? asUnknownRecord(assignmentCandidate) : null;
   const runWorkspace = runtimeContext.run_workspace && typeof runtimeContext.run_workspace === "object" ? asUnknownRecord(runtimeContext.run_workspace) : null;
   return {
-    ...buildRunSummaryFromSkeleton(run, project, tasks, steps),
+    ...summary,
     projectSummary: projectSummary.summary,
     timeline,
     deliverables,
@@ -1971,6 +2107,10 @@ const buildTaskDetailFromSkeleton = (
   if (executionNodeName) {
     metadata.push({ label: 'Execution Node', value: executionNodeName });
   }
+  const executionMode = getTaskExecutionModeFromPayload(payloads);
+  if (executionMode) {
+    metadata.push({ label: 'Execution Mode', value: humanizeToken(executionMode) });
+  }
   const runWorkspaceRoot = pickFirstString(asUnknownRecord(task.output_payload), ['run_workspace_root']);
   if (runWorkspaceRoot) {
     metadata.push({ label: 'Run Workspace', value: runWorkspaceRoot });
@@ -1987,6 +2127,7 @@ const buildTaskDetailFromSkeleton = (
     projectTitle: project.name,
     projectStatus: toProjectStatus(project.status),
     description: task.description || task.title,
+    executionMode,
     acceptanceCriteria: getTaskAcceptanceFromPayload(payloads),
     assignedSkillNames: getTaskSkillNamesFromPayload(payloads),
     latestResult:
@@ -2406,6 +2547,26 @@ export const projectExecutionApi = {
     return getRunDetailFromSkeleton(runId);
   },
 
+  async markRunHandled(
+    runId: string,
+    input: { handledAt: string; handledByUserId?: string | null; handledSignature: string },
+  ): Promise<void> {
+    const run = await skeletonApi.getRun(runId);
+    const runtimeContext = asUnknownRecord(run.runtime_context);
+    const alertState = asUnknownRecord(runtimeContext.alert_state);
+    await skeletonApi.updateRun(runId, {
+      runtimeContext: {
+        ...runtimeContext,
+        alert_state: {
+          ...alertState,
+          handled_at: input.handledAt,
+          handled_by_user_id: input.handledByUserId || null,
+          handled_signature: input.handledSignature,
+        },
+      },
+    });
+  },
+
   async deleteProjectTask(taskId: string): Promise<void> {
     await skeletonApi.deleteProjectTask(taskId);
   },
@@ -2414,6 +2575,7 @@ export const projectExecutionApi = {
     projectId: string;
     title: string;
     description?: string | null;
+    executionMode?: ProjectExecutionMode;
   }): Promise<string> {
     const existingTasks = await skeletonApi.listProjectTasks(input.projectId);
     const task = await skeletonApi.createProjectTask({
@@ -2421,6 +2583,7 @@ export const projectExecutionApi = {
       title: input.title,
       description: input.description || undefined,
       sortOrder: existingTasks.length,
+      executionMode: input.executionMode,
     });
     return task.project_task_id;
   },
@@ -2429,6 +2592,7 @@ export const projectExecutionApi = {
     projectId: string;
     title: string;
     description?: string | null;
+    executionMode?: ProjectExecutionMode;
   }): Promise<{ taskId: string; runId: string }> {
     const bundle = await skeletonApi.createProjectTaskAndLaunchRun(input);
     return {
@@ -2442,7 +2606,17 @@ export const projectExecutionApi = {
     taskId: string;
     title: string;
     description?: string | null;
+    executionMode?: ProjectExecutionMode;
   }): Promise<string> {
+    const executionMode = input.executionMode || 'auto';
+    const existingTask = await skeletonApi.getProjectTask(input.taskId);
+    const preview = getProjectExecutionPlanPreview(
+      input.title,
+      input.description,
+      executionMode,
+    );
+    const stepKind = preview.initialStepKind;
+    const executorKind = preview.requiresExternalRuntime ? 'execution_node' : 'agent';
     const plan = await skeletonApi.createPlan({
       projectId: input.projectId,
       name: `${input.title} Plan`,
@@ -2450,6 +2624,7 @@ export const projectExecutionApi = {
       definition: {
         project_task_id: input.taskId,
         task_title: input.title,
+        execution_mode: executionMode,
       },
     });
     await skeletonApi.activatePlan(plan.plan_id);
@@ -2459,6 +2634,7 @@ export const projectExecutionApi = {
       runtimeContext: {
         project_task_id: input.taskId,
         task_title: input.title,
+        execution_mode: executionMode,
       },
     });
     await skeletonApi.createRunStep({
@@ -2466,11 +2642,21 @@ export const projectExecutionApi = {
       projectTaskId: input.taskId,
       name: input.title,
       sequenceNumber: 0,
+      inputPayload: {
+        project_task_id: input.taskId,
+        step_kind: stepKind,
+        executor_kind: executorKind,
+        execution_mode: executionMode,
+      },
     });
     await skeletonApi.updateProjectTask(input.taskId, {
       plan_id: plan.plan_id,
       run_id: run.run_id,
       status: 'running',
+      input_payload: {
+        ...(existingTask.input_payload || {}),
+        execution_mode: executionMode,
+      },
     });
     await skeletonApi.startRun(run.run_id);
     return run.run_id;

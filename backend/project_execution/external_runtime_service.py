@@ -19,7 +19,8 @@ from database.project_execution_models import (
     ProjectRunStep,
     ProjectTask,
 )
-from project_execution.service import flush_and_refresh
+from project_execution.service import flush_and_refresh, retire_ephemeral_run_agents
+from shared.platform_settings import get_project_execution_settings
 from shared.secret_crypto import sha256_text
 
 CURRENT_EXTERNAL_RUNTIME_VERSION = "0.1.0"
@@ -49,6 +50,13 @@ class ExternalRuntimeState:
     bound_at: Optional[datetime]
     last_error_message: Optional[str]
     update_available: bool
+    launch_command_source: str
+    resolved_launch_command_template: Optional[str]
+    local_status_url: Optional[str]
+    local_status_port: Optional[int]
+    last_dispatch_action: Optional[str]
+    last_dispatch_status: Optional[str]
+    last_dispatch_error_message: Optional[str]
 
 
 class ExternalRuntimeUnavailableError(RuntimeError):
@@ -123,6 +131,27 @@ class ExternalRuntimeService:
             .first()
         )
 
+    def get_platform_launch_command_template(self) -> str:
+        settings = get_project_execution_settings(self.session)
+        return str(settings.get("default_launch_command_template") or "").strip()
+
+    def resolve_launch_command_template(
+        self,
+        *,
+        agent_id: UUID,
+        profile: Optional[ExternalAgentProfile] = None,
+    ) -> tuple[Optional[str], str]:
+        resolved_profile = profile if profile is not None else self.get_profile(agent_id=agent_id)
+        profile_template = str(
+            getattr(resolved_profile, "launch_command_template", "") or ""
+        ).strip()
+        if profile_template:
+            return profile_template, "agent"
+        platform_template = self.get_platform_launch_command_template()
+        if platform_template:
+            return platform_template, "platform"
+        return None, "unset"
+
     def update_profile(
         self,
         *,
@@ -170,6 +199,10 @@ class ExternalRuntimeService:
         if not self.is_external_runtime_type(getattr(agent, "runtime_preference", None)):
             return None
         profile = self.get_profile(agent_id=agent.agent_id)
+        resolved_launch_command_template, launch_command_source = self.resolve_launch_command_template(
+            agent_id=agent.agent_id,
+            profile=profile,
+        )
         binding = self.get_active_binding(agent_id=agent.agent_id)
         if binding is None:
             desired_version = profile.desired_version if profile else CURRENT_EXTERNAL_RUNTIME_VERSION
@@ -187,6 +220,13 @@ class ExternalRuntimeService:
                 bound_at=None,
                 last_error_message=None,
                 update_available=False,
+                launch_command_source=launch_command_source,
+                resolved_launch_command_template=resolved_launch_command_template,
+                local_status_url=None,
+                local_status_port=None,
+                last_dispatch_action=None,
+                last_dispatch_status=None,
+                last_dispatch_error_message=None,
             )
         desired_version = profile.desired_version if profile else CURRENT_EXTERNAL_RUNTIME_VERSION
         now = self.utc_now()
@@ -198,12 +238,35 @@ class ExternalRuntimeService:
                 effective_status = "offline"
             else:
                 effective_status = "online"
+        launch_command_configured = bool(resolved_launch_command_template)
+        last_error_message = binding.last_error_message
+        if effective_status == "online" and not launch_command_configured:
+            last_error_message = (
+                last_error_message or "Launch command template is not configured"
+            )
         update_available = bool(binding.current_version and desired_version and binding.current_version != desired_version)
+        local_status_url = None
+        local_status_port = None
+        binding_metadata = dict(binding.binding_metadata or {})
+        raw_local_status_url = binding_metadata.get("local_status_url")
+        if raw_local_status_url is not None:
+            local_status_url = str(raw_local_status_url).strip() or None
+        raw_local_status_port = binding_metadata.get("local_status_port")
+        if raw_local_status_port is not None:
+            try:
+                local_status_port = int(raw_local_status_port)
+            except (TypeError, ValueError):
+                local_status_port = None
+        last_dispatch_action = str(binding_metadata.get("last_dispatch_action") or "").strip() or None
+        last_dispatch_status = str(binding_metadata.get("last_dispatch_status") or "").strip() or None
+        last_dispatch_error_message = (
+            str(binding_metadata.get("last_dispatch_error_message") or "").strip() or None
+        )
         return ExternalRuntimeState(
             status=effective_status,
             bound=True,
-            available_for_conversation=effective_status == "online",
-            available_for_execution=effective_status == "online",
+            available_for_conversation=effective_status == "online" and launch_command_configured,
+            available_for_execution=effective_status == "online" and launch_command_configured,
             host_name=binding.host_name,
             host_os=binding.host_os,
             host_arch=binding.host_arch,
@@ -211,14 +274,23 @@ class ExternalRuntimeService:
             desired_version=desired_version,
             last_seen_at=binding.last_seen_at,
             bound_at=binding.bound_at,
-            last_error_message=binding.last_error_message,
+            last_error_message=last_error_message,
             update_available=update_available,
+            launch_command_source=launch_command_source,
+            resolved_launch_command_template=resolved_launch_command_template,
+            local_status_url=local_status_url,
+            local_status_port=local_status_port,
+            last_dispatch_action=last_dispatch_action,
+            last_dispatch_status=last_dispatch_status,
+            last_dispatch_error_message=last_dispatch_error_message,
         )
 
     def assert_agent_online(self, *, agent: Agent, error_detail: str = "external_agent_not_online") -> ExternalRuntimeState | None:
         state = self.summarize_state(agent=agent)
         if state is None:
             return None
+        if state.status == "online" and not state.resolved_launch_command_template:
+            raise ExternalRuntimeUnavailableError("external_agent_launch_command_not_configured")
         if not state.available_for_execution:
             raise ExternalRuntimeUnavailableError(error_detail)
         return state
@@ -290,6 +362,15 @@ class ExternalRuntimeService:
             )
         return f"curl -fsSL {base_url}/api/v1/agents/{agent_id}/external-runtime/update.sh?target={target_os} | bash"
 
+    def build_uninstall_command(self, *, agent_id: UUID, target_os: str, base_url: str) -> str:
+        target_os = self.validate_target_os(target_os)
+        if target_os == "windows":
+            return (
+                "powershell -NoProfile -ExecutionPolicy Bypass -Command "
+                f"\"iwr '{base_url}/api/v1/agents/{agent_id}/external-runtime/uninstall.ps1?target=windows' -UseBasicParsing | iex\""
+            )
+        return f"curl -fsSL {base_url}/api/v1/agents/{agent_id}/external-runtime/uninstall.sh?target={target_os} | bash"
+
     def bootstrap_binding(
         self,
         *,
@@ -325,14 +406,22 @@ class ExternalRuntimeService:
         profile = self.get_or_create_profile(agent_id=agent_id)
         return binding, raw_machine_token, profile
 
+    def revoke_binding(
+        self,
+        *,
+        binding: ExternalAgentBinding,
+        reason: str = "Binding revoked",
+    ) -> ExternalAgentBinding:
+        binding.status = "revoked"
+        binding.revoked_at = self.utc_now()
+        binding.last_error_message = reason
+        return flush_and_refresh(self.session, binding)
+
     def unbind_agent(self, *, agent_id: UUID) -> None:
         binding = self.get_active_binding(agent_id=agent_id)
         if binding is None:
             return
-        binding.status = "revoked"
-        binding.revoked_at = self.utc_now()
-        binding.last_error_message = "Binding revoked"
-        flush_and_refresh(self.session, binding)
+        self.revoke_binding(binding=binding)
 
     def heartbeat(
         self,
@@ -382,8 +471,15 @@ class ExternalRuntimeService:
         if binding is None:
             raise ExternalRuntimeUnavailableError("external_agent_not_online")
         state = self.summarize_state(agent=self.get_agent(agent_id))
+        if state is not None and not state.resolved_launch_command_template:
+            raise ExternalRuntimeUnavailableError("external_agent_launch_command_not_configured")
         if state is None or not state.available_for_execution:
             raise ExternalRuntimeUnavailableError("external_agent_not_online")
+        dispatch_payload = {
+            **(request_payload or {}),
+            "launch_command_template": state.resolved_launch_command_template,
+            "launch_command_source": state.launch_command_source,
+        }
         dispatch = ExternalAgentDispatch(
             agent_id=agent_id,
             binding_id=binding.binding_id,
@@ -393,7 +489,37 @@ class ExternalRuntimeService:
             source_type=source_type,
             source_id=source_id,
             runtime_type=runtime_type,
-            request_payload=request_payload,
+            request_payload=dispatch_payload,
+            status="pending",
+            expires_at=self.utc_now() + timedelta(seconds=EXTERNAL_DISPATCH_ACK_TIMEOUT_SECONDS),
+        )
+        self.session.add(dispatch)
+        return flush_and_refresh(self.session, dispatch)
+
+    def create_maintenance_dispatch(
+        self,
+        *,
+        agent_id: UUID,
+        action: str,
+        request_payload: Optional[dict[str, Any]] = None,
+    ) -> ExternalAgentDispatch:
+        binding = self.get_active_binding(agent_id=agent_id)
+        if binding is None:
+            raise ExternalRuntimeUnavailableError("external_agent_not_online")
+        agent = self.get_agent(agent_id)
+        state = self.summarize_state(agent=agent)
+        if state is None or state.status != "online":
+            raise ExternalRuntimeUnavailableError("external_agent_not_online")
+        dispatch = ExternalAgentDispatch(
+            agent_id=agent_id,
+            binding_id=binding.binding_id,
+            source_type="maintenance",
+            source_id=action,
+            runtime_type=str(getattr(agent, "runtime_preference", None) or "external_worktree"),
+            request_payload={
+                "control_action": action,
+                **(request_payload or {}),
+            },
             status="pending",
             expires_at=self.utc_now() + timedelta(seconds=EXTERNAL_DISPATCH_ACK_TIMEOUT_SECONDS),
         )
@@ -446,9 +572,12 @@ class ExternalRuntimeService:
             flush_and_refresh(self.session, step)
         if task is not None:
             task.status = "assigned"
+            task.error_message = None
             flush_and_refresh(self.session, task)
         if run is not None and str(run.status or "") not in {"running", "completed", "failed", "blocked"}:
             run.status = "scheduled"
+            run.error_message = None
+            run.completed_at = None
             flush_and_refresh(self.session, run)
         return flush_and_refresh(self.session, dispatch)
 
@@ -473,6 +602,8 @@ class ExternalRuntimeService:
             flush_and_refresh(self.session, task)
         if run is not None and normalized_status == "running":
             run.status = "running"
+            run.error_message = None
+            run.completed_at = None
             flush_and_refresh(self.session, run)
         return flush_and_refresh(self.session, dispatch)
 
@@ -493,6 +624,7 @@ class ExternalRuntimeService:
             flush_and_refresh(self.session, step)
         if task is not None:
             task.status = "completed"
+            task.error_message = None
             task.output_payload = {**(task.output_payload or {}), **(result_payload or {})}
             flush_and_refresh(self.session, task)
         if run is not None:
@@ -505,7 +637,13 @@ class ExternalRuntimeService:
             if remaining == 0:
                 run.status = "completed"
                 run.completed_at = now
+                run.error_message = None
                 flush_and_refresh(self.session, run)
+                retire_ephemeral_run_agents(
+                    self.session,
+                    run=run,
+                    tasks=[task] if task is not None else None,
+                )
         return flush_and_refresh(self.session, dispatch)
 
     def fail_dispatch(self, *, dispatch: ExternalAgentDispatch, result_payload: Optional[dict[str, Any]] = None, error_message: Optional[str] = None) -> ExternalAgentDispatch:
@@ -531,6 +669,11 @@ class ExternalRuntimeService:
             run.completed_at = now
             run.error_message = dispatch.error_message
             flush_and_refresh(self.session, run)
+            retire_ephemeral_run_agents(
+                self.session,
+                run=run,
+                tasks=[task] if task is not None else None,
+            )
         return flush_and_refresh(self.session, dispatch)
 
 

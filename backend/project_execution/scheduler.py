@@ -17,11 +17,15 @@ from api_gateway.routers.agent_conversations import execute_persistent_conversat
 from database.connection import get_db_session
 from database.models import AgentConversation
 from database.project_execution_models import ExternalAgentDispatch, Project, ProjectPlan, ProjectRun, ProjectRunStep, ProjectSpace, ProjectTask
-from project_execution.agent_provisioner import ProjectAgentProvisioner, default_required_capabilities
+from project_execution.agent_provisioner import (
+    ProjectAgentProvisioner,
+    ProjectExternalRuntimeUnavailableError,
+    default_required_capabilities,
+)
 from project_execution.external_runtime_service import EXTERNAL_RUNTIME_TYPES, ExternalRuntimeService, ExternalRuntimeUnavailableError
-from project_execution.planning import infer_step_kind
+from project_execution.planning import infer_step_kind, normalize_execution_mode
 from project_execution.run_workspace_manager import RunWorkspaceDescriptor, get_run_workspace_manager
-from project_execution.service import append_audit_event, flush_and_refresh
+from project_execution.service import append_audit_event, flush_and_refresh, retire_ephemeral_run_agents
 from shared.logging import get_logger
 
 logger = get_logger(__name__)
@@ -37,7 +41,43 @@ def _auto_execute_enabled() -> bool:
 
 
 
-def _block_pending_step(session, *, pending_step: ProjectRunStep, task: ProjectTask, run: ProjectRun, current_user: CurrentUser, reason: str) -> dict[str, Any]:
+def _block_pending_step(
+    session,
+    *,
+    pending_step: ProjectRunStep,
+    task: ProjectTask,
+    run: ProjectRun,
+    current_user: CurrentUser,
+    reason: str,
+    selection: Optional[Any] = None,
+) -> dict[str, Any]:
+    if selection is not None:
+        if getattr(selection, "agent_id", None) is not None:
+            task.assignee_agent_id = selection.agent_id
+        task.input_payload = {
+            **(task.input_payload or {}),
+            "assigned_agent_id": str(selection.agent_id),
+            "assigned_agent_name": selection.agent_name,
+            "selection_reason": selection.selection_reason,
+            "runtime_type": selection.runtime_type,
+        }
+        pending_step.input_payload = {
+            **(pending_step.input_payload or {}),
+            "assigned_agent_id": str(selection.agent_id),
+            "assigned_agent_name": selection.agent_name,
+            "selection_reason": selection.selection_reason,
+            "runtime_type": selection.runtime_type,
+        }
+        run.runtime_context = {
+            **(run.runtime_context or {}),
+            "agent_assignment": {
+                "executor_kind": "agent",
+                "agent_id": str(selection.agent_id),
+                "selection_reason": selection.selection_reason,
+                "provisioned_agent": bool(selection.provisioned_agent),
+                "runtime_type": selection.runtime_type,
+            },
+        }
     pending_step.status = "blocked"
     pending_step.error_message = reason
     task.status = "blocked"
@@ -47,6 +87,7 @@ def _block_pending_step(session, *, pending_step: ProjectRunStep, task: ProjectT
     flush_and_refresh(session, pending_step)
     flush_and_refresh(session, task)
     flush_and_refresh(session, run)
+    retire_ephemeral_run_agents(session, run=run, tasks=[task])
     append_audit_event(
         session,
         action="run-step.blocked",
@@ -59,11 +100,11 @@ def _block_pending_step(session, *, pending_step: ProjectRunStep, task: ProjectT
     )
     return {
         "executor_kind": "agent",
-        "agent_id": None,
+        "agent_id": getattr(selection, "agent_id", None),
         "dispatch_id": None,
-        "selection_reason": reason,
-        "provisioned_agent": False,
-        "runtime_type": None,
+        "selection_reason": getattr(selection, "selection_reason", reason),
+        "provisioned_agent": bool(getattr(selection, "provisioned_agent", False)),
+        "runtime_type": getattr(selection, "runtime_type", None),
         "external_dispatch": None,
     }
 
@@ -123,20 +164,30 @@ def _queue_external_agent_dispatch(
                 ),
             },
         )
-    except ExternalRuntimeUnavailableError:
+    except ExternalRuntimeUnavailableError as exc:
+        detail = str(exc)
         return _block_pending_step(
             session,
             pending_step=pending_step,
             task=task,
             run=run,
             current_user=current_user,
-            reason="External agent is not online",
+            reason=(
+                "External agent launch command is not configured"
+                if detail == "external_agent_launch_command_not_configured"
+                else "External agent is not online"
+            ),
+            selection=selection,
         )
 
     task.assignee_agent_id = selection.agent_id
     task.status = "assigned"
+    task.error_message = None
     pending_step.status = "queued"
+    pending_step.error_message = None
     run.status = "scheduled"
+    run.error_message = None
+    run.completed_at = None
     run.runtime_context = {
         **(run.runtime_context or {}),
         "agent_assignment": {
@@ -296,6 +347,7 @@ async def _schedule_next_pending_step(
                 run.status = "completed"
                 run.completed_at = datetime.now(timezone.utc)
                 flush_and_refresh(session, run)
+                retire_ephemeral_run_agents(session, run=run)
                 append_audit_event(
                     session,
                     action="run.completed",
@@ -317,7 +369,14 @@ async def _schedule_next_pending_step(
         project = session.query(Project).filter(Project.project_id == run.project_id).first()
 
         step_payload = dict(pending_step.input_payload or {})
-        step_kind = str(step_payload.get("step_kind") or infer_step_kind(task.title, task.description))
+        task_payload = dict(task.input_payload or {})
+        execution_mode = normalize_execution_mode(
+            str(step_payload.get("execution_mode") or task_payload.get("execution_mode") or "auto")
+        )
+        step_kind = str(
+            step_payload.get("step_kind")
+            or infer_step_kind(task.title, task.description, execution_mode=execution_mode)
+        )
         executor_kind = str(step_payload.get("executor_kind") or "agent")
         required_capabilities = list(
             step_payload.get("required_capabilities") or default_required_capabilities(step_kind)
@@ -326,6 +385,7 @@ async def _schedule_next_pending_step(
             {
                 "step_kind": step_kind,
                 "executor_kind": executor_kind,
+                "execution_mode": execution_mode,
                 "required_capabilities": required_capabilities,
             }
         )
@@ -333,19 +393,30 @@ async def _schedule_next_pending_step(
         task.input_payload = {
             **(task.input_payload or {}),
             "step_kind": step_kind,
+            "execution_mode": execution_mode,
             "required_capabilities": required_capabilities,
             "assignment_source": "project_execution_scheduler",
         }
 
         if step_kind == "host_action":
-            selection = ProjectAgentProvisioner().select_or_provision_agent(
-                project_id=run.project_id,
-                step_kind=step_kind,
-                required_capabilities=required_capabilities,
-                current_user=current_user,
-                run_id=run.run_id,
-                required_runtime_types=["external_worktree", "external_same_dir", "remote_session"],
-            )
+            try:
+                selection = ProjectAgentProvisioner().select_or_provision_agent(
+                    project_id=run.project_id,
+                    step_kind=step_kind,
+                    required_capabilities=required_capabilities,
+                    current_user=current_user,
+                    run_id=run.run_id,
+                    required_runtime_types=["external_worktree", "external_same_dir", "remote_session"],
+                )
+            except ProjectExternalRuntimeUnavailableError as exc:
+                return _block_pending_step(
+                    session,
+                    pending_step=pending_step,
+                    task=task,
+                    run=run,
+                    current_user=current_user,
+                    reason=str(exc),
+                )
             return _queue_external_agent_dispatch(
                 session,
                 selection=selection,
@@ -378,8 +449,12 @@ async def _schedule_next_pending_step(
             )
         task.assignee_agent_id = selection.agent_id
         task.status = "assigned"
+        task.error_message = None
         pending_step.status = "assigned"
+        pending_step.error_message = None
         run.status = "scheduled"
+        run.error_message = None
+        run.completed_at = None
         run.runtime_context = {
             **(run.runtime_context or {}),
             "agent_assignment": {
@@ -645,6 +720,11 @@ async def execute_assigned_step(
                 run.error_message = str(exc)
                 run.completed_at = datetime.now(timezone.utc)
                 flush_and_refresh(session, run)
+                retire_ephemeral_run_agents(
+                    session,
+                    run=run,
+                    tasks=[task] if task is not None else None,
+                )
                 append_audit_event(
                     session,
                     action="run-step.failed",

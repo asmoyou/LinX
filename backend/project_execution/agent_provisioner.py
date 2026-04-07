@@ -10,6 +10,7 @@ from agent_framework.agent_registry import get_agent_registry
 from database.connection import get_db_session
 from database.models import Agent
 from database.project_execution_models import AgentProvisioningProfile, Project, ProjectAgentBinding
+from project_execution.external_runtime_service import ExternalRuntimeService
 from shared.logging import get_logger
 from task_manager.capability_mapper import CapabilityMapper
 from task_manager.load_balancer import LoadBalancer
@@ -18,6 +19,12 @@ logger = get_logger(__name__)
 
 INTERNAL_RUNTIME_TYPES = {"project_sandbox"}
 EXTERNAL_RUNTIME_TYPES = {"external_same_dir", "external_worktree", "remote_session"}
+
+
+class ProjectExternalRuntimeUnavailableError(RuntimeError):
+    """Raised when a host-action step needs external runtime capacity that is not configured."""
+
+    pass
 
 
 @dataclass
@@ -61,6 +68,10 @@ class ProjectAgentProvisioner:
     def __init__(self) -> None:
         self._capability_mapper = CapabilityMapper()
         self._load_balancer = LoadBalancer(max_tasks_per_agent=3)
+
+    @staticmethod
+    def _requires_external_runtime(desired_runtime_types: Sequence[str]) -> bool:
+        return any(runtime_type in EXTERNAL_RUNTIME_TYPES for runtime_type in desired_runtime_types)
 
     def select_or_provision_agent(
         self,
@@ -116,6 +127,7 @@ class ProjectAgentProvisioner:
         desired_runtime_types: list[str],
     ) -> Optional[AgentSelectionResult]:
         with get_db_session() as session:
+            runtime_service = ExternalRuntimeService(session)
             bindings = (
                 session.query(ProjectAgentBinding)
                 .filter(ProjectAgentBinding.project_id == project_id)
@@ -133,7 +145,17 @@ class ProjectAgentProvisioner:
                     access_type="execute",
                     statuses=["idle", "active", "working", "busy"],
                 )
-                if agent.agent_id in binding_map and self._is_runtime_compatible(agent, desired_runtime_types)
+                if agent.agent_id in binding_map
+                and self._is_runtime_compatible(agent, desired_runtime_types)
+                and (
+                    not self._requires_external_runtime(desired_runtime_types)
+                    or bool(
+                        (
+                            runtime_state := runtime_service.summarize_state(agent=agent)
+                        )
+                        and runtime_state.available_for_execution
+                    )
+                )
             ]
             if not candidates:
                 return None
@@ -158,8 +180,6 @@ class ProjectAgentProvisioner:
                 scored.append((total_score, agent))
             scored.sort(key=lambda item: item[0], reverse=True)
             best_score, best_agent = scored[0]
-            if best_score < 70:
-                return None
             runtime_type = str(getattr(best_agent, "runtime_preference", "") or desired_runtime_types[0])
             return AgentSelectionResult(
                 agent_id=best_agent.agent_id,
@@ -197,6 +217,11 @@ class ProjectAgentProvisioner:
             if profile and getattr(profile, "runtime_type", None)
             else DEFAULT_RUNTIME_TYPE.get(step_kind, desired_runtime_types[0])
         )
+        if runtime_type in EXTERNAL_RUNTIME_TYPES:
+            raise ProjectExternalRuntimeUnavailableError(
+                "No external runtime is configured for this host-action step. "
+                "Bind an external agent in the Project Agent Pool and configure its launch command."
+            )
         capabilities = list(profile.default_skill_ids or []) if profile and profile.default_skill_ids else list(required_capabilities)
         scope_label = "external" if runtime_type in EXTERNAL_RUNTIME_TYPES else "internal"
         agent_name = f"{(project.name if project else 'Project')} · {step_kind} · temp · {scope_label} · {str(run_id)[:8]}"

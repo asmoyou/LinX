@@ -3,6 +3,7 @@ import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { cleanup, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { agentsApi } from '@/api/agents';
 import { ProjectDetail } from '@/pages/ProjectDetail';
 import { Projects } from '@/pages/Projects';
 import { RunCenter } from '@/pages/RunCenter';
@@ -77,12 +78,14 @@ const createStoreState = () => ({
   deleteProject: vi.fn(),
   loadRuns: vi.fn().mockResolvedValue([]),
   loadRunDetail: vi.fn().mockResolvedValue(undefined),
+  markRunHandled: vi.fn().mockResolvedValue(undefined),
   rescheduleRun: vi.fn(),
 });
 
 describe('project execution pages', () => {
   beforeEach(() => {
     storeState = createStoreState();
+    vi.mocked(agentsApi.getAll).mockResolvedValue([]);
   });
 
   afterEach(() => {
@@ -137,6 +140,22 @@ describe('project execution pages', () => {
         failedTasks: 0,
         needsClarification: false,
         tasks: [],
+        agentBindings: [
+          {
+            id: 'binding-1',
+            projectId: 'project-1',
+            agentId: 'agent-1',
+            agentName: 'agent-1',
+            agentType: null,
+            priority: 0,
+            status: 'active',
+            allowedStepKinds: [],
+            preferredSkills: [],
+            preferredRuntimeTypes: [],
+            createdAt: '2026-04-07T10:00:00.000Z',
+            updatedAt: '2026-04-07T10:00:00.000Z',
+          },
+        ],
         runs: [
           {
             id: 'abcd1234-alert',
@@ -145,6 +164,7 @@ describe('project execution pages', () => {
             status: 'failed',
             createdAt: '2026-04-07T10:55:00.000Z',
             triggerSource: 'manual',
+            executionMode: 'project_sandbox',
             startedAt: '2026-04-07T11:00:00.000Z',
             completedAt: null,
             updatedAt: '2026-04-07T11:05:00.000Z',
@@ -159,6 +179,27 @@ describe('project execution pages', () => {
         recentActivity: [],
       },
     };
+    vi.mocked(agentsApi.getAll).mockResolvedValue([
+      {
+        id: 'agent-1',
+        name: '小白',
+        type: 'external_general',
+        status: 'offline',
+        tasksCompleted: 0,
+        uptime: '1h',
+        ownerUserId: 'user-1',
+        runtimeType: 'external_worktree',
+        externalRuntime: {
+          status: 'uninstalled',
+          bound: false,
+          availableForConversation: false,
+          availableForExecution: false,
+          updateAvailable: false,
+          launchCommandSource: 'unset',
+          resolvedLaunchCommandTemplate: null,
+        },
+      } as any,
+    ]);
 
     render(
       <MemoryRouter initialEntries={['/projects/project-1']}>
@@ -171,7 +212,12 @@ describe('project execution pages', () => {
     expect(await screen.findByText('Project runs')).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Open Run' })).toBeInTheDocument();
     expect(screen.getByText('Run #abcd1234')).toBeInTheDocument();
+    expect(screen.getByText(/Execution mode:/)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Mark Handled' })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'View Project Runs' })).toBeInTheDocument();
+    expect(await screen.findByText('小白')).toBeInTheDocument();
+    expect(screen.queryByText('Project external runner override')).not.toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Open Runtime Host' })).toBeInTheDocument();
   });
 
   it('defaults run alerts to attention runs and hides completed runs', async () => {
@@ -183,6 +229,11 @@ describe('project execution pages', () => {
         status: 'failed',
         createdAt: '2026-04-07T10:55:00.000Z',
         triggerSource: 'manual',
+        taskId: 'task-1',
+        taskTitle: 'Fix deployment',
+        failureReason: 'External agent is not online',
+        alertSignature:
+          '{"status":"failed","taskId":"task-1","taskTitle":"Fix deployment","failureReason":"External agent is not online","latestSignal":"Build failed"}',
         startedAt: '2026-04-07T11:00:00.000Z',
         completedAt: null,
         updatedAt: '2026-04-07T11:05:00.000Z',
@@ -206,6 +257,29 @@ describe('project execution pages', () => {
         failedTasks: 0,
         latestSignal: 'Completed cleanly',
       },
+      {
+        id: 'old99999-fail',
+        projectId: 'project-3',
+        projectTitle: 'Project Three',
+        status: 'failed',
+        createdAt: '2026-04-07T08:55:00.000Z',
+        triggerSource: 'manual',
+        taskId: 'task-9',
+        taskTitle: 'Old failure',
+        failureReason: 'Already triaged',
+        handledAt: '2026-04-07T11:10:00.000Z',
+        handledSignature:
+          '{"status":"failed","taskId":"task-9","taskTitle":"Old failure","failureReason":"Already triaged","latestSignal":"Already triaged"}',
+        alertSignature:
+          '{"status":"failed","taskId":"task-9","taskTitle":"Old failure","failureReason":"Already triaged","latestSignal":"Already triaged"}',
+        startedAt: '2026-04-07T09:00:00.000Z',
+        completedAt: '2026-04-07T09:30:00.000Z',
+        updatedAt: '2026-04-07T11:10:00.000Z',
+        totalTasks: 1,
+        completedTasks: 0,
+        failedTasks: 1,
+        latestSignal: 'Already triaged',
+      },
     ];
 
     render(
@@ -216,6 +290,9 @@ describe('project execution pages', () => {
 
     expect(await screen.findByText('Run Alerts')).toBeInTheDocument();
     expect(screen.getByText('Run #abcd1234')).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Fix deployment' })).toBeInTheDocument();
+    expect(screen.getByText('External agent is not online')).toBeInTheDocument();
+    expect(screen.queryByText('Run #old99999')).not.toBeInTheDocument();
     expect(screen.queryByText('Run #done5678')).not.toBeInTheDocument();
   });
 
@@ -229,6 +306,12 @@ describe('project execution pages', () => {
         status: 'running',
         createdAt: '2026-04-07T10:55:00.000Z',
         triggerSource: 'manual',
+        executionMode: 'project_sandbox',
+        taskId: 'task-1',
+        taskTitle: 'Fix deployment',
+        failureReason: 'External agent is not online',
+        alertSignature:
+          '{"status":"running","taskId":"task-1","taskTitle":"Fix deployment","failureReason":"External agent is not online","latestSignal":null}',
         startedAt: '2026-04-07T11:00:00.000Z',
         completedAt: null,
         updatedAt: '2026-04-07T11:05:00.000Z',
@@ -252,5 +335,7 @@ describe('project execution pages', () => {
     expect(await screen.findByRole('heading', { name: 'Run #abcd1234', level: 1 })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Project One' })).toBeInTheDocument();
     expect(screen.getByText('Trigger Manual')).toBeInTheDocument();
+    expect(screen.getByText('External agent is not online')).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Open Task' })).toHaveAttribute('href', '/projects/project-1/tasks/task-1');
   });
 });

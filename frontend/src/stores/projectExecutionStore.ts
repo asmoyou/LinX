@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 
 import { projectExecutionApi } from '@/api/projectExecution';
+import type { ProjectExecutionMode } from '@/utils/projectExecutionPlanning';
 import type {
   PlatformExtension,
   ProjectDetail,
@@ -41,19 +42,28 @@ interface ProjectExecutionState {
     projectId: string;
     title: string;
     description?: string | null;
+    executionMode?: ProjectExecutionMode;
   }) => Promise<string>;
   deleteProjectTask: (projectId: string, taskId: string) => Promise<void>;
   createProjectTaskAndLaunchRun: (input: {
     projectId: string;
     title: string;
     description?: string | null;
+    executionMode?: ProjectExecutionMode;
   }) => Promise<{ taskId: string; runId: string }>;
   launchTaskRun: (input: {
     projectId: string;
     taskId: string;
     title: string;
     description?: string | null;
+    executionMode?: ProjectExecutionMode;
   }) => Promise<string>;
+  markRunHandled: (
+    runId: string,
+    handledAt: string,
+    handledSignature: string,
+    handledByUserId?: string | null,
+  ) => Promise<void>;
   rescheduleRun: (runId: string) => Promise<RunDetail>;
   reset: () => void;
 }
@@ -442,6 +452,21 @@ export const useProjectExecutionStore = create<ProjectExecutionState>((set, get)
       get().loadRunDetail(runId),
     ]);
     return runId;
+  },
+
+  markRunHandled: async (runId, handledAt, handledSignature, handledByUserId) => {
+    await projectExecutionApi.markRunHandled(runId, {
+      handledAt,
+      handledSignature,
+      handledByUserId,
+    });
+    const projectId =
+      get().runDetails[runId]?.projectId || get().runs.find((run) => run.id === runId)?.projectId;
+    await Promise.allSettled([
+      get().loadRuns(),
+      get().loadRunDetail(runId),
+      projectId ? get().loadProjectDetail(projectId) : Promise.resolve(),
+    ]);
   },
 
   rescheduleRun: async (runId) => {

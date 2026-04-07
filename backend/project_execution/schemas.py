@@ -103,7 +103,6 @@ class AgentProvisioningProfileCreate(BaseModel):
     default_provider: Optional[str] = None
     default_model: Optional[str] = None
     runtime_type: str = Field(default="project_sandbox", min_length=1, max_length=50)
-    preferred_node_selector: Optional[str] = None
     temperature: Optional[float] = Field(default=0.2, ge=0.0, le=2.0)
     max_tokens: Optional[int] = Field(default=4000, ge=1)
     sandbox_mode: str = Field(default="run_shared", min_length=1, max_length=50)
@@ -117,7 +116,6 @@ class AgentProvisioningProfileUpdate(BaseModel):
     default_provider: Optional[str] = None
     default_model: Optional[str] = None
     runtime_type: Optional[str] = Field(default=None, min_length=1, max_length=50)
-    preferred_node_selector: Optional[str] = None
     temperature: Optional[float] = Field(default=None, ge=0.0, le=2.0)
     max_tokens: Optional[int] = Field(default=None, ge=1)
     sandbox_mode: Optional[str] = Field(default=None, min_length=1, max_length=50)
@@ -134,7 +132,6 @@ class AgentProvisioningProfileResponse(ORMModel):
     default_provider: Optional[str]
     default_model: Optional[str]
     runtime_type: str
-    preferred_node_selector: Optional[str]
     temperature: Optional[float]
     max_tokens: Optional[int]
     sandbox_mode: str
@@ -177,6 +174,7 @@ class ProjectTaskCreate(BaseModel):
     priority: str = Field(default="normal", min_length=1, max_length=50)
     sort_order: int = Field(default=0, ge=0)
     input_payload: dict[str, Any] = Field(default_factory=dict)
+    execution_mode: Optional[str] = Field(default=None, min_length=1, max_length=50)
 
 
 class ProjectTaskUpdate(BaseModel):
@@ -225,6 +223,7 @@ class ProjectTaskCreateAndLaunchRequest(BaseModel):
     priority: str = Field(default="normal", min_length=1, max_length=50)
     assignee_agent_id: Optional[UUID] = None
     input_payload: dict[str, Any] = Field(default_factory=dict)
+    execution_mode: Optional[str] = Field(default=None, min_length=1, max_length=50)
 
 
 class ProjectTaskLaunchBundleResponse(BaseModel):

@@ -14,7 +14,9 @@ import {
   SectionCard,
   StatusBadge,
 } from '@/components/platform/PlatformUi';
+import { useAuthStore } from '@/stores/authStore';
 import { useProjectExecutionStore } from '@/stores/projectExecutionStore';
+import type { Agent } from '@/types/agent';
 import { getAgentTypeToken } from '@/utils/agentPresentation';
 import {
   formatDateTime,
@@ -23,21 +25,29 @@ import {
   formatTokenLabel,
 } from '@/utils/platformFormatting';
 
+const ATTENTION_RUN_STATUSES = new Set(['blocked', 'failed', 'reviewing']);
+
+const isRunHandled = (run: {
+  handledAt?: string | null;
+  handledSignature?: string | null;
+  alertSignature?: string | null;
+}): boolean => Boolean(run.handledAt && run.handledSignature && run.handledSignature === run.alertSignature);
+
 export const ProjectDetail = () => {
   const navigate = useNavigate();
   const { t } = useTranslation();
   const [isTaskModalOpen, setIsTaskModalOpen] = useState(false);
   const [isCreatingTask, setIsCreatingTask] = useState(false);
   const [isDeletingProject, setIsDeletingProject] = useState(false);
-  const [availableAgents, setAvailableAgents] = useState<Array<{ id: string; name: string; type: string }>>([]);
+  const [availableAgents, setAvailableAgents] = useState<Agent[]>([]);
   const [selectedAgentId, setSelectedAgentId] = useState('');
   const [selectedRuntimeType, setSelectedRuntimeType] = useState('');
   const [isBindingAgent, setIsBindingAgent] = useState(false);
   const [bindingError, setBindingError] = useState<string | null>(null);
-  const [projectCommandTemplate, setProjectCommandTemplate] = useState('');
-  const [isSavingProjectCommand, setIsSavingProjectCommand] = useState(false);
   const [showAllRuns, setShowAllRuns] = useState(false);
+  const [handlingRunId, setHandlingRunId] = useState<string | null>(null);
   const { projectId } = useParams<{ projectId: string }>();
+  const currentUser = useAuthStore((state) => state.user);
   const project = useProjectExecutionStore((state) =>
     projectId ? state.projectDetails[projectId] : undefined,
   );
@@ -48,15 +58,14 @@ export const ProjectDetail = () => {
   const createProjectTask = useProjectExecutionStore((state) => state.createProjectTask);
   const createProjectTaskAndLaunchRun = useProjectExecutionStore((state) => state.createProjectTaskAndLaunchRun);
   const deleteProject = useProjectExecutionStore((state) => state.deleteProject);
+  const markRunHandled = useProjectExecutionStore((state) => state.markRunHandled);
 
   useEffect(() => {
     if (projectId) {
       void loadProjectDetail(projectId);
       void agentsApi.getAll()
         .then((items) => {
-          setAvailableAgents(
-            items.map((agent) => ({ id: agent.id, name: agent.name, type: agent.type }))
-          );
+          setAvailableAgents(items);
         })
         .catch((error) => {
           console.warn('Failed to load agents for binding', error);
@@ -68,21 +77,44 @@ export const ProjectDetail = () => {
   const assignedCapabilityCount =
     project?.tasks.filter((task) => task.assignedAgentId || task.assignedAgentName).length || 0;
 
-  useEffect(() => {
-    if (project) {
-      const configuration = project.configuration || {};
-      setProjectCommandTemplate(String(configuration.external_agent_command_template || ''));
-    }
-  }, [project]);
-
   const unboundAgents = useMemo(() => {
     const bound = new Set((project?.agentBindings || []).map((item) => item.agentId));
     return availableAgents.filter((agent) => !bound.has(agent.id));
   }, [availableAgents, project?.agentBindings]);
+  const availableAgentLookup = useMemo(
+    () => new Map(availableAgents.map((agent) => [agent.id, agent])),
+    [availableAgents],
+  );
   const visibleRuns = useMemo(
     () => (showAllRuns ? project?.runs || [] : (project?.runs || []).slice(0, 5)),
     [project?.runs, showAllRuns],
   );
+  const buildRuntimeHostHref = (agentId: string) =>
+    `/workforce?configureAgent=${encodeURIComponent(agentId)}&tab=runtime`;
+
+  const handleMarkRunHandled = async (runId: string) => {
+    const targetRun = project?.runs.find((candidate) => candidate.id === runId);
+    if (!targetRun?.alertSignature) return;
+
+    try {
+      setHandlingRunId(runId);
+      await markRunHandled(
+        runId,
+        new Date().toISOString(),
+        targetRun.alertSignature,
+        currentUser?.id || null,
+      );
+      toast.success(t('projectExecution.runCenter.markHandledSuccess', 'Run marked as handled'));
+    } catch (markError) {
+      const message =
+        markError instanceof Error
+          ? markError.message
+          : t('projectExecution.runCenter.markHandledError', 'Failed to mark run as handled');
+      toast.error(message);
+    } finally {
+      setHandlingRunId(null);
+    }
+  };
 
   const handleBindAgent = async () => {
     if (!projectId || !selectedAgentId || isFallback) return;
@@ -123,28 +155,6 @@ export const ProjectDetail = () => {
     }
   };
 
-  const handleSaveProjectCommand = async () => {
-    if (!projectId || isFallback) return;
-    try {
-      setIsSavingProjectCommand(true);
-      await projectExecutionApi.updateProject(projectId, {
-        configuration: {
-          ...(project?.configuration || {}),
-          external_agent_command_template: projectCommandTemplate,
-        },
-      });
-      await loadProjectDetail(projectId);
-      toast.success(t('projectExecution.projectDetail.projectCommandSaved', 'Project external runner override saved'));
-    } catch (saveError) {
-      const message = saveError instanceof Error
-        ? saveError.message
-        : t('projectExecution.projectDetail.projectCommandSaveFailed', 'Failed to save project external runner override');
-      toast.error(message);
-    } finally {
-      setIsSavingProjectCommand(false);
-    }
-  };
-
   const handleDeleteProject = async () => {
     if (!projectId || isFallback) return;
 
@@ -167,7 +177,12 @@ export const ProjectDetail = () => {
     }
   };
 
-  const handleCreateTask = async (payload: { title: string; description?: string; autoStart?: boolean }) => {
+  const handleCreateTask = async (payload: {
+    title: string;
+    description?: string;
+    autoStart?: boolean;
+    executionMode?: 'auto' | 'project_sandbox' | 'external_runtime';
+  }) => {
     if (!projectId) return;
 
     const shouldAutoStart = payload.autoStart ?? true;
@@ -180,6 +195,7 @@ export const ProjectDetail = () => {
           projectId,
           title: payload.title,
           description: payload.description,
+          executionMode: payload.executionMode,
         });
         toast.success(t('projectExecution.modals.taskCreated', 'Task created'));
         setIsTaskModalOpen(false);
@@ -192,6 +208,7 @@ export const ProjectDetail = () => {
           projectId,
           title: payload.title,
           description: payload.description,
+          executionMode: payload.executionMode,
         });
         toast.success(t('projectExecution.modals.autoStartedTask', 'Task created and run started'));
         setIsTaskModalOpen(false);
@@ -358,6 +375,11 @@ export const ProjectDetail = () => {
                     key={run.id}
                     className="rounded-2xl border border-zinc-200/70 bg-white/70 p-4 dark:border-zinc-800 dark:bg-zinc-950/50"
                   >
+                    {isRunHandled(run) ? (
+                      <div className="mb-3 rounded-full bg-zinc-100 px-3 py-1 text-xs font-medium text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300">
+                        {t('projectExecution.runCenter.handledStatus', 'Handled')}
+                      </div>
+                    ) : null}
                     <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
                       <div>
                         <div className="flex flex-wrap items-center gap-3">
@@ -416,36 +438,49 @@ export const ProjectDetail = () => {
                         </p>
                       </div>
                     </div>
+                    <p className="mt-3 text-sm text-zinc-600 dark:text-zinc-400">
+                      {t('projectExecution.projectDetail.executionModePrefix', {
+                        value: run.executionMode
+                          ? t(`projectExecution.modals.executionMode.${run.executionMode}`, {
+                              defaultValue: formatTokenLabel(run.executionMode),
+                            })
+                          : t('projectExecution.taskDetail.executionModeUnknown', 'Auto'),
+                        defaultValue: `Execution mode: ${
+                          run.executionMode
+                            ? formatTokenLabel(run.executionMode)
+                            : 'Auto'
+                        }`,
+                      })}
+                    </p>
+                    <div className="mt-4 flex flex-wrap gap-3">
+                      {(ATTENTION_RUN_STATUSES.has(run.status.toLowerCase()) || run.failedTasks > 0) &&
+                      !isRunHandled(run) ? (
+                        <button
+                          type="button"
+                          onClick={() => void handleMarkRunHandled(run.id)}
+                          disabled={handlingRunId === run.id}
+                          className="rounded-full border border-zinc-300 px-4 py-2 text-sm font-medium text-zinc-700 transition hover:border-zinc-400 hover:bg-zinc-100 disabled:cursor-not-allowed disabled:opacity-50 dark:border-zinc-700 dark:text-zinc-200 dark:hover:border-zinc-600 dark:hover:bg-zinc-900"
+                        >
+                          {handlingRunId === run.id
+                            ? t('projectExecution.shared.saving', 'Saving…')
+                            : t('projectExecution.runCenter.markHandledAction', 'Mark Handled')}
+                        </button>
+                      ) : null}
+                      {run.taskId ? (
+                        <Link
+                          to={`/projects/${projectId}/tasks/${run.taskId}`}
+                          className="rounded-full border border-zinc-300 px-4 py-2 text-sm font-medium text-zinc-700 transition hover:border-zinc-400 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-200 dark:hover:border-zinc-600 dark:hover:bg-zinc-900"
+                        >
+                          {t('projectExecution.runDetail.openTaskAction', 'Open Task')}
+                        </Link>
+                      ) : null}
+                    </div>
                   </div>
                 ))}
               </div>
             )}
           </SectionCard>
         </div>
-
-        <SectionCard
-          title={t('projectExecution.projectDetail.externalRunnerOverrideTitle', 'Project external runner override')}
-          description={t('projectExecution.projectDetail.externalRunnerOverrideDescription', 'Override the platform default external agent command template for this project.')}
-        >
-          <div className="space-y-4 rounded-2xl border border-zinc-200/70 bg-white/70 p-4 dark:border-zinc-800 dark:bg-zinc-950/50">
-            <textarea
-              value={projectCommandTemplate}
-              onChange={(event) => setProjectCommandTemplate(event.target.value)}
-              rows={4}
-              disabled={isFallback}
-              className="w-full rounded-2xl border border-zinc-200 bg-white px-4 py-3 text-sm text-zinc-900 outline-none transition focus:border-indigo-400 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100"
-              placeholder={t('projectExecution.projectDetail.externalRunnerOverridePlaceholder', 'Leave empty to inherit the platform default external runner command')}
-            />
-            <button
-              type="button"
-              onClick={() => void handleSaveProjectCommand()}
-              disabled={isFallback || isSavingProjectCommand}
-              className="rounded-full bg-indigo-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-indigo-500 disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              {isSavingProjectCommand ? t('projectExecution.shared.saving', 'Saving…') : t('projectExecution.projectDetail.saveProjectCommandAction', 'Save project override')}
-            </button>
-          </div>
-        </SectionCard>
 
         <SectionCard
           title={t('projectExecution.projectDetail.projectAgentPoolTitle', 'Project Agent Pool')}
@@ -490,37 +525,59 @@ export const ProjectDetail = () => {
             {bindingError ? <NoticeBanner title={t('projectExecution.projectDetail.projectAgentPoolError', 'Project agent pool issue')} description={bindingError} /> : null}
             {project.agentBindings && project.agentBindings.length > 0 ? (
               <div className="space-y-3">
-                {project.agentBindings.map((binding) => (
-                  <div key={binding.id} className="flex flex-col gap-3 rounded-2xl border border-zinc-200/70 bg-white/70 p-4 dark:border-zinc-800 dark:bg-zinc-950/50 lg:flex-row lg:items-center lg:justify-between">
-                    <div>
-                      <p className="font-medium text-zinc-950 dark:text-zinc-50">{binding.agentName}</p>
-                      <p className="mt-1 text-sm text-zinc-600 dark:text-zinc-400">
-                        {binding.agentType ? t(`agent.typeLabel.${getAgentTypeToken({ type: binding.agentType, runtimeType: binding.preferredRuntimeTypes[0] || 'project_sandbox' } as any)}`, { defaultValue: binding.agentType }) : t('projectExecution.projectDetail.agentTypeUnknown', 'Unknown type')} · {binding.roleHint || t('projectExecution.projectDetail.agentPoolPriority', { value: binding.priority, defaultValue: `Priority ${binding.priority}` })}
-                      </p>
-                      <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
-                        {binding.allowedStepKinds.length > 0
-                          ? t('projectExecution.projectDetail.allowedStepKinds', { value: binding.allowedStepKinds.join(', '), defaultValue: `Allowed step kinds: ${binding.allowedStepKinds.join(', ')}` })
-                          : t('projectExecution.projectDetail.allStepKinds', 'All step kinds')}
-                      </p>
-                      <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
-                        {binding.preferredRuntimeTypes.length > 0
-                          ? t('projectExecution.projectDetail.preferredRuntimeTypes', { value: binding.preferredRuntimeTypes.join(', '), defaultValue: `Preferred runtimes: ${binding.preferredRuntimeTypes.join(', ')}` })
-                          : t('projectExecution.projectDetail.anyRuntimeTypes', 'Any runtime')}
-                      </p>
+                {project.agentBindings.map((binding) => {
+                  const resolvedAgent = availableAgentLookup.get(binding.agentId);
+                  const displayName = resolvedAgent?.name || binding.agentName;
+                  const displayType = resolvedAgent?.type || binding.agentType;
+
+                  return (
+                    <div key={binding.id} className="flex flex-col gap-3 rounded-2xl border border-zinc-200/70 bg-white/70 p-4 dark:border-zinc-800 dark:bg-zinc-950/50 lg:flex-row lg:items-center lg:justify-between">
+                      <div>
+                        <p className="font-medium text-zinc-950 dark:text-zinc-50">{displayName}</p>
+                        <p className="mt-1 text-sm text-zinc-600 dark:text-zinc-400">
+                          {displayType ? t(`agent.typeLabel.${getAgentTypeToken({ type: displayType, runtimeType: binding.preferredRuntimeTypes[0] || 'project_sandbox' } as any)}`, { defaultValue: displayType }) : t('projectExecution.projectDetail.agentTypeUnknown', 'Unknown type')} · {binding.roleHint || t('projectExecution.projectDetail.agentPoolPriority', { value: binding.priority, defaultValue: `Priority ${binding.priority}` })}
+                        </p>
+                        <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
+                          {binding.allowedStepKinds.length > 0
+                            ? t('projectExecution.projectDetail.allowedStepKinds', { value: binding.allowedStepKinds.join(', '), defaultValue: `Allowed step kinds: ${binding.allowedStepKinds.join(', ')}` })
+                            : t('projectExecution.projectDetail.allStepKinds', 'All step kinds')}
+                        </p>
+                        <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
+                          {binding.preferredRuntimeTypes.length > 0
+                            ? t('projectExecution.projectDetail.preferredRuntimeTypes', { value: binding.preferredRuntimeTypes.join(', '), defaultValue: `Preferred runtimes: ${binding.preferredRuntimeTypes.join(', ')}` })
+                            : t('projectExecution.projectDetail.anyRuntimeTypes', 'Any runtime')}
+                        </p>
+                        {resolvedAgent?.externalRuntime && !resolvedAgent.externalRuntime.availableForExecution ? (
+                          <p className="mt-2 text-xs text-amber-700 dark:text-amber-300">
+                            {t(
+                              'projectExecution.projectDetail.externalRuntimeAttention',
+                              'This external agent still needs its Runtime Host setup before it can execute project work.',
+                            )}
+                          </p>
+                        ) : null}
+                      </div>
+                      <div className="flex items-center gap-3">
+                        <StatusBadge status={binding.status} />
+                        {resolvedAgent?.externalRuntime ? (
+                          <Link
+                            to={buildRuntimeHostHref(binding.agentId)}
+                            className="rounded-full border border-indigo-300 px-4 py-2 text-sm font-medium text-indigo-700 transition hover:bg-indigo-50 dark:border-indigo-800 dark:text-indigo-300 dark:hover:bg-indigo-950/40"
+                          >
+                            {t('projectExecution.projectDetail.openRuntimeHostAction', 'Open Runtime Host')}
+                          </Link>
+                        ) : null}
+                        <button
+                          type="button"
+                          onClick={() => void handleRemoveBinding(binding.id)}
+                          disabled={isFallback}
+                          className="rounded-full border border-rose-300 px-4 py-2 text-sm font-medium text-rose-700 transition hover:bg-rose-50 dark:border-rose-800 dark:text-rose-300 dark:hover:bg-rose-950/40 disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                          {t('projectExecution.projectDetail.removeBindingAction', 'Remove')}
+                        </button>
+                      </div>
                     </div>
-                    <div className="flex items-center gap-3">
-                      <StatusBadge status={binding.status} />
-                      <button
-                        type="button"
-                        onClick={() => void handleRemoveBinding(binding.id)}
-                        disabled={isFallback}
-                        className="rounded-full border border-rose-300 px-4 py-2 text-sm font-medium text-rose-700 transition hover:bg-rose-50 dark:border-rose-800 dark:text-rose-300 dark:hover:bg-rose-950/40 disabled:cursor-not-allowed disabled:opacity-50"
-                      >
-                        {t('projectExecution.projectDetail.removeBindingAction', 'Remove')}
-                      </button>
-                    </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             ) : (
               <EmptyState
@@ -550,7 +607,10 @@ export const ProjectDetail = () => {
                     {profile.defaultProvider || 'auto'} / {profile.defaultModel || 'default'}
                   </p>
                   <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
-                    {t('projectExecution.projectDetail.provisioningProfileRuntime', { runtime: profile.runtimeType, selector: profile.preferredNodeSelector || 'auto', defaultValue: `${profile.runtimeType} · node ${profile.preferredNodeSelector || 'auto'}` })}
+                    {t('projectExecution.projectDetail.provisioningProfileRuntime', {
+                      runtime: profile.runtimeType,
+                      defaultValue: profile.runtimeType,
+                    })}
                   </p>
                 </div>
               ))}

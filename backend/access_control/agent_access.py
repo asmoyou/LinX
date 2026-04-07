@@ -207,6 +207,7 @@ def list_accessible_agents(
     access_type: AgentAccessType = "read",
     statuses: Optional[Sequence[str]] = None,
     exclude_agent_ids: Optional[Iterable[UUID]] = None,
+    include_retired: bool = False,
 ) -> list[Agent]:
     context = build_agent_access_context_for_user_id(
         session,
@@ -215,6 +216,8 @@ def list_accessible_agents(
     )
     query = session.query(Agent).options(joinedload(Agent.owner), joinedload(Agent.department))
     query = _query_for_agent_access(query, context=context, access_type=access_type)
+    if not include_retired:
+        query = query.filter(Agent.retired_at.is_(None))
 
     if statuses:
         query = query.filter(Agent.status.in_(list(statuses)))

@@ -19,6 +19,7 @@ vi.mock('@/api/projectExecution', () => ({
     deleteProjectTask: vi.fn(),
     createProjectTaskAndLaunchRun: vi.fn(),
     launchTaskRun: vi.fn(),
+    markRunHandled: vi.fn(),
     rescheduleRun: vi.fn(),
   },
 }));
@@ -55,6 +56,7 @@ const createTaskDetail = (overrides: Record<string, unknown> = {}) => ({
   projectStatus: 'running',
   title: 'Task 1',
   description: 'Do the work',
+  executionMode: 'project_sandbox',
   status: 'running',
   priority: 1,
   updatedAt: now,
@@ -73,6 +75,7 @@ const createRunDetail = (overrides: Record<string, unknown> = {}) => ({
   status: 'running',
   createdAt: now,
   triggerSource: 'manual',
+  alertSignature: '{"status":"running","taskId":null,"taskTitle":null,"failureReason":null,"latestSignal":null}',
   startedAt: now,
   completedAt: null,
   updatedAt: now,
@@ -236,6 +239,56 @@ describe('useProjectExecutionStore', () => {
     expect(mockedApi.getProjectDetail).toHaveBeenCalledWith('project-1');
     expect(mockedApi.listRuns).toHaveBeenCalledTimes(1);
     expect(mockedApi.getRunDetail).toHaveBeenCalledWith('run-1');
+  });
+
+  it('marks a run as handled and refreshes dependent views', async () => {
+    mockedApi.markRunHandled.mockResolvedValue(undefined);
+    mockedApi.listRuns.mockResolvedValue({ data: [], fallback: false });
+    mockedApi.getRunDetail.mockResolvedValue({
+      data: createRunDetail({ handledAt: '2026-04-07T12:10:00.000Z' }),
+      fallback: false,
+    });
+    mockedApi.getProjectDetail.mockResolvedValue({
+      data: createProjectDetail(),
+      fallback: false,
+    });
+
+    useProjectExecutionStore.setState({
+      ...useProjectExecutionStore.getState(),
+      runs: [
+        {
+          id: 'run-1',
+          projectId: 'project-1',
+          projectTitle: 'Project 1',
+          status: 'failed',
+          createdAt: now,
+          triggerSource: 'manual',
+          updatedAt: now,
+          totalTasks: 1,
+          completedTasks: 0,
+          failedTasks: 1,
+        },
+      ],
+    });
+
+    await useProjectExecutionStore
+      .getState()
+      .markRunHandled(
+        'run-1',
+        '2026-04-07T12:10:00.000Z',
+        '{"status":"failed","taskId":null,"taskTitle":null,"failureReason":null,"latestSignal":null}',
+        'user-1',
+      );
+
+    expect(mockedApi.markRunHandled).toHaveBeenCalledWith('run-1', {
+      handledAt: '2026-04-07T12:10:00.000Z',
+      handledSignature:
+        '{"status":"failed","taskId":null,"taskTitle":null,"failureReason":null,"latestSignal":null}',
+      handledByUserId: 'user-1',
+    });
+    expect(mockedApi.listRuns).toHaveBeenCalledTimes(1);
+    expect(mockedApi.getRunDetail).toHaveBeenCalledWith('run-1');
+    expect(mockedApi.getProjectDetail).toHaveBeenCalledWith('project-1');
   });
 
   it('deletes a project and prunes local state', async () => {

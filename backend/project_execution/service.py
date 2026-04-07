@@ -8,6 +8,7 @@ from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
 
 from access_control.permissions import CurrentUser
+from database.models import Agent
 from database.project_execution_models import (
     ProjectAuditEvent,
     ProjectPlan,
@@ -20,6 +21,7 @@ from project_execution.planning import build_step_definitions
 _COMPLETED_STATUSES = {"completed", "done", "success", "succeeded", "approved"}
 _FAILED_STATUSES = {"failed", "error", "cancelled", "canceled"}
 _TERMINAL_RUN_STATUSES = _COMPLETED_STATUSES | _FAILED_STATUSES
+_EPHEMERAL_AGENT_CLEANUP_RUN_STATUSES = _TERMINAL_RUN_STATUSES | {"blocked"}
 
 
 def parse_uuid(value: Any, field_name: str) -> uuid.UUID:
@@ -164,6 +166,59 @@ def _latest_timestamp(values: Iterable[Optional[datetime]]) -> Optional[datetime
     return max(filtered) if filtered else None
 
 
+def retire_ephemeral_run_agents(
+    session: Session,
+    *,
+    run: ProjectRun,
+    tasks: Optional[list[ProjectTask]] = None,
+) -> list[uuid.UUID]:
+    """Retire run-scoped ephemeral agents once a run is no longer actively executing."""
+    normalized_status = _normalize_status(run.status)
+    if normalized_status not in _EPHEMERAL_AGENT_CLEANUP_RUN_STATUSES:
+        return []
+
+    target_agent_ids: set[uuid.UUID] = {
+        task.assignee_agent_id
+        for task in (tasks or [])
+        if getattr(task, "assignee_agent_id", None) is not None
+    }
+
+    runtime_context = run.runtime_context or {}
+    if isinstance(runtime_context, dict):
+        assignment = runtime_context.get("agent_assignment") or runtime_context.get("executor_assignment")
+        if isinstance(assignment, dict):
+            raw_agent_id = assignment.get("agent_id")
+            try:
+                if raw_agent_id:
+                    target_agent_ids.add(uuid.UUID(str(raw_agent_id)))
+            except (TypeError, ValueError):
+                pass
+
+    if not target_agent_ids:
+        return []
+
+    now = datetime.now(timezone.utc)
+    agents = (
+        session.query(Agent)
+        .filter(Agent.agent_id.in_(list(target_agent_ids)))
+        .filter(Agent.is_ephemeral.is_(True))
+        .filter(Agent.lifecycle_scope == "current_run")
+        .filter(Agent.retired_at.is_(None))
+        .all()
+    )
+    if not agents:
+        return []
+
+    retired_ids: list[uuid.UUID] = []
+    for agent in agents:
+        agent.status = "offline"
+        agent.retired_at = now
+        retired_ids.append(agent.agent_id)
+
+    session.flush()
+    return retired_ids
+
+
 def reconcile_run_state(
     session: Session,
     *,
@@ -231,6 +286,8 @@ def reconcile_run_state(
         session.flush()
         session.refresh(target_run)
 
+    retire_ephemeral_run_agents(session, run=target_run, tasks=tasks)
+
     return target_run
 
 
@@ -260,7 +317,8 @@ def create_project_task_and_launch_run(
     next_plan_version = (
         session.query(ProjectPlan).filter(ProjectPlan.project_id == project_id).count() + 1
     )
-    step_definitions = build_step_definitions(title, description)
+    execution_mode = str((input_payload or {}).get("execution_mode") or "auto")
+    step_definitions = build_step_definitions(title, description, execution_mode=execution_mode)
 
     task = ProjectTask(
         project_id=project_id,
@@ -294,6 +352,7 @@ def create_project_task_and_launch_run(
         definition={
             "project_task_id": str(task.project_task_id),
             "task_title": title,
+            "execution_mode": execution_mode,
             "nodes": step_definitions,
         },
         created_by_user_id=actor_user_id,
@@ -326,6 +385,7 @@ def create_project_task_and_launch_run(
         runtime_context={
             "project_task_id": str(task.project_task_id),
             "task_title": title,
+            "execution_mode": execution_mode,
             "step_count": len(step_definitions),
         },
         requested_by_user_id=actor_user_id,

@@ -185,6 +185,9 @@ describe('projectExecutionApi run lifecycle normalization', () => {
       status: 'completed',
       createdAt: '2026-04-07T10:59:00.000Z',
       triggerSource: 'manual',
+      taskId: 'task-2',
+      taskTitle: 'Finish delivery',
+      failureReason: null,
       totalTasks: 1,
       completedTasks: 1,
       completedAt: '2026-04-07T11:20:00.000Z',
@@ -288,6 +291,8 @@ describe('projectExecutionApi run lifecycle normalization', () => {
       id: 'run-3b',
       createdAt: '2026-04-07T11:58:00.000Z',
       triggerSource: 'plan_generated',
+      taskId: 'task-3',
+      taskTitle: 'Investigate alert',
     });
     expect(result.data.recentActivity.map((item) => item.id)).toEqual([
       'project-project-3',

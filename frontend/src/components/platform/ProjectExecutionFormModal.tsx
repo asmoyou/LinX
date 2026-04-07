@@ -1,11 +1,115 @@
-import { useEffect, useMemo, useState, type FormEvent } from 'react';
+import { useMemo, useState, type FormEvent } from 'react';
 import { Loader2, Play, Plus } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
 import { LayoutModal } from '@/components/LayoutModal';
+import {
+  getProjectExecutionPlanPreview,
+  normalizeProjectExecutionMode,
+  type ProjectExecutionMode,
+} from '@/utils/projectExecutionPlanning';
 
 const inputClassName =
   'w-full rounded-2xl border border-zinc-200 bg-white px-4 py-3 text-sm text-zinc-900 outline-none transition focus:border-indigo-400 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100';
+
+const previewCardClassName =
+  'rounded-2xl border border-zinc-200/70 bg-zinc-50/70 p-4 dark:border-zinc-800 dark:bg-zinc-900/60';
+
+interface ExecutionPreviewPanelProps {
+  title: string;
+  description?: string | null;
+  executionMode?: ProjectExecutionMode;
+}
+
+const ExecutionPreviewPanel = ({ title, description, executionMode = 'auto' }: ExecutionPreviewPanelProps) => {
+  const { t } = useTranslation();
+  const preview = useMemo(
+    () => getProjectExecutionPlanPreview(title, description, executionMode),
+    [description, executionMode, title],
+  );
+
+  return (
+    <div className={previewCardClassName}>
+      <p className="text-sm font-semibold text-zinc-700 dark:text-zinc-200">
+        {t('projectExecution.modals.executionPreviewTitle', 'Execution preview')}
+      </p>
+      <div className="mt-3 grid gap-3 md:grid-cols-3">
+        <div>
+          <p className="text-xs uppercase tracking-[0.14em] text-zinc-500 dark:text-zinc-400">
+            {t('projectExecution.modals.executionPreviewInitialStep', 'Initial step')}
+          </p>
+          <p className="mt-2 text-sm font-medium text-zinc-950 dark:text-zinc-50">
+            {t(`projectExecution.modals.stepKind.${preview.initialStepKind}`, {
+              defaultValue: preview.initialStepKind,
+            })}
+          </p>
+        </div>
+        <div>
+          <p className="text-xs uppercase tracking-[0.14em] text-zinc-500 dark:text-zinc-400">
+            {t('projectExecution.modals.executionPreviewRuntime', 'Expected runtime')}
+          </p>
+          <p className="mt-2 text-sm font-medium text-zinc-950 dark:text-zinc-50">
+            {t(`projectExecution.modals.runtimeType.${preview.runtimeType}`, {
+              defaultValue: preview.runtimeType,
+            })}
+          </p>
+        </div>
+        <div>
+          <p className="text-xs uppercase tracking-[0.14em] text-zinc-500 dark:text-zinc-400">
+            {t('projectExecution.modals.executionPreviewShape', 'Plan shape')}
+          </p>
+          <p className="mt-2 text-sm font-medium text-zinc-950 dark:text-zinc-50">
+            {preview.isMultiStep
+              ? t('projectExecution.modals.executionPreviewShapeMulti', 'Multi-step')
+              : t('projectExecution.modals.executionPreviewShapeSingle', 'Single-step')}
+          </p>
+        </div>
+      </div>
+
+      {preview.requiresExternalRuntime ? (
+        <div className="mt-4 rounded-2xl border border-rose-300/70 bg-rose-50 px-4 py-3 text-sm text-rose-700 dark:border-rose-900/60 dark:bg-rose-950/30 dark:text-rose-300">
+          {t(
+            'projectExecution.modals.executionPreviewHostWarning',
+            'This task looks like a host action. It will require a bound external agent with a configured launch command, otherwise the run will be blocked.',
+          )}
+        </div>
+      ) : null}
+    </div>
+  );
+};
+
+const ExecutionModeField = ({
+  value,
+  onChange,
+}: {
+  value: ProjectExecutionMode;
+  onChange: (value: ProjectExecutionMode) => void;
+}) => {
+  const { t } = useTranslation();
+
+  return (
+    <label className="space-y-2 block">
+      <span className="text-sm font-semibold text-zinc-700 dark:text-zinc-200">
+        {t('projectExecution.modals.executionModeTitle', 'Execution mode')}
+      </span>
+      <select
+        value={value}
+        onChange={(event) => onChange(normalizeProjectExecutionMode(event.target.value))}
+        className={inputClassName}
+      >
+        <option value="auto">
+          {t('projectExecution.modals.executionMode.auto', 'Auto')}
+        </option>
+        <option value="project_sandbox">
+          {t('projectExecution.modals.executionMode.project_sandbox', 'Project sandbox')}
+        </option>
+        <option value="external_runtime">
+          {t('projectExecution.modals.executionMode.external_runtime', 'External runtime')}
+        </option>
+      </select>
+    </label>
+  );
+};
 
 interface ProjectCreateModalProps {
   isOpen: boolean;
@@ -21,16 +125,43 @@ export const ProjectCreateModal = ({
   onSubmit,
 }: ProjectCreateModalProps) => {
   const { t } = useTranslation();
+
+  return (
+    <LayoutModal
+      isOpen={isOpen}
+      onClose={onClose}
+      closeOnBackdropClick={!isSubmitting}
+      closeOnEscape={!isSubmitting}
+      title={t('projectExecution.modals.projectCreateTitle', 'Create Project')}
+      description={t('projectExecution.modals.projectCreateDescription', 'Create a business container for a new project space. Tasks, runs, and deliverables will belong to this project.')}
+      size="xl"
+    >
+      {isOpen ? (
+        <ProjectCreateModalBody
+          isSubmitting={isSubmitting}
+          onClose={onClose}
+          onSubmit={onSubmit}
+        />
+      ) : null}
+    </LayoutModal>
+  );
+};
+
+interface ProjectCreateModalBodyProps {
+  isSubmitting: boolean;
+  onClose: () => void;
+  onSubmit: (payload: { name: string; description?: string }) => Promise<void>;
+}
+
+const ProjectCreateModalBody = ({
+  isSubmitting,
+  onClose,
+  onSubmit,
+}: ProjectCreateModalBodyProps) => {
+  const { t } = useTranslation();
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
   const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (!isOpen) return;
-    setName('');
-    setDescription('');
-    setError(null);
-  }, [isOpen]);
 
   const disabled = isSubmitting || !name.trim();
 
@@ -43,38 +174,8 @@ export const ProjectCreateModal = ({
     setError(null);
     await onSubmit({ name: name.trim(), description: description.trim() || undefined });
   };
-
   return (
-    <LayoutModal
-      isOpen={isOpen}
-      onClose={onClose}
-      closeOnBackdropClick={!isSubmitting}
-      closeOnEscape={!isSubmitting}
-      title={t('projectExecution.modals.projectCreateTitle', 'Create Project')}
-      description={t('projectExecution.modals.projectCreateDescription', 'Create a business container for a new project space. Tasks, runs, and deliverables will belong to this project.')}
-      size="xl"
-      footer={
-        <div className="flex items-center justify-end gap-3">
-          <button
-            type="button"
-            onClick={onClose}
-            disabled={isSubmitting}
-            className="rounded-full px-4 py-2 text-sm font-semibold text-zinc-600 transition hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-800 disabled:opacity-50"
-          >
-            {t('projectExecution.shared.cancel', 'Cancel')}
-          </button>
-          <button
-            form="project-create-form"
-            type="submit"
-            disabled={disabled}
-            className="inline-flex items-center gap-2 rounded-full bg-indigo-600 px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-indigo-500 disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            {isSubmitting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
-            {t('projectExecution.shared.createProject', 'Create Project')}
-          </button>
-        </div>
-      }
-    >
+    <>
       <form id="project-create-form" onSubmit={handleSubmit} className="space-y-5">
         <label className="space-y-2 block">
           <span className="text-sm font-semibold text-zinc-700 dark:text-zinc-200">{t('projectExecution.modals.projectName', 'Project Name')}</span>
@@ -100,7 +201,26 @@ export const ProjectCreateModal = ({
 
         {error ? <p className="text-sm text-rose-600 dark:text-rose-400">{error}</p> : null}
       </form>
-    </LayoutModal>
+      <div className="mt-6 flex items-center justify-end gap-3">
+        <button
+          type="button"
+          onClick={onClose}
+          disabled={isSubmitting}
+          className="rounded-full px-4 py-2 text-sm font-semibold text-zinc-600 transition hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-800 disabled:opacity-50"
+        >
+          {t('projectExecution.shared.cancel', 'Cancel')}
+        </button>
+        <button
+          form="project-create-form"
+          type="submit"
+          disabled={disabled}
+          className="inline-flex items-center gap-2 rounded-full bg-indigo-600 px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-indigo-500 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          {isSubmitting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
+          {t('projectExecution.shared.createProject', 'Create Project')}
+        </button>
+      </div>
+    </>
   );
 };
 
@@ -109,7 +229,12 @@ interface ProjectTaskCreateModalProps {
   projectTitle?: string | null;
   isSubmitting?: boolean;
   onClose: () => void;
-  onSubmit: (payload: { title: string; description?: string; autoStart?: boolean }) => Promise<void>;
+  onSubmit: (payload: {
+    title: string;
+    description?: string;
+    autoStart?: boolean;
+    executionMode?: ProjectExecutionMode;
+  }) => Promise<void>;
 }
 
 export const ProjectTaskCreateModal = ({
@@ -120,30 +245,6 @@ export const ProjectTaskCreateModal = ({
   onSubmit,
 }: ProjectTaskCreateModalProps) => {
   const { t } = useTranslation();
-  const [title, setTitle] = useState('');
-  const [description, setDescription] = useState('');
-  const [error, setError] = useState<string | null>(null);
-  const [autoStart, setAutoStart] = useState(true);
-
-  useEffect(() => {
-    if (!isOpen) return;
-    setTitle('');
-    setDescription('');
-    setError(null);
-    setAutoStart(true);
-  }, [isOpen]);
-
-  const disabled = isSubmitting || !title.trim();
-
-  const handleSubmit = async (event: FormEvent) => {
-    event.preventDefault();
-    if (!title.trim()) {
-      setError(t('projectExecution.modals.taskTitleRequired', 'Please enter a task title'));
-      return;
-    }
-    setError(null);
-    await onSubmit({ title: title.trim(), description: description.trim() || undefined, autoStart });
-  };
 
   return (
     <LayoutModal
@@ -154,28 +255,61 @@ export const ProjectTaskCreateModal = ({
       title={t('projectExecution.modals.taskCreateTitle', 'Create Task')}
       description={projectTitle ? t('projectExecution.modals.taskCreateDescriptionWithProject', { projectTitle, defaultValue: `Project: ${projectTitle}` }) : t('projectExecution.modals.taskCreateDescription', 'Create a new project task.')}
       size="xl"
-      footer={
-        <div className="flex items-center justify-end gap-3">
-          <button
-            type="button"
-            onClick={onClose}
-            disabled={isSubmitting}
-            className="rounded-full px-4 py-2 text-sm font-semibold text-zinc-600 transition hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-800 disabled:opacity-50"
-          >
-            {t('projectExecution.shared.cancel', 'Cancel')}
-          </button>
-          <button
-            form="project-task-create-form"
-            type="submit"
-            disabled={disabled}
-            className="inline-flex items-center gap-2 rounded-full bg-indigo-600 px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-indigo-500 disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            {isSubmitting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
-            {autoStart ? t('projectExecution.modals.taskCreateAndStart', 'Create and start run') : t('projectExecution.modals.taskCreateOnly', 'Create task only')}
-          </button>
-        </div>
-      }
     >
+      {isOpen ? (
+        <ProjectTaskCreateModalBody
+          projectTitle={projectTitle}
+          isSubmitting={isSubmitting}
+          onClose={onClose}
+          onSubmit={onSubmit}
+        />
+      ) : null}
+    </LayoutModal>
+  );
+};
+
+interface ProjectTaskCreateModalBodyProps {
+  projectTitle?: string | null;
+  isSubmitting: boolean;
+  onClose: () => void;
+  onSubmit: (payload: {
+    title: string;
+    description?: string;
+    autoStart?: boolean;
+    executionMode?: ProjectExecutionMode;
+  }) => Promise<void>;
+}
+
+const ProjectTaskCreateModalBody = ({
+  isSubmitting,
+  onClose,
+  onSubmit,
+}: ProjectTaskCreateModalBodyProps) => {
+  const { t } = useTranslation();
+  const [title, setTitle] = useState('');
+  const [description, setDescription] = useState('');
+  const [error, setError] = useState<string | null>(null);
+  const [autoStart, setAutoStart] = useState(true);
+  const [executionMode, setExecutionMode] = useState<ProjectExecutionMode>('auto');
+
+  const disabled = isSubmitting || !title.trim();
+
+  const handleSubmit = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!title.trim()) {
+      setError(t('projectExecution.modals.taskTitleRequired', 'Please enter a task title'));
+      return;
+    }
+    setError(null);
+    await onSubmit({
+      title: title.trim(),
+      description: description.trim() || undefined,
+      autoStart,
+      executionMode,
+    });
+  };
+  return (
+    <>
       <form id="project-task-create-form" onSubmit={handleSubmit} className="space-y-5">
         <label className="space-y-2 block">
           <span className="text-sm font-semibold text-zinc-700 dark:text-zinc-200">{t('projectExecution.modals.taskTitle', 'Task Title')}</span>
@@ -199,6 +333,14 @@ export const ProjectTaskCreateModal = ({
           />
         </label>
 
+        <ExecutionModeField value={executionMode} onChange={setExecutionMode} />
+
+        <ExecutionPreviewPanel
+          title={title}
+          description={description}
+          executionMode={executionMode}
+        />
+
         <label className="flex items-center gap-3 rounded-2xl border border-zinc-200 bg-zinc-50/70 px-4 py-3 text-sm text-zinc-700 dark:border-zinc-700 dark:bg-zinc-900/60 dark:text-zinc-200">
           <input
             type="checkbox"
@@ -211,7 +353,26 @@ export const ProjectTaskCreateModal = ({
 
         {error ? <p className="text-sm text-rose-600 dark:text-rose-400">{error}</p> : null}
       </form>
-    </LayoutModal>
+      <div className="mt-6 flex items-center justify-end gap-3">
+        <button
+          type="button"
+          onClick={onClose}
+          disabled={isSubmitting}
+          className="rounded-full px-4 py-2 text-sm font-semibold text-zinc-600 transition hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-800 disabled:opacity-50"
+        >
+          {t('projectExecution.shared.cancel', 'Cancel')}
+        </button>
+        <button
+          form="project-task-create-form"
+          type="submit"
+          disabled={disabled}
+          className="inline-flex items-center gap-2 rounded-full bg-indigo-600 px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-indigo-500 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          {isSubmitting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
+          {autoStart ? t('projectExecution.modals.taskCreateAndStart', 'Create and start run') : t('projectExecution.modals.taskCreateOnly', 'Create task only')}
+        </button>
+      </div>
+    </>
   );
 };
 
@@ -220,8 +381,9 @@ interface LaunchRunModalProps {
   isSubmitting?: boolean;
   taskTitle: string;
   taskDescription?: string | null;
+  initialExecutionMode?: ProjectExecutionMode;
   onClose: () => void;
-  onSubmit: () => Promise<void>;
+  onSubmit: (executionMode: ProjectExecutionMode) => Promise<void>;
 }
 
 export const LaunchRunModal = ({
@@ -229,17 +391,11 @@ export const LaunchRunModal = ({
   isSubmitting = false,
   taskTitle,
   taskDescription,
+  initialExecutionMode = 'auto',
   onClose,
   onSubmit,
 }: LaunchRunModalProps) => {
   const { t } = useTranslation();
-  const helperText = useMemo(
-    () =>
-      taskDescription?.trim()
-        ? taskDescription.trim()
-        : t('projectExecution.modals.launchRunHelperFallback', 'A plan, run, and first execution step will be created automatically for this task.'),
-    [taskDescription],
-  );
 
   return (
     <LayoutModal
@@ -250,28 +406,47 @@ export const LaunchRunModal = ({
       title={t('projectExecution.modals.launchRunTitle', 'Start Run')}
       description={t('projectExecution.modals.launchRunDescription', 'Confirm to generate a plan and start execution for the current task.')}
       size="lg"
-      footer={
-        <div className="flex items-center justify-end gap-3">
-          <button
-            type="button"
-            onClick={onClose}
-            disabled={isSubmitting}
-            className="rounded-full px-4 py-2 text-sm font-semibold text-zinc-600 transition hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-800 disabled:opacity-50"
-          >
-            {t('projectExecution.shared.cancel', 'Cancel')}
-          </button>
-          <button
-            type="button"
-            onClick={() => void onSubmit()}
-            disabled={isSubmitting}
-            className="inline-flex items-center gap-2 rounded-full bg-indigo-600 px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-indigo-500 disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            {isSubmitting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
-            {t('projectExecution.modals.launchRunAction', 'Generate Plan and Start')}
-          </button>
-        </div>
-      }
+      footer={null}
     >
+      {isOpen ? (
+        <LaunchRunModalBody
+          isSubmitting={isSubmitting}
+          taskTitle={taskTitle}
+          taskDescription={taskDescription}
+          initialExecutionMode={initialExecutionMode}
+          onClose={onClose}
+          onSubmit={onSubmit}
+        />
+      ) : null}
+    </LayoutModal>
+  );
+};
+
+interface LaunchRunModalBodyProps {
+  isSubmitting: boolean;
+  taskTitle: string;
+  taskDescription?: string | null;
+  initialExecutionMode: ProjectExecutionMode;
+  onClose: () => void;
+  onSubmit: (executionMode: ProjectExecutionMode) => Promise<void>;
+}
+
+const LaunchRunModalBody = ({
+  isSubmitting,
+  taskTitle,
+  taskDescription,
+  initialExecutionMode,
+  onClose,
+  onSubmit,
+}: LaunchRunModalBodyProps) => {
+  const { t } = useTranslation();
+  const [executionMode, setExecutionMode] = useState<ProjectExecutionMode>(initialExecutionMode);
+  const helperText =
+    taskDescription?.trim() ||
+    t('projectExecution.modals.launchRunHelperFallback', 'A plan, run, and first execution step will be created automatically for this task.');
+
+  return (
+    <>
       <div className="space-y-4">
         <div className="rounded-2xl border border-zinc-200/70 bg-zinc-50/70 p-4 dark:border-zinc-800 dark:bg-zinc-900/60">
           <p className="text-sm font-semibold text-zinc-700 dark:text-zinc-200">{t('projectExecution.modals.taskTitle', 'Task Title')}</p>
@@ -281,7 +456,32 @@ export const LaunchRunModal = ({
           <p className="text-sm font-semibold text-zinc-700 dark:text-zinc-200">{t('projectExecution.shared.run', 'Run')} {t('projectExecution.modals.taskDescription', 'Description')}</p>
           <p className="mt-2 text-sm leading-6 text-zinc-600 dark:text-zinc-400">{helperText}</p>
         </div>
+        <ExecutionModeField value={executionMode} onChange={setExecutionMode} />
+        <ExecutionPreviewPanel
+          title={taskTitle}
+          description={taskDescription}
+          executionMode={executionMode}
+        />
       </div>
-    </LayoutModal>
+      <div className="mt-6 flex items-center justify-end gap-3">
+        <button
+          type="button"
+          onClick={onClose}
+          disabled={isSubmitting}
+          className="rounded-full px-4 py-2 text-sm font-semibold text-zinc-600 transition hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-800 disabled:opacity-50"
+        >
+          {t('projectExecution.shared.cancel', 'Cancel')}
+        </button>
+        <button
+          type="button"
+          onClick={() => void onSubmit(executionMode)}
+          disabled={isSubmitting}
+          className="inline-flex items-center gap-2 rounded-full bg-indigo-600 px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-indigo-500 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          {isSubmitting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
+          {t('projectExecution.modals.launchRunAction', 'Generate Plan and Start')}
+        </button>
+      </div>
+    </>
   );
 };

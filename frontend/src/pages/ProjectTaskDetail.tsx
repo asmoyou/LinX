@@ -12,7 +12,7 @@ import {
   StatusBadge,
 } from '@/components/platform/PlatformUi';
 import { useProjectExecutionStore } from '@/stores/projectExecutionStore';
-import { formatDateTime } from '@/utils/platformFormatting';
+import { formatDateTime, formatTokenLabel } from '@/utils/platformFormatting';
 
 export const ProjectTaskDetail = () => {
   const navigate = useNavigate();
@@ -61,7 +61,9 @@ export const ProjectTaskDetail = () => {
     }
   };
 
-  const handleLaunchRun = async () => {
+  const handleLaunchRun = async (
+    executionMode: 'auto' | 'project_sandbox' | 'external_runtime' = 'auto',
+  ) => {
     if (!projectId || !taskId || !task) return;
 
     try {
@@ -71,6 +73,7 @@ export const ProjectTaskDetail = () => {
         taskId,
         title: task.title,
         description: task.description,
+        executionMode,
       });
       toast.success(t('projectExecution.taskDetail.launchSuccess', 'Plan generated and run started'));
       setIsLaunchModalOpen(false);
@@ -123,6 +126,13 @@ export const ProjectTaskDetail = () => {
           />
         ) : null}
 
+        {['failed', 'blocked', 'cancelled'].includes(String(task.status).toLowerCase()) && task.latestResult ? (
+          <NoticeBanner
+            title={t('projectExecution.taskDetail.failureTitle', 'Task failure reason')}
+            description={task.latestResult}
+          />
+        ) : null}
+
         <section className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
           <div className="max-w-3xl space-y-3">
             <p className="text-sm font-semibold uppercase tracking-[0.22em] text-indigo-500">{t('projectExecution.shared.task', 'Task')}</p>
@@ -152,7 +162,7 @@ export const ProjectTaskDetail = () => {
         </section>
 
         <SectionCard title={t('projectExecution.taskDetail.executionContextTitle', 'Execution context')} description={t('projectExecution.taskDetail.executionContextDescription', 'Task-level runtime and assignment metadata.')}>
-          <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+          <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
             <div className="rounded-2xl border border-zinc-200/70 bg-white/70 p-4 dark:border-zinc-800 dark:bg-zinc-950/50">
               <p className="text-sm font-medium text-zinc-500 dark:text-zinc-400">{t('projectExecution.taskDetail.assignedAgent', 'Assigned Agent')}</p>
               <p className="mt-2 text-sm text-zinc-800 dark:text-zinc-200">
@@ -161,6 +171,18 @@ export const ProjectTaskDetail = () => {
               <p className="mt-3 text-sm font-medium text-zinc-500 dark:text-zinc-400">{t('projectExecution.taskDetail.assignedSkills', 'Assigned skills')}</p>
               <p className="mt-2 text-sm text-zinc-800 dark:text-zinc-200">
                 {task.assignedSkillNames.length > 0 ? task.assignedSkillNames.join(', ') : t('projectExecution.taskDetail.noSkills', 'No skills linked')}
+              </p>
+            </div>
+            <div className="rounded-2xl border border-zinc-200/70 bg-white/70 p-4 dark:border-zinc-800 dark:bg-zinc-950/50">
+              <p className="text-sm font-medium text-zinc-500 dark:text-zinc-400">
+                {t('projectExecution.taskDetail.executionModeLabel', 'Execution Mode')}
+              </p>
+              <p className="mt-2 text-sm text-zinc-800 dark:text-zinc-200">
+                {task.executionMode
+                  ? t(`projectExecution.modals.executionMode.${task.executionMode}`, {
+                      defaultValue: formatTokenLabel(task.executionMode),
+                    })
+                  : t('projectExecution.taskDetail.executionModeUnknown', 'Auto')}
               </p>
             </div>
             <div className="rounded-2xl border border-zinc-200/70 bg-white/70 p-4 dark:border-zinc-800 dark:bg-zinc-950/50">
@@ -217,6 +239,7 @@ export const ProjectTaskDetail = () => {
         isSubmitting={isLaunching}
         taskTitle={task.title}
         taskDescription={task.description}
+        initialExecutionMode={(task.executionMode as any) || 'auto'}
         onClose={() => setIsLaunchModalOpen(false)}
         onSubmit={handleLaunchRun}
       />

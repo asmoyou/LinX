@@ -88,7 +88,6 @@ export interface AgentProvisioningProfile {
   defaultProvider?: string | null;
   defaultModel?: string | null;
   runtimeType: string;
-  preferredNodeSelector?: string | null;
   sandboxMode: string;
   ephemeral: boolean;
   createdAt: string;
@@ -146,6 +145,7 @@ export interface ProjectTaskDetail extends ProjectTaskSummary {
   projectTitle: string;
   projectStatus: PlatformStatus;
   description: string;
+  executionMode?: string | null;
   acceptanceCriteria?: string | null;
   assignedSkillNames: string[];
   latestResult?: string | null;
@@ -160,6 +160,13 @@ export interface RunSummary {
   status: PlatformStatus;
   createdAt: string;
   triggerSource: string;
+  executionMode?: string | null;
+  taskId?: string | null;
+  taskTitle?: string | null;
+  failureReason?: string | null;
+  handledAt?: string | null;
+  handledSignature?: string | null;
+  alertSignature?: string | null;
   startedAt?: string | null;
   completedAt?: string | null;
   updatedAt: string;

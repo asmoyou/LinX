@@ -11,6 +11,7 @@ import {
   SectionCard,
   StatusBadge,
 } from '@/components/platform/PlatformUi';
+import { useAuthStore } from '@/stores/authStore';
 import { useProjectExecutionStore } from '@/stores/projectExecutionStore';
 import {
   formatDateTime,
@@ -20,10 +21,19 @@ import {
   formatTokenLabel,
 } from '@/utils/platformFormatting';
 
+const isRunHandled = (detail: {
+  handledAt?: string | null;
+  handledSignature?: string | null;
+  alertSignature?: string | null;
+}): boolean =>
+  Boolean(detail.handledAt && detail.handledSignature && detail.handledSignature === detail.alertSignature);
+
 export const RunDetail = () => {
   const { t } = useTranslation();
   const { runId = '' } = useParams();
   const [isRescheduling, setIsRescheduling] = useState(false);
+  const [isMarkingHandled, setIsMarkingHandled] = useState(false);
+  const currentUser = useAuthStore((state) => state.user);
   const detail = useProjectExecutionStore((state) =>
     runId ? state.runDetails[runId] : undefined,
   );
@@ -31,6 +41,7 @@ export const RunDetail = () => {
   const error = useProjectExecutionStore((state) => state.errors.runDetail);
   const fallbackSections = useProjectExecutionStore((state) => state.fallbackSections);
   const loadRunDetail = useProjectExecutionStore((state) => state.loadRunDetail);
+  const markRunHandled = useProjectExecutionStore((state) => state.markRunHandled);
   const rescheduleRun = useProjectExecutionStore((state) => state.rescheduleRun);
 
   useEffect(() => {
@@ -58,6 +69,28 @@ export const RunDetail = () => {
       toast.error(message);
     } finally {
       setIsRescheduling(false);
+    }
+  };
+
+  const handleMarkHandled = async () => {
+    if (!runId || !detail?.alertSignature) return;
+    try {
+      setIsMarkingHandled(true);
+      await markRunHandled(
+        runId,
+        new Date().toISOString(),
+        detail.alertSignature,
+        currentUser?.id || null,
+      );
+      toast.success(t('projectExecution.runCenter.markHandledSuccess', 'Run marked as handled'));
+    } catch (markError) {
+      const message =
+        markError instanceof Error
+          ? markError.message
+          : t('projectExecution.runCenter.markHandledError', 'Failed to mark run as handled');
+      toast.error(message);
+    } finally {
+      setIsMarkingHandled(false);
     }
   };
 
@@ -108,6 +141,16 @@ export const RunDetail = () => {
             </div>
             <p className="mt-3 text-sm leading-6 text-zinc-600 dark:text-zinc-400">{detail.projectSummary}</p>
             <div className="mt-4 flex flex-wrap gap-3 text-xs text-zinc-500 dark:text-zinc-400">
+              {detail.executionMode ? (
+                <span>
+                  {t('projectExecution.runDetail.executionModePrefix', {
+                    value: t(`projectExecution.modals.executionMode.${detail.executionMode}`, {
+                      defaultValue: formatTokenLabel(detail.executionMode),
+                    }),
+                    defaultValue: `Mode ${formatTokenLabel(detail.executionMode)}`,
+                  })}
+                </span>
+              ) : null}
               <span>
                 {t('projectExecution.runDetail.triggerPrefix', {
                   value: formatTokenLabel(detail.triggerSource),
@@ -130,6 +173,22 @@ export const RunDetail = () => {
           </div>
 
           <div className="flex flex-wrap gap-3">
+            {!isRunHandled(detail) ? (
+              <button
+                type="button"
+                onClick={handleMarkHandled}
+                disabled={isMarkingHandled}
+                className="rounded-full border border-zinc-300 px-4 py-2 text-sm font-medium text-zinc-700 transition hover:border-zinc-400 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-200 dark:hover:border-zinc-600 dark:hover:bg-zinc-900 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {isMarkingHandled
+                  ? t('projectExecution.shared.saving', 'Saving…')
+                  : t('projectExecution.runCenter.markHandledAction', 'Mark Handled')}
+              </button>
+            ) : (
+              <div className="rounded-full bg-zinc-100 px-4 py-2 text-sm font-medium text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300">
+                {t('projectExecution.runCenter.handledStatus', 'Handled')}
+              </div>
+            )}
             <button
               type="button"
               onClick={handleReschedule}
@@ -154,6 +213,41 @@ export const RunDetail = () => {
       ) : null}
 
       {error ? <NoticeBanner title={t('projectExecution.runDetail.errorTitle', 'Run detail issue')} description={error} /> : null}
+
+      {detail.failureReason ? (
+        <NoticeBanner
+          title={t('projectExecution.runDetail.failureTitle', 'Run failure reason')}
+          description={detail.failureReason}
+        />
+      ) : null}
+
+      {detail.taskId || detail.taskTitle ? (
+        <SectionCard
+          title={t('projectExecution.runDetail.sourceTaskTitle', 'Source task')}
+          description={t('projectExecution.runDetail.sourceTaskDescription', 'The task that triggered or currently anchors this run.')}
+        >
+          <div className="flex flex-col gap-4 rounded-[20px] border border-zinc-200/70 bg-zinc-50/70 px-4 py-4 dark:border-zinc-800 dark:bg-zinc-900/60 lg:flex-row lg:items-center lg:justify-between">
+            <div>
+              <p className="font-medium text-zinc-950 dark:text-zinc-50">
+                {detail.taskTitle || detail.taskId}
+              </p>
+              {detail.taskId ? (
+                <p className="mt-1 text-sm text-zinc-600 dark:text-zinc-400">
+                  {detail.taskId}
+                </p>
+              ) : null}
+            </div>
+            {detail.taskId ? (
+              <Link
+                to={`/projects/${detail.projectId}/tasks/${detail.taskId}`}
+                className="rounded-full border border-zinc-300 px-4 py-2 text-sm font-medium text-zinc-700 transition hover:border-zinc-400 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-200 dark:hover:border-zinc-600 dark:hover:bg-zinc-900"
+              >
+                {t('projectExecution.runDetail.openTaskAction', 'Open Task')}
+              </Link>
+            ) : null}
+          </div>
+        </SectionCard>
+      ) : null}
 
       {detail.executorAssignment || detail.runWorkspaceRoot ? (
         <SectionCard
