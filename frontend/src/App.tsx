@@ -214,7 +214,7 @@ const AnimatedRoutes = ({ setupStatus, onSetupStatusRefresh }: AnimatedRoutesPro
             path="projects/:projectId/tasks/:taskId"
             element={wrapPage('Project Task Detail', <ProjectTaskDetail />)}
           />
-          <Route path="runs" element={wrapPage('Run Center', <RunCenter />)} />
+          <Route path="runs" element={wrapPage('Run Alerts', <RunCenter />)} />
           <Route path="runs/:runId" element={wrapPage('Run Detail', <RunDetail />)} />
           <Route path="skill-hub" element={<Navigate to="/skills/library?section=library" replace />} />
           <Route path="extensions" element={<Navigate to="/skills/library?section=mcp_servers" replace />} />

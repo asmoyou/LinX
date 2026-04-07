@@ -11,6 +11,27 @@ export const formatDateTime = (value?: string | null): string => {
   return parsed.toLocaleString();
 };
 
+export const formatTokenLabel = (value?: string | null): string => {
+  if (!value) {
+    return '—';
+  }
+
+  return value
+    .replace(/[_-]+/g, ' ')
+    .split(' ')
+    .filter(Boolean)
+    .map((token) => token.charAt(0).toUpperCase() + token.slice(1).toLowerCase())
+    .join(' ');
+};
+
+export const formatRunLabel = (runId?: string | null): string => {
+  if (!runId) {
+    return 'Run';
+  }
+
+  return `Run #${runId.slice(0, 8)}`;
+};
+
 export const formatDuration = (start?: string | null, end?: string | null): string => {
   if (!start) {
     return 'Not started';

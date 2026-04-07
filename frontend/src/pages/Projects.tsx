@@ -88,11 +88,6 @@ export const Projects = () => {
               className="rounded-full bg-indigo-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-indigo-500"
             >{t('projectExecution.shared.createProject', 'Create Project')}
             </button>
-            <Link
-              to="/runs"
-              className="rounded-full border border-zinc-300 px-4 py-2 text-sm font-medium text-zinc-700 transition hover:border-zinc-400 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-200 dark:hover:border-zinc-600 dark:hover:bg-zinc-900"
-            >{t('projectExecution.shared.openRunCenter', 'Open Run Center')}
-            </Link>
           </div>
         </section>
 
@@ -178,30 +173,19 @@ export const Projects = () => {
                       </p>
                     </div>
                     <div>
-                      <p className="text-xs uppercase tracking-[0.14em] text-zinc-500 dark:text-zinc-400">{t('projectExecution.projects.nodes', 'Nodes')}
+                      <p className="text-xs uppercase tracking-[0.14em] text-zinc-500 dark:text-zinc-400">{t('projectExecution.projects.risk', 'Risk')}
                       </p>
                       <p className="mt-2 text-lg font-semibold text-zinc-950 dark:text-zinc-50">
-                        {project.activeNodeCount ?? 0}
+                        {project.needsClarification || project.failedTasks > 0 ? 1 : 0}
                       </p>
                     </div>
                   </div>
-
-                  {project.latestSignal ? (
-                    <div className="rounded-2xl border border-indigo-500/20 bg-indigo-500/5 px-4 py-3 text-sm text-indigo-700 dark:border-indigo-400/20 dark:bg-indigo-400/10 dark:text-indigo-200">
-                      {project.latestSignal}
-                    </div>
-                  ) : null}
 
                   <div className="flex flex-wrap gap-3">
                     <Link
                       to={`/projects/${project.id}`}
                       className="rounded-full bg-zinc-950 px-4 py-2 text-sm font-medium text-white transition hover:bg-zinc-800 dark:bg-zinc-50 dark:text-zinc-950 dark:hover:bg-zinc-200"
                     >{t('projectExecution.shared.openProject', 'Open Project')}
-                    </Link>
-                    <Link
-                      to="/runs"
-                      className="rounded-full border border-zinc-300 px-4 py-2 text-sm font-medium text-zinc-700 transition hover:border-zinc-400 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-200 dark:hover:border-zinc-600 dark:hover:bg-zinc-900"
-                    >{t('projectExecution.projects.seeRuns', 'See runs')}
                     </Link>
                   </div>
                 </div>

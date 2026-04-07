@@ -16,6 +16,8 @@ import {
   formatDateTime,
   formatDuration,
   formatNumber,
+  formatRunLabel,
+  formatTokenLabel,
 } from '@/utils/platformFormatting';
 
 export const RunDetail = () => {
@@ -72,7 +74,7 @@ export const RunDetail = () => {
           <Link
             to="/runs"
             className="rounded-full bg-zinc-950 px-4 py-2 text-sm font-medium text-white dark:bg-zinc-50 dark:text-zinc-950"
-          >{t('projectExecution.shared.backToProjects', 'Back to Projects')}
+          >{t('projectExecution.shared.backToRuns', 'Back to Run Alerts')}
           </Link>
         }
       />
@@ -85,19 +87,46 @@ export const RunDetail = () => {
         <Link
           to="/runs"
           className="text-sm font-medium text-indigo-600 hover:text-indigo-500 dark:text-indigo-400"
-        >{`← ${t('projectExecution.runCenter.title', 'Run Center')}`}
+        >{`← ${t('projectExecution.shared.backToRuns', 'Back to Run Alerts')}`}
         </Link>
         <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
           <div className="max-w-3xl">
             <div className="flex flex-wrap items-center gap-3">
               <h1 className="text-3xl font-semibold text-zinc-950 dark:text-zinc-50">
-                {detail.projectTitle}
+                {formatRunLabel(detail.id)}
               </h1>
               <StatusBadge status={detail.status} />
             </div>
-            <p className="mt-3 text-sm leading-6 text-zinc-600 dark:text-zinc-400">
-              {detail.projectSummary}
-            </p>
+            <div className="mt-3 flex flex-wrap items-center gap-2 text-sm text-zinc-600 dark:text-zinc-400">
+              <span>{t('projectExecution.runDetail.projectPrefix', 'Project')}</span>
+              <Link
+                to={`/projects/${detail.projectId}`}
+                className="font-medium text-indigo-600 hover:text-indigo-500 dark:text-indigo-400"
+              >
+                {detail.projectTitle}
+              </Link>
+            </div>
+            <p className="mt-3 text-sm leading-6 text-zinc-600 dark:text-zinc-400">{detail.projectSummary}</p>
+            <div className="mt-4 flex flex-wrap gap-3 text-xs text-zinc-500 dark:text-zinc-400">
+              <span>
+                {t('projectExecution.runDetail.triggerPrefix', {
+                  value: formatTokenLabel(detail.triggerSource),
+                  defaultValue: `Trigger ${formatTokenLabel(detail.triggerSource)}`,
+                })}
+              </span>
+              <span>
+                {t('projectExecution.runDetail.createdPrefix', {
+                  value: formatDateTime(detail.createdAt),
+                  defaultValue: `Created ${formatDateTime(detail.createdAt)}`,
+                })}
+              </span>
+              <span>
+                {t('projectExecution.runDetail.startedPrefix', {
+                  value: formatDateTime(detail.startedAt),
+                  defaultValue: `Started ${formatDateTime(detail.startedAt)}`,
+                })}
+              </span>
+            </div>
           </div>
 
           <div className="flex flex-wrap gap-3">

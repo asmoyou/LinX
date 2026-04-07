@@ -183,9 +183,115 @@ describe('projectExecutionApi run lifecycle normalization', () => {
     expect(result.data).toMatchObject({
       id: 'run-2',
       status: 'completed',
+      createdAt: '2026-04-07T10:59:00.000Z',
+      triggerSource: 'manual',
       totalTasks: 1,
       completedTasks: 1,
       completedAt: '2026-04-07T11:20:00.000Z',
     });
+  });
+
+  it('injects project-scoped runs into project detail and keeps project activity free of run lifecycle items', async () => {
+    respondToGet({
+      '/projects/project-3': {
+        project_id: 'project-3',
+        name: 'Project Detail Scope',
+        description: 'Project detail view',
+        status: 'running',
+        configuration: {},
+        created_by_user_id: 'user-3',
+        created_at: '2026-04-07T08:00:00.000Z',
+        updated_at: '2026-04-07T12:10:00.000Z',
+      },
+      '/project-tasks': [
+        {
+          project_task_id: 'task-3',
+          project_id: 'project-3',
+          plan_id: null,
+          run_id: 'run-3b',
+          assignee_agent_id: null,
+          title: 'Investigate alert',
+          description: 'Look into alerting.',
+          status: 'running',
+          priority: 'high',
+          sort_order: 0,
+          input_payload: {},
+          output_payload: { summary: 'Triaging alert state' },
+          error_message: null,
+          created_by_user_id: 'user-3',
+          created_at: '2026-04-07T11:30:00.000Z',
+          updated_at: '2026-04-07T12:05:00.000Z',
+        },
+      ],
+      '/runs': [
+        {
+          run_id: 'run-3a',
+          project_id: 'project-3',
+          plan_id: null,
+          status: 'completed',
+          trigger_source: 'manual',
+          runtime_context: { summary: 'Completed cleanly' },
+          error_message: null,
+          requested_by_user_id: 'user-3',
+          started_at: '2026-04-07T09:00:00.000Z',
+          completed_at: '2026-04-07T09:30:00.000Z',
+          created_at: '2026-04-07T08:55:00.000Z',
+          updated_at: '2026-04-07T09:30:00.000Z',
+        },
+        {
+          run_id: 'run-3b',
+          project_id: 'project-3',
+          plan_id: null,
+          status: 'running',
+          trigger_source: 'plan_generated',
+          runtime_context: { summary: 'Still executing' },
+          error_message: null,
+          requested_by_user_id: 'user-3',
+          started_at: '2026-04-07T12:00:00.000Z',
+          completed_at: null,
+          created_at: '2026-04-07T11:58:00.000Z',
+          updated_at: '2026-04-07T12:10:00.000Z',
+        },
+      ],
+      '/run-steps': [
+        {
+          run_step_id: 'step-3',
+          run_id: 'run-3b',
+          project_task_id: 'task-3',
+          node_id: null,
+          name: 'Investigate alert',
+          step_type: 'task',
+          status: 'running',
+          sequence_number: 0,
+          input_payload: {},
+          output_payload: {},
+          error_message: null,
+          started_at: '2026-04-07T12:00:00.000Z',
+          completed_at: null,
+          created_at: '2026-04-07T12:00:00.000Z',
+          updated_at: '2026-04-07T12:05:00.000Z',
+        },
+      ],
+      '/extensions': [],
+      '/plans': [],
+      '/project-space/project-3': null,
+      '/projects/project-3/agent-bindings': [],
+      '/projects/project-3/agent-provisioning-profiles': [],
+    });
+
+    const result = await projectExecutionApi.getProjectDetail('project-3');
+
+    expect(result.fallback).toBe(false);
+    expect(result.data.runs).toHaveLength(2);
+    expect(result.data.runs.map((run) => run.id)).toEqual(['run-3b', 'run-3a']);
+    expect(result.data.runs[0]).toMatchObject({
+      id: 'run-3b',
+      createdAt: '2026-04-07T11:58:00.000Z',
+      triggerSource: 'plan_generated',
+    });
+    expect(result.data.recentActivity.map((item) => item.id)).toEqual([
+      'project-project-3',
+      'task-task-3',
+    ]);
   });
 });

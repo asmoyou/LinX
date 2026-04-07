@@ -128,6 +128,7 @@ export interface ProjectDetail extends ProjectSummary {
   workspaceBucket?: string | null;
   configuration?: Record<string, unknown>;
   tasks: ProjectTaskSummary[];
+  runs: RunSummary[];
   agents: ProjectAgentSummary[];
   deliverables: ProjectDeliverable[];
   recentActivity: ProjectActivityItem[];
@@ -157,6 +158,8 @@ export interface RunSummary {
   projectId: string;
   projectTitle: string;
   status: PlatformStatus;
+  createdAt: string;
+  triggerSource: string;
   startedAt?: string | null;
   completedAt?: string | null;
   updatedAt: string;

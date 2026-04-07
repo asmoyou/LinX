@@ -7,7 +7,6 @@ import type {
   ProjectActivityItem,
   AgentProvisioningProfile,
   ProjectAgentBinding,
-  ProjectAgentSummary,
   ProjectDeliverable,
   ProjectDetail,
   ProjectSummary,
@@ -232,6 +231,8 @@ type SeedProject = {
   status: string;
   createdAt: string;
   updatedAt: string;
+  runCreatedAt: string;
+  runTriggerSource: string;
   startedAt?: string;
   completedAt?: string;
   totalTasks: number;
@@ -240,7 +241,8 @@ type SeedProject = {
   tasks: SeedTask[];
   agents: SeedAgent[];
   deliverables: ProjectDeliverable[];
-  activity: ProjectActivityItem[];
+  projectActivity: ProjectActivityItem[];
+  runTimeline: ProjectActivityItem[];
 };
 
 const now = Date.now();
@@ -258,6 +260,8 @@ const fallbackSeedProjects: SeedProject[] = [
     status: 'running',
     createdAt: isoMinutesAgo(7200),
     updatedAt: isoMinutesAgo(14),
+    runCreatedAt: isoMinutesAgo(6402),
+    runTriggerSource: 'manual',
     startedAt: isoMinutesAgo(6400),
     totalTasks: 5,
     completedTasks: 3,
@@ -332,7 +336,7 @@ const fallbackSeedProjects: SeedProject[] = [
         sourceScope: 'shared',
       },
     ],
-    activity: [
+    projectActivity: [
       {
         id: 'activity-1',
         title: 'Smoke suite extended',
@@ -352,6 +356,29 @@ const fallbackSeedProjects: SeedProject[] = [
         taskId: 'task-release-checklist',
       },
     ],
+    runTimeline: [
+      {
+        id: 'run-activity-1',
+        title: 'Run created',
+        description: 'Triggered manually from the project shell.',
+        timestamp: isoMinutesAgo(6402),
+        level: 'info',
+      },
+      {
+        id: 'run-activity-2',
+        title: 'Run started',
+        description: 'Execution entered the staging bake flow.',
+        timestamp: isoMinutesAgo(6400),
+        level: 'info',
+      },
+      {
+        id: 'run-activity-3',
+        title: 'Smoke suite extended',
+        description: 'Platform Ops added notification-center coverage to the staging bake.',
+        timestamp: isoMinutesAgo(14),
+        level: 'info',
+      },
+    ],
   },
   {
     id: 'project-run-center-refresh',
@@ -363,6 +390,8 @@ const fallbackSeedProjects: SeedProject[] = [
     status: 'reviewing',
     createdAt: isoMinutesAgo(12_000),
     updatedAt: isoMinutesAgo(55),
+    runCreatedAt: isoMinutesAgo(10_510),
+    runTriggerSource: 'plan_generated',
     startedAt: isoMinutesAgo(10_500),
     totalTasks: 4,
     completedTasks: 4,
@@ -414,7 +443,7 @@ const fallbackSeedProjects: SeedProject[] = [
         sourceScope: 'output',
       },
     ],
-    activity: [
+    projectActivity: [
       {
         id: 'activity-3',
         title: 'Review queued',
@@ -431,6 +460,29 @@ const fallbackSeedProjects: SeedProject[] = [
         level: 'success',
         actor: 'Data Ops',
         taskId: 'task-run-filters',
+      },
+    ],
+    runTimeline: [
+      {
+        id: 'run-activity-4',
+        title: 'Run created',
+        description: 'Triggered from the planning workflow.',
+        timestamp: isoMinutesAgo(10_510),
+        level: 'info',
+      },
+      {
+        id: 'run-activity-5',
+        title: 'Run started',
+        description: 'Execution began for the run-center refresh scope.',
+        timestamp: isoMinutesAgo(10_500),
+        level: 'info',
+      },
+      {
+        id: 'run-activity-6',
+        title: 'Run reviewing',
+        description: 'Design review requested for the final run-center shell pass.',
+        timestamp: isoMinutesAgo(55),
+        level: 'warning',
       },
     ],
   },
@@ -904,7 +956,7 @@ const seedToProjectSummary = (seed: SeedProject): ProjectSummary => ({
   failedTasks: seed.failedTasks,
   activeNodeCount: seed.agents.length,
   needsClarification: false,
-  latestSignal: seed.activity[0]?.description || null,
+  latestSignal: seed.projectActivity[0]?.description || null,
 });
 
 const seedToProjectDetail = (seed: SeedProject): ProjectDetail => ({
@@ -922,6 +974,7 @@ const seedToProjectDetail = (seed: SeedProject): ProjectDetail => ({
     reviewStatus:
       task.metadata?.find((entry) => entry.label.toLowerCase() === 'review status')?.value || null,
   })),
+  runs: [seedToRunSummary(seed)].sort(sortByUpdatedDescending),
   agents: seed.agents.map((agent) => ({
     id: agent.id,
     name: agent.name,
@@ -931,7 +984,7 @@ const seedToProjectDetail = (seed: SeedProject): ProjectDetail => ({
     assignedAt: agent.assignedAt || null,
   })),
   deliverables: seed.deliverables,
-  recentActivity: seed.activity,
+  recentActivity: seed.projectActivity,
 });
 
 const seedToTaskDetail = (seed: SeedProject, taskId: string): ProjectTaskDetail => {
@@ -959,7 +1012,7 @@ const seedToTaskDetail = (seed: SeedProject, taskId: string): ProjectTaskDetail 
     assignedSkillNames: task.assignedSkillNames || [],
     latestResult: task.result || null,
     metadata: task.metadata || [],
-    events: seed.activity.filter((item) => item.taskId === taskId),
+    events: seed.projectActivity.filter((item) => item.taskId === taskId),
   };
 };
 
@@ -968,6 +1021,8 @@ const seedToRunSummary = (seed: SeedProject): RunSummary => ({
   projectId: seed.id,
   projectTitle: seed.title,
   status: seed.status,
+  createdAt: seed.runCreatedAt,
+  triggerSource: seed.runTriggerSource,
   startedAt: seed.startedAt || null,
   completedAt: seed.completedAt || null,
   updatedAt: seed.updatedAt,
@@ -975,13 +1030,13 @@ const seedToRunSummary = (seed: SeedProject): RunSummary => ({
   completedTasks: seed.completedTasks,
   failedTasks: seed.failedTasks,
   externalAgentCount: seed.agents.length,
-  latestSignal: seed.activity[0]?.description || null,
+  latestSignal: seed.runTimeline[seed.runTimeline.length - 1]?.description || null,
 });
 
 const seedToRunDetail = (seed: SeedProject): RunDetail => ({
   ...seedToRunSummary(seed),
   projectSummary: seed.summary,
-  timeline: [...seed.activity].sort(
+  timeline: [...seed.runTimeline].sort(
     (left, right) => new Date(left.timestamp).getTime() - new Date(right.timestamp).getTime(),
   ),
   deliverables: seed.deliverables,
@@ -1587,7 +1642,6 @@ const toProvisioningProfileFromSkeleton = (
 const buildProjectActivityFromSkeleton = (
   project: SkeletonProjectRecord,
   tasks: SkeletonProjectTaskRecord[],
-  runs: SkeletonRunRecord[],
   extensions: SkeletonExtensionRecord[],
   plans: SkeletonPlanRecord[] = [],
   projectSpace: SkeletonProjectSpaceRecord | null = null,
@@ -1614,17 +1668,6 @@ const buildProjectActivityFromSkeleton = (
       asUnknownRecord(task.output_payload),
     ]),
     taskId: task.project_task_id,
-  }));
-
-  const runItems = runs.map((run) => ({
-    id: `run-${run.run_id}`,
-    title: `Run ${humanizeToken(run.status)}`,
-    description:
-      run.error_message ||
-      summarizeRecord(asUnknownRecord(run.runtime_context)) ||
-      `Triggered via ${run.trigger_source}.`,
-    timestamp: run.updated_at,
-    level: activityLevelFromStatus(run.status),
   }));
 
   const planItems: ProjectActivityItem[] = plans.map((plan) => ({
@@ -1663,7 +1706,6 @@ const buildProjectActivityFromSkeleton = (
 
   return [
     projectItem,
-    ...runItems,
     ...planItems,
     ...taskItems,
     ...extensionItems,
@@ -1677,6 +1719,7 @@ const buildProjectDetailFromSkeleton = (
   project: SkeletonProjectRecord,
   tasks: SkeletonProjectTaskRecord[],
   runs: SkeletonRunRecord[],
+  runSteps: SkeletonRunStepRecord[],
   extensions: SkeletonExtensionRecord[],
   plans: SkeletonPlanRecord[],
   projectSpace: SkeletonProjectSpaceRecord | null,
@@ -1689,6 +1732,8 @@ const buildProjectDetailFromSkeleton = (
   )[0];
   const latestPlanDefinition = latestPlan ? asUnknownRecord(latestPlan.definition) : {};
   const summary = buildSkeletonProjectSummary(project, tasks, runs, plans);
+  const tasksByRun = groupByKey(tasks, (task) => task.run_id || null);
+  const stepsByRun = groupByKey(runSteps, (step) => step.run_id);
   const deliverables = collectDeliverablesFromPayloads([
     configuration,
     ...plans.map((plan) => asUnknownRecord(plan.definition)),
@@ -1719,6 +1764,16 @@ const buildProjectDetailFromSkeleton = (
     tasks: tasks
       .map(toProjectTaskSummaryFromSkeleton)
       .sort((left, right) => right.priority - left.priority),
+    runs: runs
+      .map((run) =>
+        buildRunSummaryFromSkeleton(
+          run,
+          project,
+          tasksByRun.get(run.run_id) || [],
+          stepsByRun.get(run.run_id) || [],
+        ),
+      )
+      .sort(sortByUpdatedDescending),
     agents: [],
     agentBindings: agentBindings.map((binding) =>
       toProjectAgentBindingFromSkeleton(
@@ -1731,7 +1786,6 @@ const buildProjectDetailFromSkeleton = (
     recentActivity: buildProjectActivityFromSkeleton(
       project,
       tasks,
-      runs,
       extensions,
       plans,
       projectSpace,
@@ -1752,6 +1806,8 @@ const buildRunSummaryFromSkeleton = (
     projectId: run.project_id,
     projectTitle: project?.name || 'Untitled Project',
     status: lifecycle.status,
+    createdAt: run.created_at,
+    triggerSource: run.trigger_source,
     startedAt: run.started_at || null,
     completedAt: lifecycle.completedAt,
     updatedAt: run.updated_at,
@@ -2029,18 +2085,30 @@ const listProjectsFromSkeleton = async (): Promise<ProjectSummary[]> => {
 };
 
 const getProjectDetailFromSkeleton = async (projectId: string): Promise<ProjectDetail> => {
-  const [project, tasks, runs, extensions, plans, projectSpace, agentBindings, provisioningProfiles] = await Promise.all([
+  const [project, tasks, runs, runSteps, extensions, plans, projectSpace, agentBindings, provisioningProfiles] = await Promise.all([
     skeletonApi.getProject(projectId),
     skeletonApi.listProjectTasks(projectId),
     skeletonApi.listRuns(projectId),
+    skeletonApi.listRunSteps(),
     skeletonApi.listExtensions(projectId),
     skeletonApi.listPlans(projectId),
     skeletonApi.getProjectSpace(projectId),
     skeletonApi.listProjectAgentBindings(projectId),
     skeletonApi.listAgentProvisioningProfiles(projectId),
   ]);
+  const runIds = new Set(runs.map((run) => run.run_id));
 
-  return buildProjectDetailFromSkeleton(project, tasks, runs, extensions, plans, projectSpace, agentBindings, provisioningProfiles);
+  return buildProjectDetailFromSkeleton(
+    project,
+    tasks,
+    runs,
+    runSteps.filter((step) => runIds.has(step.run_id)),
+    extensions,
+    plans,
+    projectSpace,
+    agentBindings,
+    provisioningProfiles,
+  );
 };
 
 const getProjectTaskDetailFromSkeleton = async (

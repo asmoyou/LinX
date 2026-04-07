@@ -16,7 +16,12 @@ import {
 } from '@/components/platform/PlatformUi';
 import { useProjectExecutionStore } from '@/stores/projectExecutionStore';
 import { getAgentTypeToken } from '@/utils/agentPresentation';
-import { formatDateTime } from '@/utils/platformFormatting';
+import {
+  formatDateTime,
+  formatDuration,
+  formatRunLabel,
+  formatTokenLabel,
+} from '@/utils/platformFormatting';
 
 export const ProjectDetail = () => {
   const navigate = useNavigate();
@@ -31,6 +36,7 @@ export const ProjectDetail = () => {
   const [bindingError, setBindingError] = useState<string | null>(null);
   const [projectCommandTemplate, setProjectCommandTemplate] = useState('');
   const [isSavingProjectCommand, setIsSavingProjectCommand] = useState(false);
+  const [showAllRuns, setShowAllRuns] = useState(false);
   const { projectId } = useParams<{ projectId: string }>();
   const project = useProjectExecutionStore((state) =>
     projectId ? state.projectDetails[projectId] : undefined,
@@ -73,6 +79,10 @@ export const ProjectDetail = () => {
     const bound = new Set((project?.agentBindings || []).map((item) => item.agentId));
     return availableAgents.filter((agent) => !bound.has(agent.id));
   }, [availableAgents, project?.agentBindings]);
+  const visibleRuns = useMemo(
+    () => (showAllRuns ? project?.runs || [] : (project?.runs || []).slice(0, 5)),
+    [project?.runs, showAllRuns],
+  );
 
   const handleBindAgent = async () => {
     if (!projectId || !selectedAgentId || isFallback) return;
@@ -257,11 +267,11 @@ export const ProjectDetail = () => {
               className="rounded-full border border-rose-300 px-4 py-2 text-sm font-medium text-rose-700 transition hover:bg-rose-50 dark:border-rose-800 dark:text-rose-300 dark:hover:bg-rose-950/40 disabled:cursor-not-allowed disabled:opacity-50"
             >{isDeletingProject ? t('projectExecution.shared.deleting', 'Deleting…') : t('projectExecution.shared.deleteProject', 'Delete Project')}
             </button>
-            <Link
-              to="/runs"
+            <a
+              href="#project-runs"
               className="rounded-full border border-zinc-300 px-4 py-2 text-sm font-medium text-zinc-700 transition hover:border-zinc-400 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-200 dark:hover:border-zinc-600 dark:hover:bg-zinc-900"
-            >{t('projectExecution.runCenter.title', 'Run Center')}
-            </Link>
+            >{t('projectExecution.projectDetail.viewProjectRunsAction', 'View Project Runs')}
+            </a>
             <StatusBadge status={project.status} />
           </div>
         </section>
@@ -317,6 +327,101 @@ export const ProjectDetail = () => {
             </div>
           )}
         </SectionCard>
+
+        <div id="project-runs">
+          <SectionCard
+            title={t('projectExecution.projectDetail.projectRunsTitle', 'Project runs')}
+            description={t('projectExecution.projectDetail.projectRunsDescription', 'Recent runs for this project. Open a run for execution detail and troubleshooting.')}
+            action={
+              project.runs.length > 5 ? (
+                <button
+                  type="button"
+                  onClick={() => setShowAllRuns((current) => !current)}
+                  className="rounded-full border border-zinc-300 px-4 py-2 text-sm font-medium text-zinc-700 transition hover:border-zinc-400 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-200 dark:hover:border-zinc-600 dark:hover:bg-zinc-900"
+                >
+                  {showAllRuns
+                    ? t('projectExecution.projectDetail.showRecentRunsAction', 'Show Recent')
+                    : t('projectExecution.projectDetail.showAllRunsAction', 'Show All')}
+                </button>
+              ) : null
+            }
+          >
+            {project.runs.length === 0 ? (
+              <EmptyState
+                title={t('projectExecution.projectDetail.emptyRunsTitle', 'No runs yet')}
+                description={t('projectExecution.projectDetail.emptyRunsDescription', 'Runs created from this project will appear here.')}
+              />
+            ) : (
+              <div className="space-y-3">
+                {visibleRuns.map((run) => (
+                  <div
+                    key={run.id}
+                    className="rounded-2xl border border-zinc-200/70 bg-white/70 p-4 dark:border-zinc-800 dark:bg-zinc-950/50"
+                  >
+                    <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+                      <div>
+                        <div className="flex flex-wrap items-center gap-3">
+                          <h3 className="font-semibold text-zinc-950 dark:text-zinc-50">
+                            {formatRunLabel(run.id)}
+                          </h3>
+                          <StatusBadge status={run.status} />
+                        </div>
+                        <p className="mt-2 text-sm text-zinc-600 dark:text-zinc-400">
+                          {t('projectExecution.projectDetail.runCreatedPrefix', {
+                            value: formatDateTime(run.createdAt),
+                            defaultValue: `Created ${formatDateTime(run.createdAt)}`,
+                          })}
+                        </p>
+                      </div>
+
+                      <Link
+                        to={`/runs/${run.id}`}
+                        className="rounded-full bg-zinc-950 px-4 py-2 text-sm font-medium text-white transition hover:bg-zinc-800 dark:bg-zinc-50 dark:text-zinc-950 dark:hover:bg-zinc-200"
+                      >
+                        {t('projectExecution.shared.openRun', 'Open Run')}
+                      </Link>
+                    </div>
+
+                    <div className="mt-4 grid gap-3 rounded-[20px] border border-zinc-200/70 bg-zinc-50/70 p-4 sm:grid-cols-4 dark:border-zinc-800 dark:bg-zinc-900/60">
+                      <div>
+                        <p className="text-xs uppercase tracking-[0.14em] text-zinc-500 dark:text-zinc-400">
+                          {t('projectExecution.runCenter.startedAt', 'Started')}
+                        </p>
+                        <p className="mt-2 text-sm font-semibold text-zinc-950 dark:text-zinc-50">
+                          {formatDateTime(run.startedAt)}
+                        </p>
+                      </div>
+                      <div>
+                        <p className="text-xs uppercase tracking-[0.14em] text-zinc-500 dark:text-zinc-400">
+                          {t('projectExecution.runCenter.duration', 'Duration')}
+                        </p>
+                        <p className="mt-2 text-sm font-semibold text-zinc-950 dark:text-zinc-50">
+                          {formatDuration(run.startedAt, run.completedAt)}
+                        </p>
+                      </div>
+                      <div>
+                        <p className="text-xs uppercase tracking-[0.14em] text-zinc-500 dark:text-zinc-400">
+                          {t('projectExecution.runCenter.failed', 'Failed')}
+                        </p>
+                        <p className="mt-2 text-sm font-semibold text-zinc-950 dark:text-zinc-50">
+                          {run.failedTasks}
+                        </p>
+                      </div>
+                      <div>
+                        <p className="text-xs uppercase tracking-[0.14em] text-zinc-500 dark:text-zinc-400">
+                          {t('projectExecution.runCenter.triggerSource', 'Trigger')}
+                        </p>
+                        <p className="mt-2 text-sm font-semibold text-zinc-950 dark:text-zinc-50">
+                          {formatTokenLabel(run.triggerSource)}
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </SectionCard>
+        </div>
 
         <SectionCard
           title={t('projectExecution.projectDetail.externalRunnerOverrideTitle', 'Project external runner override')}

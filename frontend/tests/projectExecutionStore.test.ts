@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { useProjectExecutionStore } from '@/stores/projectExecutionStore';
 import { projectExecutionApi } from '@/api/projectExecution';
+import { useProjectExecutionStore } from '@/stores/projectExecutionStore';
 
 vi.mock('@/api/projectExecution', () => ({
   projectExecutionApi: {
@@ -13,15 +13,77 @@ vi.mock('@/api/projectExecution', () => ({
     getSkillHubSnapshot: vi.fn(),
     listExtensions: vi.fn(),
     createProject: vi.fn(),
+    updateProject: vi.fn(),
     deleteProject: vi.fn(),
     createProjectTask: vi.fn(),
     deleteProjectTask: vi.fn(),
     createProjectTaskAndLaunchRun: vi.fn(),
     launchTaskRun: vi.fn(),
+    rescheduleRun: vi.fn(),
   },
 }));
 
 const mockedApi = vi.mocked(projectExecutionApi);
+
+const now = '2026-04-07T12:00:00.000Z';
+
+const createProjectDetail = (overrides: Record<string, unknown> = {}) => ({
+  id: 'project-1',
+  title: 'Project 1',
+  summary: 'Summary',
+  instructions: 'Instructions',
+  status: 'running',
+  progress: 25,
+  createdAt: now,
+  updatedAt: now,
+  totalTasks: 1,
+  completedTasks: 0,
+  failedTasks: 0,
+  needsClarification: false,
+  tasks: [],
+  runs: [],
+  agents: [],
+  deliverables: [],
+  recentActivity: [],
+  ...overrides,
+});
+
+const createTaskDetail = (overrides: Record<string, unknown> = {}) => ({
+  id: 'task-1',
+  projectId: 'project-1',
+  projectTitle: 'Project 1',
+  projectStatus: 'running',
+  title: 'Task 1',
+  description: 'Do the work',
+  status: 'running',
+  priority: 1,
+  updatedAt: now,
+  dependencyIds: [],
+  assignedSkillNames: [],
+  metadata: [],
+  events: [],
+  ...overrides,
+});
+
+const createRunDetail = (overrides: Record<string, unknown> = {}) => ({
+  id: 'run-1',
+  projectId: 'project-1',
+  projectTitle: 'Project 1',
+  projectSummary: 'Summary',
+  status: 'running',
+  createdAt: now,
+  triggerSource: 'manual',
+  startedAt: now,
+  completedAt: null,
+  updatedAt: now,
+  totalTasks: 1,
+  completedTasks: 0,
+  failedTasks: 0,
+  timeline: [],
+  deliverables: [],
+  externalDispatches: [],
+  ...overrides,
+});
 
 describe('useProjectExecutionStore', () => {
   afterEach(() => {
@@ -29,28 +91,46 @@ describe('useProjectExecutionStore', () => {
     useProjectExecutionStore.getState().reset();
   });
 
+  it('loads project detail with project-scoped runs', async () => {
+    mockedApi.getProjectDetail.mockResolvedValue({
+      data: createProjectDetail({
+        runs: [
+          {
+            id: 'run-2',
+            projectId: 'project-1',
+            projectTitle: 'Project 1',
+            status: 'failed',
+            createdAt: now,
+            triggerSource: 'manual',
+            startedAt: now,
+            completedAt: null,
+            updatedAt: '2026-04-07T12:05:00.000Z',
+            totalTasks: 1,
+            completedTasks: 0,
+            failedTasks: 1,
+            latestSignal: 'Build failed',
+          },
+        ],
+      }),
+      fallback: false,
+    });
+
+    const detail = await useProjectExecutionStore.getState().loadProjectDetail('project-1');
+
+    expect(mockedApi.getProjectDetail).toHaveBeenCalledWith('project-1');
+    expect(detail.runs).toHaveLength(1);
+    expect(detail.runs[0]).toMatchObject({
+      id: 'run-2',
+      triggerSource: 'manual',
+      failedTasks: 1,
+    });
+  });
+
   it('creates a project and refreshes project state', async () => {
     mockedApi.createProject.mockResolvedValue('project-1');
     mockedApi.listProjects.mockResolvedValue({ data: [], fallback: false });
     mockedApi.getProjectDetail.mockResolvedValue({
-      data: {
-        id: 'project-1',
-        title: 'Project 1',
-        summary: 'Summary',
-        instructions: 'Instructions',
-        status: 'draft',
-        progress: 0,
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-        totalTasks: 0,
-        completedTasks: 0,
-        failedTasks: 0,
-        needsClarification: false,
-        tasks: [],
-        agents: [],
-        deliverables: [],
-        recentActivity: [],
-      },
+      data: createProjectDetail(),
       fallback: false,
     });
 
@@ -72,60 +152,34 @@ describe('useProjectExecutionStore', () => {
     mockedApi.createProjectTaskAndLaunchRun.mockResolvedValue({ taskId: 'task-1', runId: 'run-1' });
     mockedApi.listProjects.mockResolvedValue({ data: [], fallback: false });
     mockedApi.getProjectDetail.mockResolvedValue({
-      data: {
-        id: 'project-1',
-        title: 'Project 1',
-        summary: 'Summary',
-        instructions: 'Instructions',
-        status: 'running',
-        progress: 25,
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
+      data: createProjectDetail({
         totalTasks: 1,
-        completedTasks: 0,
-        failedTasks: 0,
-        needsClarification: false,
-        tasks: [],
-        agents: [],
-        deliverables: [],
-        recentActivity: [],
-      },
+        runs: [
+          {
+            id: 'run-1',
+            projectId: 'project-1',
+            projectTitle: 'Project 1',
+            status: 'running',
+            createdAt: now,
+            triggerSource: 'manual',
+            startedAt: now,
+            completedAt: null,
+            updatedAt: now,
+            totalTasks: 1,
+            completedTasks: 0,
+            failedTasks: 0,
+          },
+        ],
+      }),
       fallback: false,
     });
     mockedApi.getProjectTaskDetail.mockResolvedValue({
-      data: {
-        id: 'task-1',
-        projectId: 'project-1',
-        projectTitle: 'Project 1',
-        projectStatus: 'running',
-        title: 'Task 1',
-        description: 'Do the work',
-        status: 'running',
-        priority: 1,
-        updatedAt: new Date().toISOString(),
-        dependencyIds: [],
-        assignedSkillNames: [],
-        metadata: [],
-        events: [],
-      },
+      data: createTaskDetail(),
       fallback: false,
     });
     mockedApi.listRuns.mockResolvedValue({ data: [], fallback: false });
     mockedApi.getRunDetail.mockResolvedValue({
-      data: {
-        id: 'run-1',
-        projectId: 'project-1',
-        projectTitle: 'Project 1',
-        projectSummary: 'Summary',
-        status: 'running',
-        updatedAt: new Date().toISOString(),
-        totalTasks: 1,
-        completedTasks: 0,
-        failedTasks: 0,
-        timeline: [],
-        nodes: [],
-        deliverables: [],
-      },
+      data: createRunDetail(),
       fallback: false,
     });
 
@@ -151,60 +205,16 @@ describe('useProjectExecutionStore', () => {
   it('launches a task run and refreshes dependent views', async () => {
     mockedApi.launchTaskRun.mockResolvedValue('run-1');
     mockedApi.getProjectTaskDetail.mockResolvedValue({
-      data: {
-        id: 'task-1',
-        projectId: 'project-1',
-        projectTitle: 'Project 1',
-        projectStatus: 'running',
-        title: 'Task 1',
-        description: 'Do the work',
-        status: 'running',
-        priority: 1,
-        updatedAt: new Date().toISOString(),
-        dependencyIds: [],
-        assignedSkillNames: [],
-        metadata: [],
-        events: [],
-      },
+      data: createTaskDetail(),
       fallback: false,
     });
     mockedApi.getProjectDetail.mockResolvedValue({
-      data: {
-        id: 'project-1',
-        title: 'Project 1',
-        summary: 'Summary',
-        instructions: 'Instructions',
-        status: 'running',
-        progress: 25,
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-        totalTasks: 1,
-        completedTasks: 0,
-        failedTasks: 0,
-        needsClarification: false,
-        tasks: [],
-        agents: [],
-        deliverables: [],
-        recentActivity: [],
-      },
+      data: createProjectDetail(),
       fallback: false,
     });
     mockedApi.listRuns.mockResolvedValue({ data: [], fallback: false });
     mockedApi.getRunDetail.mockResolvedValue({
-      data: {
-        id: 'run-1',
-        projectId: 'project-1',
-        projectTitle: 'Project 1',
-        projectSummary: 'Summary',
-        status: 'running',
-        updatedAt: new Date().toISOString(),
-        totalTasks: 1,
-        completedTasks: 0,
-        failedTasks: 0,
-        timeline: [],
-        nodes: [],
-        deliverables: [],
-      },
+      data: createRunDetail(),
       fallback: false,
     });
 
@@ -227,22 +237,34 @@ describe('useProjectExecutionStore', () => {
     expect(mockedApi.listRuns).toHaveBeenCalledTimes(1);
     expect(mockedApi.getRunDetail).toHaveBeenCalledWith('run-1');
   });
-});
-
 
   it('deletes a project and prunes local state', async () => {
     useProjectExecutionStore.setState({
       ...useProjectExecutionStore.getState(),
-      projects: [{
-        id: 'project-1', title: 'Project 1', summary: 'Summary', status: 'draft', progress: 0,
-        totalTasks: 0, completedTasks: 0, failedTasks: 0, needsClarification: false,
-        updatedAt: new Date().toISOString(), latestSignal: null, activeNodeCount: 0,
-      }],
-      projectDetails: { 'project-1': {
-        id: 'project-1', title: 'Project 1', summary: 'Summary', instructions: 'Instructions', status: 'draft', progress: 0,
-        createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), totalTasks: 0, completedTasks: 0, failedTasks: 0,
-        needsClarification: false, tasks: [], agents: [], deliverables: [], recentActivity: [],
-      } },
+      projects: [
+        {
+          id: 'project-1',
+          title: 'Project 1',
+          summary: 'Summary',
+          status: 'draft',
+          progress: 0,
+          createdAt: now,
+          updatedAt: now,
+          totalTasks: 0,
+          completedTasks: 0,
+          failedTasks: 0,
+          needsClarification: false,
+          latestSignal: null,
+          activeNodeCount: 0,
+        },
+      ],
+      projectDetails: {
+        'project-1': createProjectDetail({
+          status: 'draft',
+          progress: 0,
+          totalTasks: 0,
+        }),
+      },
     });
     mockedApi.deleteProject.mockResolvedValue();
 
@@ -256,25 +278,30 @@ describe('useProjectExecutionStore', () => {
   it('deletes a project task and refreshes project state', async () => {
     useProjectExecutionStore.setState({
       ...useProjectExecutionStore.getState(),
-      projectDetails: { 'project-1': {
-        id: 'project-1', title: 'Project 1', summary: 'Summary', instructions: 'Instructions', status: 'running', progress: 25,
-        createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), totalTasks: 1, completedTasks: 0, failedTasks: 0,
-        needsClarification: false, tasks: [{ id: 'task-1', title: 'Task 1', status: 'running', priority: 1, updatedAt: new Date().toISOString(), dependencyIds: [] }],
-        agents: [], deliverables: [], recentActivity: [],
-      } },
-      projectTaskDetails: { 'project-1:task-1': {
-        id: 'task-1', projectId: 'project-1', projectTitle: 'Project 1', projectStatus: 'running', title: 'Task 1', status: 'running',
-        priority: 1, updatedAt: new Date().toISOString(), dependencyIds: [], assignedSkillNames: [], metadata: [], events: [],
-      } },
+      projectDetails: {
+        'project-1': createProjectDetail({
+          tasks: [
+            {
+              id: 'task-1',
+              title: 'Task 1',
+              status: 'running',
+              priority: 1,
+              updatedAt: now,
+              dependencyIds: [],
+            },
+          ],
+        }),
+      },
+      projectTaskDetails: {
+        'project-1:task-1': createTaskDetail(),
+      },
     });
     mockedApi.deleteProjectTask.mockResolvedValue();
     mockedApi.listProjects.mockResolvedValue({ data: [], fallback: false });
     mockedApi.getProjectDetail.mockResolvedValue({
-      data: {
-        id: 'project-1', title: 'Project 1', summary: 'Summary', instructions: 'Instructions', status: 'running', progress: 0,
-        createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), totalTasks: 0, completedTasks: 0, failedTasks: 0,
-        needsClarification: false, tasks: [], agents: [], deliverables: [], recentActivity: [],
-      },
+      data: createProjectDetail({
+        totalTasks: 0,
+      }),
       fallback: false,
     });
 
@@ -283,3 +310,4 @@ describe('useProjectExecutionStore', () => {
     expect(mockedApi.deleteProjectTask).toHaveBeenCalledWith('task-1');
     expect(useProjectExecutionStore.getState().projectTaskDetails['project-1:task-1']).toBeUndefined();
   });
+});

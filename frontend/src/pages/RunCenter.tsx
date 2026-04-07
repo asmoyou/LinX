@@ -1,4 +1,4 @@
-import { useEffect, useMemo } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 
@@ -15,10 +15,19 @@ import {
   formatDateTime,
   formatDuration,
   formatNumber,
+  formatRunLabel,
+  formatTokenLabel,
 } from '@/utils/platformFormatting';
+
+type RunFilter = 'attention' | 'active' | 'all';
+
+const ATTENTION_STATUSES = new Set(['blocked', 'failed', 'reviewing']);
+const ACTIVE_STATUSES = new Set(['running', 'queued', 'assigned', 'scheduled']);
+const QUEUED_STATUSES = new Set(['queued', 'assigned', 'scheduled']);
 
 export const RunCenter = () => {
   const { t } = useTranslation();
+  const [filter, setFilter] = useState<RunFilter>('attention');
   const runs = useProjectExecutionStore((state) => state.runs);
   const isLoading = useProjectExecutionStore((state) => state.loading.runs);
   const error = useProjectExecutionStore((state) => state.errors.runs);
@@ -29,29 +38,46 @@ export const RunCenter = () => {
     void loadRuns();
   }, [loadRuns]);
 
+  const filteredRuns = useMemo(() => {
+    switch (filter) {
+      case 'active':
+        return runs.filter((run) => ACTIVE_STATUSES.has(run.status.toLowerCase()));
+      case 'all':
+        return runs;
+      case 'attention':
+      default:
+        return runs.filter(
+          (run) =>
+            ATTENTION_STATUSES.has(run.status.toLowerCase()) || run.failedTasks > 0,
+        );
+    }
+  }, [filter, runs]);
+
   const stats = useMemo(() => {
-    const active = runs.filter((run) => ['running', 'reviewing'].includes(run.status.toLowerCase())).length;
-    const completed = runs.filter((run) => run.status.toLowerCase() === 'completed').length;
-    const failed = runs.filter((run) => run.failedTasks > 0 || run.status.toLowerCase() === 'failed').length;
+    const attention = runs.filter(
+      (run) => ATTENTION_STATUSES.has(run.status.toLowerCase()) || run.failedTasks > 0,
+    ).length;
+    const active = runs.filter((run) => ACTIVE_STATUSES.has(run.status.toLowerCase())).length;
+    const queued = runs.filter((run) => QUEUED_STATUSES.has(run.status.toLowerCase())).length;
 
     return {
-      total: runs.length,
+      attention,
       active,
-      completed,
-      failed,
+      queued,
+      showing: filteredRuns.length,
     };
-  }, [runs]);
+  }, [filteredRuns.length, runs]);
 
   return (
     <div className="space-y-6">
       <section className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
         <div className="max-w-3xl space-y-3">
-          <p className="text-sm font-semibold uppercase tracking-[0.22em] text-indigo-500">{t('projectExecution.runCenter.badge', 'Operations')}
+          <p className="text-sm font-semibold uppercase tracking-[0.22em] text-indigo-500">{t('projectExecution.runCenter.badge', 'Run Triage')}
           </p>
           <div>
-            <h1 className="text-3xl font-semibold text-zinc-950 dark:text-zinc-50">{t('projectExecution.runCenter.title', 'Run Center')}</h1>
+            <h1 className="text-3xl font-semibold text-zinc-950 dark:text-zinc-50">{t('projectExecution.runCenter.title', 'Run Alerts')}</h1>
             <p className="mt-2 text-sm text-zinc-600 dark:text-zinc-400">
-              {t('projectExecution.runCenter.subtitle', 'Review recent execution attempts, watch long-running delivery streams, and jump back into the owning project when attention is needed.')}
+              {t('projectExecution.runCenter.subtitle', 'Track the runs that are blocked, failing, or still in flight, then jump back into the owning project when action is required.')}
             </p>
           </div>
         </div>
@@ -65,7 +91,7 @@ export const RunCenter = () => {
 
       {fallbackSections.includes('runs') ? (
         <NoticeBanner
-          title={t('projectExecution.runCenter.fallbackTitle', 'Run Center is using fallback data')}
+          title={t('projectExecution.runCenter.fallbackTitle', 'Run Alerts is using fallback data')}
           description={t('projectExecution.runCenter.fallbackDescription', 'Runs are sourced from the project execution backend and can fall back to local seeded data if those APIs are unavailable.')}
         />
       ) : null}
@@ -73,24 +99,48 @@ export const RunCenter = () => {
       {error ? <NoticeBanner title={t('projectExecution.runCenter.errorTitle', 'Run refresh issue')} description={error} /> : null}
 
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-        <MetricCard label={t('projectExecution.runCenter.metricRuns', 'Runs')} value={formatNumber(stats.total)} helper={t('projectExecution.runCenter.metricRunsHelper', 'Recent execution streams')} />
-        <MetricCard label={t('projectExecution.runCenter.metricActive', 'Active')} value={formatNumber(stats.active)} helper={t('projectExecution.runCenter.metricActiveHelper', 'Currently running or reviewing')} />
-        <MetricCard label={t('projectExecution.runCenter.metricCompleted', 'Completed')} value={formatNumber(stats.completed)} helper={t('projectExecution.runCenter.metricCompletedHelper', 'Finished without active work')} />
-        <MetricCard label={t('projectExecution.runCenter.metricAttention', 'Attention')} value={formatNumber(stats.failed)} helper={t('projectExecution.runCenter.metricAttentionHelper', 'Failures or degraded execution')} />
+        <MetricCard label={t('projectExecution.runCenter.metricAttention', 'Needs Attention')} value={formatNumber(stats.attention)} helper={t('projectExecution.runCenter.metricAttentionHelper', 'Blocked, reviewing, or failed runs')} />
+        <MetricCard label={t('projectExecution.runCenter.metricActive', 'In Progress')} value={formatNumber(stats.active)} helper={t('projectExecution.runCenter.metricActiveHelper', 'Runs currently executing')} />
+        <MetricCard label={t('projectExecution.runCenter.metricQueued', 'Queued')} value={formatNumber(stats.queued)} helper={t('projectExecution.runCenter.metricQueuedHelper', 'Waiting for executor pickup')} />
+        <MetricCard label={t('projectExecution.runCenter.metricShowing', 'Showing')} value={formatNumber(stats.showing)} helper={t('projectExecution.runCenter.metricShowingHelper', 'Runs in the current filter')} />
+      </div>
+
+      <div className="flex flex-wrap gap-3">
+        {([
+          ['attention', t('projectExecution.runCenter.filterAttention', 'Needs Attention')],
+          ['active', t('projectExecution.runCenter.filterActive', 'In Progress')],
+          ['all', t('projectExecution.runCenter.filterAll', 'All')],
+        ] as Array<[RunFilter, string]>).map(([value, label]) => {
+          const isSelected = filter === value;
+          return (
+            <button
+              key={value}
+              type="button"
+              onClick={() => setFilter(value)}
+              className={`rounded-full px-4 py-2 text-sm font-medium transition ${
+                isSelected
+                  ? 'bg-zinc-950 text-white dark:bg-zinc-50 dark:text-zinc-950'
+                  : 'border border-zinc-300 text-zinc-700 hover:border-zinc-400 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-200 dark:hover:border-zinc-600 dark:hover:bg-zinc-900'
+              }`}
+            >
+              {label}
+            </button>
+          );
+        })}
       </div>
 
       {isLoading && runs.length === 0 ? <LoadingState label={t('projectExecution.runCenter.loading', 'Loading runs…')} /> : null}
 
-      {!isLoading && runs.length === 0 ? (
+      {!isLoading && filteredRuns.length === 0 ? (
         <EmptyState
-          title={t('projectExecution.runCenter.emptyTitle', 'No runs available')}
-          description={t('projectExecution.runCenter.emptyDescription', 'Execution runs will appear here as soon as projects begin running.')}
+          title={t('projectExecution.runCenter.emptyTitle', 'No matching runs')}
+          description={t('projectExecution.runCenter.emptyDescription', 'Change the filter or wait for new run activity to appear.')}
         />
       ) : null}
 
-      {runs.length > 0 ? (
+      {filteredRuns.length > 0 ? (
         <div className="grid gap-4 xl:grid-cols-2">
-          {runs.map((run) => (
+          {filteredRuns.map((run) => (
             <GlassPanel
               key={run.id}
               hover
@@ -100,11 +150,15 @@ export const RunCenter = () => {
                 <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                   <div>
                     <p className="text-xs font-semibold uppercase tracking-[0.18em] text-zinc-500 dark:text-zinc-400">
-                      {formatDateTime(run.updatedAt)}
+                      {t('projectExecution.runCenter.updatedPrefix', {
+                        value: formatDateTime(run.updatedAt),
+                        defaultValue: `Updated ${formatDateTime(run.updatedAt)}`,
+                      })}
                     </p>
                     <h2 className="mt-2 text-xl font-semibold text-zinc-950 dark:text-zinc-50">
-                      {run.projectTitle}
+                      {formatRunLabel(run.id)}
                     </h2>
+                    <p className="mt-2 text-sm text-zinc-600 dark:text-zinc-400">{run.projectTitle}</p>
                   </div>
                   <StatusBadge status={run.status} />
                 </div>
@@ -132,13 +186,20 @@ export const RunCenter = () => {
                     </p>
                   </div>
                   <div>
-                    <p className="text-xs uppercase tracking-[0.16em] text-zinc-500 dark:text-zinc-400">{t('projectExecution.runCenter.externalAgents', 'External Agents')}
+                    <p className="text-xs uppercase tracking-[0.16em] text-zinc-500 dark:text-zinc-400">{t('projectExecution.runCenter.triggerSource', 'Trigger')}
                     </p>
                     <p className="mt-2 text-lg font-semibold text-zinc-950 dark:text-zinc-50">
-                      {run.externalAgentCount ?? '—'}
+                      {formatTokenLabel(run.triggerSource)}
                     </p>
                   </div>
                 </div>
+
+                <p className="text-sm text-zinc-600 dark:text-zinc-400">
+                  {t('projectExecution.runCenter.createdPrefix', {
+                    value: formatDateTime(run.createdAt),
+                    defaultValue: `Created ${formatDateTime(run.createdAt)}`,
+                  })}
+                </p>
 
                 {run.latestSignal ? (
                   <p className="text-sm leading-6 text-zinc-600 dark:text-zinc-400">
