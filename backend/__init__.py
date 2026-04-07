@@ -6,7 +6,7 @@ A comprehensive AI agent management system for enterprise environments.
 
 __version__ = "1.0.0"
 __author__ = "LinX Team"
-__license__ = "MIT"
+__license__ = "LinX Community License 1.0"
 
 # Package metadata
 __all__ = [

@@ -46,8 +46,8 @@ We provide an automated setup script for Linux:
 
 ```bash
 # Download the repository
-git clone https://github.com/your-org/linx.git
-cd linx
+git clone https://github.com/asmoyou/LinX.git
+cd LinX
 
 # Run the setup script
 chmod +x infrastructure/scripts/setup-linux.sh
@@ -149,8 +149,8 @@ sudo systemctl restart docker
 
 ```bash
 # Clone repository
-git clone https://github.com/your-org/linx.git
-cd linx
+git clone https://github.com/asmoyou/LinX.git
+cd LinX
 
 # Create Python virtual environment
 cd backend
@@ -171,7 +171,7 @@ nano .env
 
 ```bash
 # Start infrastructure services
-docker-compose up -d
+docker compose up -d
 
 # Wait for services to be ready
 sleep 30
@@ -188,8 +188,8 @@ alembic upgrade head
 
 ```bash
 # Download the repository
-git clone https://github.com/your-org/linx.git
-cd linx
+git clone https://github.com/asmoyou/LinX.git
+cd LinX
 
 # Run the setup script
 chmod +x infrastructure/scripts/setup-macos.sh
@@ -236,8 +236,8 @@ brew install postgresql@16 redis
 
 ```bash
 # Clone repository
-git clone https://github.com/your-org/linx.git
-cd linx
+git clone https://github.com/asmoyou/LinX.git
+cd LinX
 
 # Create Python virtual environment
 cd backend
@@ -260,7 +260,7 @@ nano .env
 # Ensure Docker Desktop is running
 
 # Start infrastructure services
-docker-compose up -d
+docker compose up -d
 
 # Wait for services to be ready
 sleep 30
@@ -279,8 +279,8 @@ Open PowerShell as Administrator:
 
 ```powershell
 # Download the repository
-git clone https://github.com/your-org/linx.git
-cd linx
+git clone https://github.com/asmoyou/LinX.git
+cd LinX
 
 # Run the setup script
 .\infrastructure\scripts\setup-windows.ps1
@@ -344,8 +344,8 @@ Open PowerShell:
 
 ```powershell
 # Clone repository
-git clone https://github.com/your-org/linx.git
-cd linx
+git clone https://github.com/asmoyou/LinX.git
+cd LinX
 
 # Create Python virtual environment
 cd backend
@@ -368,7 +368,7 @@ notepad .env
 # Ensure Docker Desktop is running
 
 # Start infrastructure services
-docker-compose up -d
+docker compose up -d
 
 # Wait for services to be ready
 Start-Sleep -Seconds 30
@@ -557,14 +557,14 @@ docker ps | grep postgres
 docker logs postgres
 
 # Restart PostgreSQL
-docker-compose restart postgres
+docker compose restart postgres
 ```
 
 **Problem**: Migration fails
 ```bash
 # Reset database (WARNING: This will delete all data)
-docker-compose down -v
-docker-compose up -d
+docker compose down -v
+docker compose up -d
 cd backend
 alembic upgrade head
 ```
@@ -636,6 +636,6 @@ After successful installation:
 
 For installation issues:
 - Check [Troubleshooting Guide](./troubleshooting-guide.md)
-- Review logs: `docker-compose logs`
+- Review logs: `docker compose logs`
 - Open an issue on GitHub
 - Contact support: support@example.com

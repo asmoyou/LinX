@@ -1,0 +1,53 @@
+name: Feature Request
+description: Suggest an improvement or new capability
+title: "[Feature]: "
+labels:
+  - enhancement
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for sharing an idea with us.
+        Strong feature requests explain the problem first, then the proposed solution.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem to Solve
+      description: What workflow, limitation, or frustration are you trying to address?
+      placeholder: Describe the real-world problem first.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed Solution
+      description: What would you like LinX to do?
+      placeholder: Describe the behavior, flow, or API you want.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives Considered
+      description: What workarounds or other approaches have you considered?
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Related Area
+      options:
+        - Frontend
+        - Backend API
+        - Agent Framework
+        - Project Execution
+        - Knowledge Base
+        - Memory
+        - Skills / MCP
+        - Deployment / Docker
+        - Documentation
+        - Other
+    validations:
+      required: true

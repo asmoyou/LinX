@@ -13,8 +13,8 @@ This guide covers deploying LinX (灵枢) using Docker Compose for development a
 
 1. **Clone the repository**:
    ```bash
-   git clone <repository-url>
-   cd digital-workforce-platform
+   git clone https://github.com/asmoyou/LinX.git
+   cd LinX
    ```
 
 2. **Configure environment variables**:
@@ -48,9 +48,8 @@ The Docker Compose setup includes the following services:
 
 ### Application Services
 - **API Gateway**: FastAPI REST API and WebSocket server
-- **Task Manager**: Task decomposition and coordination
-- **Document Processor**: Document processing worker
 - **Frontend**: React web application
+- **FunASR Service**: Optional standalone ASR service (profile-gated)
 
 ## Configuration
 
@@ -65,7 +64,7 @@ REDIS_PASSWORD=your_secure_password
 MINIO_ROOT_PASSWORD=your_secure_password
 
 # Security
-JWT_SECRET_KEY=your_long_random_string
+JWT_SECRET=your_long_random_string
 
 # LLM Providers
 OLLAMA_BASE_URL=http://localhost:11434
@@ -74,12 +73,12 @@ OPENAI_API_KEY=your_key_here  # Optional
 
 ### Volume Management
 
-Data is persisted in Docker volumes:
-- `postgres-data`: PostgreSQL database
-- `redis-data`: Redis persistence
-- `minio-data`: MinIO object storage
-- `milvus-data`: Milvus vector database
-- `etcd-data`: etcd metadata
+Data is persisted under the repository `data/` directory:
+- `data/postgres`: PostgreSQL database
+- `data/redis`: Redis persistence
+- `data/minio`: MinIO object storage
+- `data/milvus`: Milvus vector database
+- `data/etcd`: etcd metadata
 
 ## Service Management
 
@@ -103,29 +102,29 @@ Data is persisted in Docker volumes:
 
 ```bash
 # Stop all services
-docker-compose down
+docker compose down
 
 # Stop and remove volumes (WARNING: deletes all data)
-docker-compose down -v
+docker compose down -v
 ```
 
 ### View Logs
 
 ```bash
 # All services
-docker-compose logs -f
+docker compose logs -f
 
 # Specific service
-docker-compose logs -f api-gateway
+docker compose logs -f api-gateway
 
 # Last 100 lines
-docker-compose logs --tail=100 api-gateway
+docker compose logs --tail=100 api-gateway
 ```
 
 ### Restart Service
 
 ```bash
-docker-compose restart api-gateway
+docker compose restart api-gateway
 ```
 
 ## Health Checks
@@ -134,10 +133,10 @@ All services include health checks. Check service health:
 
 ```bash
 # Check all services
-docker-compose ps
+docker compose ps
 
 # Check specific service
-docker-compose ps api-gateway
+docker compose ps api-gateway
 
 # View health check logs
 docker inspect dwp-api-gateway | grep -A 10 Health
@@ -158,19 +157,19 @@ Backups are stored in `./backups/` directory.
 
 ```bash
 # Stop services
-docker-compose down
+docker compose down
 
 # Extract backup
 cd backups
 tar -xzf dwp_backup_YYYYMMDD_HHMMSS.tar.gz
 
 # Restore PostgreSQL
-docker-compose up -d postgres
-cat dwp_backup_YYYYMMDD_HHMMSS/postgres.sql | docker-compose exec -T postgres psql -U dwp_user
+docker compose up -d postgres
+cat dwp_backup_YYYYMMDD_HHMMSS/postgres.sql | docker compose exec -T postgres psql -U dwp_user
 
 # Restore Redis
 docker cp dwp_backup_YYYYMMDD_HHMMSS/redis.rdb dwp-redis:/data/dump.rdb
-docker-compose restart redis
+docker compose restart redis
 
 # Restore MinIO
 docker run --rm \
@@ -184,7 +183,7 @@ docker run --rm \
 docker cp dwp_backup_YYYYMMDD_HHMMSS/milvus dwp-milvus:/var/lib/
 
 # Start all services
-docker-compose up -d
+docker compose up -d
 ```
 
 ## Troubleshooting
@@ -193,29 +192,29 @@ docker-compose up -d
 
 1. Check logs:
    ```bash
-   docker-compose logs service-name
+   docker compose logs service-name
    ```
 
 2. Check health:
    ```bash
-   docker-compose ps
+   docker compose ps
    ```
 
 3. Restart service:
    ```bash
-   docker-compose restart service-name
+   docker compose restart service-name
    ```
 
 ### Database Connection Issues
 
 1. Verify PostgreSQL is running:
    ```bash
-   docker-compose exec postgres pg_isready -U dwp_user
+   docker compose exec postgres pg_isready -U dwp_user
    ```
 
 2. Check connection from API:
    ```bash
-   docker-compose exec api-gateway python -c "from database.connection import get_db_session; print('OK')"
+   docker compose exec api-gateway python -c "from database.connection import get_db_session; print('OK')"
    ```
 
 ### Out of Memory
@@ -306,23 +305,23 @@ docker system df
 
 2. **Pull latest images**:
    ```bash
-   docker-compose pull
+   docker compose pull
    ```
 
 3. **Rebuild custom images**:
    ```bash
-   docker-compose build
+   docker compose build
    ```
 
 4. **Restart services**:
    ```bash
-   docker-compose down
-   docker-compose up -d
+   docker compose down
+   docker compose up -d
    ```
 
 5. **Run migrations**:
    ```bash
-   docker-compose exec api-gateway alembic upgrade head
+   docker compose exec api-gateway alembic upgrade head
    ```
 
 ## Next Steps

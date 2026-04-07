@@ -127,7 +127,7 @@ All images implement security best practices:
 2. **Minimal base image**: Using `python:3.11-slim`
 3. **No unnecessary packages**: Only runtime dependencies included
 4. **Health checks**: All services have health check endpoints
-5. **Read-only filesystem**: Can be enforced in docker-compose
+5. **Read-only filesystem**: Can be enforced in the compose configuration
 
 ## Health Checks
 
@@ -161,49 +161,43 @@ Each service requires specific environment variables. See `.env.example` in the 
 
 ## Building All Images
 
-Build all images at once:
+Build the compose-managed images at once:
 ```bash
 # From project root
-docker-compose build
+docker compose build
 ```
 
-Or build individually:
+Or build the services defined in the current compose file:
 ```bash
-docker-compose build api-gateway
-docker-compose build task-manager
-docker-compose build agent-runtime
-docker-compose build document-processor
-docker-compose build funasr-service
+docker compose build api-gateway
+docker compose build frontend
+docker compose --profile funasr build funasr-service
 ```
+
+For standalone images such as `task-manager`, `agent-runtime`, or `document-processor`, use the direct `docker build -f ...` commands shown above.
 
 ## Running Services
 
 Start all services:
 ```bash
-docker-compose up -d
+docker compose up -d
 ```
 
-Start specific service:
+Start specific services:
 ```bash
-docker-compose up -d api-gateway
-docker-compose up -d funasr-service
+docker compose up -d api-gateway frontend
+docker compose --profile funasr up -d funasr-service
 ```
 
 View logs:
 ```bash
-docker-compose logs -f api-gateway
+docker compose logs -f api-gateway
 ```
 
 ## Resource Limits
 
-Default resource limits (can be adjusted in docker-compose.yml):
-
-| Service | CPU Limit | Memory Limit | CPU Reserved | Memory Reserved |
-|---------|-----------|--------------|--------------|-----------------|
-| API Gateway | 2 cores | 2GB | 1 core | 1GB |
-| Task Manager | 2 cores | 4GB | 1 core | 2GB |
-| Agent Runtime | 4 cores | 8GB | 2 cores | 4GB |
-| Document Processor | 2 cores | 4GB | 1 core | 2GB |
+Resource allocation depends on your Docker host and the current `docker-compose.yml` configuration.
+Review and tune the compose file before production-style deployments.
 
 ## Troubleshooting
 
@@ -219,7 +213,7 @@ docker volume prune
 **Problem**: Build fails with dependency errors
 ```bash
 # Rebuild without cache
-docker-compose build --no-cache
+docker compose build --no-cache
 ```
 
 ### Runtime Issues
@@ -227,16 +221,16 @@ docker-compose build --no-cache
 **Problem**: Service fails health check
 ```bash
 # Check service logs
-docker-compose logs service-name
+docker compose logs service-name
 
 # Check service status
-docker-compose ps
+docker compose ps
 ```
 
 **Problem**: Agent Runtime can't create containers
 ```bash
 # Verify Docker socket access
-docker-compose exec agent-runtime ls -la /var/run/docker.sock
+docker compose exec api-gateway ls -la /var/run/docker.sock
 
 # Check Docker daemon
 docker info
@@ -272,10 +266,10 @@ docker stats
 ## Next Steps
 
 1. Review and customize environment variables in `.env`
-2. Build all images: `docker-compose build`
-3. Start infrastructure services: `docker-compose up -d postgres redis minio milvus`
+2. Build compose-managed images: `docker compose build`
+3. Start infrastructure services: `docker compose up -d postgres redis minio etcd minio-milvus milvus`
 4. Wait for health checks to pass
-5. Start application services: `docker-compose up -d`
+5. Start application services: `docker compose up -d`
 6. Access API documentation: http://localhost:8000/docs
 
 ## Additional Resources

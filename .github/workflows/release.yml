@@ -60,7 +60,7 @@ jobs:
           cp .env.example .env
           # Edit .env with your configuration
           
-          docker-compose up -d
+          docker compose up -d
           ```
         draft: false
         prerelease: ${{ contains(github.ref_name, 'rc') || contains(github.ref_name, 'beta') || contains(github.ref_name, 'alpha') }}
@@ -88,9 +88,13 @@ jobs:
         cp README.md release/ 2>/dev/null || echo "No README.md"
         cp LICENSE release/ 2>/dev/null || echo "No LICENSE"
         
-        tar -czf digital-workforce-${{ github.ref_name }}.tar.gz release/
+        cp README_EN.md release/ 2>/dev/null || echo "No README_EN.md"
+        cp COMMERCIAL-USE.md release/ 2>/dev/null || echo "No COMMERCIAL-USE.md"
+        cp COMMERCIAL-REQUEST-TEMPLATE.md release/ 2>/dev/null || echo "No COMMERCIAL-REQUEST-TEMPLATE.md"
+
+        tar -czf linx-${{ github.ref_name }}.tar.gz release/
     
     - name: Upload release artifacts
       uses: softprops/action-gh-release@v1
       with:
-        files: digital-workforce-${{ github.ref_name }}.tar.gz
+        files: linx-${{ github.ref_name }}.tar.gz

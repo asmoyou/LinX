@@ -166,4 +166,5 @@ For issues or questions:
 
 ## License
 
-MIT License - feel free to modify and distribute
+By default, this template follows the license of the repository or package that distributes it.
+If you publish a generated skill separately, set an explicit license for that skill before distribution.

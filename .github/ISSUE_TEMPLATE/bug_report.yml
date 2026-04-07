@@ -1,0 +1,73 @@
+name: Bug Report
+description: Report a reproducible bug or regression
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to help improve LinX.
+        Please provide enough detail for us to reproduce the issue.
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: What happened, and what did you expect to happen instead?
+      placeholder: A clear and concise description of the bug.
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to Reproduce
+      description: List the smallest set of steps that reproduces the issue.
+      placeholder: |
+        1. Go to ...
+        2. Click ...
+        3. Run ...
+        4. Observe ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Share the relevant runtime details.
+      placeholder: |
+        - OS:
+        - Browser:
+        - Docker version:
+        - Python version:
+        - Node version:
+        - Deployment mode:
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant Logs or Screenshots
+      description: Paste logs, stack traces, or screenshots if available.
+      render: shell
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Affected Area
+      options:
+        - Frontend
+        - Backend API
+        - Agent Framework
+        - Project Execution
+        - Knowledge Base
+        - Memory
+        - Skills / MCP
+        - Deployment / Docker
+        - Documentation
+        - Other
+    validations:
+      required: true

@@ -4,7 +4,7 @@ version = "1.0.0"
 description = "LinX (灵枢) - Intelligent Collaboration Platform"
 authors = ["LinX Team"]
 readme = "README.md"
-license = "MIT"
+license = "Proprietary"
 python = "^3.11"
 
 [tool.poetry.dependencies]
