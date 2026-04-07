@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import { Plus, Search, Loader2 } from "lucide-react";
 import toast from "react-hot-toast";
@@ -16,6 +16,7 @@ import { DepartmentSelect } from "@/components/departments/DepartmentSelect";
 export const Workforce: React.FC = () => {
   const { t } = useTranslation();
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
 
   const [agents, setAgents] = useState<Agent[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -30,12 +31,34 @@ export const Workforce: React.FC = () => {
   const [selectedAgent, setSelectedAgent] = useState<Agent | null>(null);
   const [isDetailsModalOpen, setIsDetailsModalOpen] = useState(false);
   const [isConfigModalOpen, setIsConfigModalOpen] = useState(false);
+  const [configModalInitialTab, setConfigModalInitialTab] = useState<
+    "basic" | "runtime" | "capabilities" | "model" | "knowledge" | "access" | "channels"
+  >("basic");
   const [isTestModalOpen, setIsTestModalOpen] = useState(false);
 
   // Load agents on mount
   useEffect(() => {
     loadAgents();
   }, []);
+
+  useEffect(() => {
+    const configureAgentId = searchParams.get("configureAgent");
+    const tab = searchParams.get("tab");
+    if (!configureAgentId || agents.length === 0) {
+      return;
+    }
+
+    const agent = agents.find((candidate) => candidate.id === configureAgentId);
+    if (!agent) {
+      return;
+    }
+
+    setSelectedAgent(agent);
+    setConfigModalInitialTab(
+      tab === "runtime" ? "runtime" : "basic",
+    );
+    setIsConfigModalOpen(true);
+  }, [agents, searchParams]);
 
   const loadAgents = async () => {
     try {
@@ -89,6 +112,11 @@ export const Workforce: React.FC = () => {
 
       setAgents([...agents, newAgent]);
       toast.success(`Agent "${payload.name}" created successfully`);
+      if (runtimePreference !== "project_sandbox") {
+        setSelectedAgent(newAgent);
+        setConfigModalInitialTab("runtime");
+        setIsConfigModalOpen(true);
+      }
     } catch (error) {
       console.error("Failed to create agent:", error);
       toast.error("Failed to create agent. Please try again.");
@@ -102,7 +130,9 @@ export const Workforce: React.FC = () => {
 
   const handleTestAgent = (agent: Agent) => {
     if (agent.externalRuntime && !agent.externalRuntime.availableForExecution) {
-      toast.error(t("agent.externalRuntimeNotOnline", "This external agent is not online yet."));
+      setSelectedAgent(agent);
+      setConfigModalInitialTab("runtime");
+      setIsConfigModalOpen(true);
       return;
     }
     setSelectedAgent(agent);
@@ -115,7 +145,9 @@ export const Workforce: React.FC = () => {
       return;
     }
     if (agent.externalRuntime && !agent.externalRuntime.availableForConversation) {
-      toast.error(t("agent.externalRuntimeNotOnline", "This external agent is not online yet."));
+      setSelectedAgent(agent);
+      setConfigModalInitialTab("runtime");
+      setIsConfigModalOpen(true);
       return;
     }
     navigate(`/workforce/${agent.id}/conversations`);
@@ -123,6 +155,7 @@ export const Workforce: React.FC = () => {
 
   const handleConfigureAgent = (agent: Agent) => {
     setSelectedAgent(agent);
+    setConfigModalInitialTab("basic");
     setIsConfigModalOpen(true);
   };
 
@@ -160,6 +193,7 @@ export const Workforce: React.FC = () => {
       // Close modal
       console.log("[Workforce] Closing modal...");
       setIsConfigModalOpen(false);
+      setConfigModalInitialTab("basic");
       setSelectedAgent(null);
 
       // Show success notification
@@ -350,9 +384,17 @@ export const Workforce: React.FC = () => {
       <AgentConfigModal
         agent={selectedAgent}
         isOpen={isConfigModalOpen}
+        initialTab={configModalInitialTab}
         onClose={() => {
           setIsConfigModalOpen(false);
+          setConfigModalInitialTab("basic");
           setSelectedAgent(null);
+          if (searchParams.get("configureAgent")) {
+            const nextParams = new URLSearchParams(searchParams);
+            nextParams.delete("configureAgent");
+            nextParams.delete("tab");
+            setSearchParams(nextParams, { replace: true });
+          }
         }}
         onSave={handleSaveConfig}
       />

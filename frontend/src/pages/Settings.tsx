@@ -6,8 +6,9 @@ import { LLMSettings } from '../components/settings/LLMSettings';
 import { EnvVarsSettings } from '../components/settings/EnvVarsSettings';
 import { BusinessBaselineSettings } from '../components/settings/BusinessBaselineSettings';
 import { ExperienceSettings } from '../components/settings/ExperienceSettings';
+import { ProjectExecutionSettings } from '../components/settings/ProjectExecutionSettings';
 
-export type SettingsTab = 'baseline' | 'experience' | 'llm' | 'envVars';
+export type SettingsTab = 'baseline' | 'experience' | 'llm' | 'envVars' | 'projectExecution';
 
 interface TabConfig {
   id: SettingsTab;
@@ -18,7 +19,7 @@ interface TabConfig {
 
 const DEFAULT_TAB: SettingsTab = 'baseline';
 const TAB_PARAM = 'tab';
-const VALID_TABS: SettingsTab[] = ['baseline', 'experience', 'llm', 'envVars'];
+const VALID_TABS: SettingsTab[] = ['baseline', 'experience', 'llm', 'envVars', 'projectExecution'];
 
 const getSettingsTab = (value: string | null): SettingsTab =>
   VALID_TABS.includes(value as SettingsTab) ? (value as SettingsTab) : DEFAULT_TAB;
@@ -64,6 +65,12 @@ export const Settings: React.FC = () => {
       label: t('settings.tabs.envVars', 'Environment Variables'),
       icon: <KeyRound className="w-5 h-5" />,
       component: <EnvVarsSettings />,
+    },
+    {
+      id: 'projectExecution',
+      label: t('settings.tabs.projectExecution', 'Project Execution'),
+      icon: <Building2 className="w-5 h-5" />,
+      component: <ProjectExecutionSettings />,
     },
   ];
 

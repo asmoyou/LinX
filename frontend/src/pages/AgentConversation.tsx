@@ -508,6 +508,49 @@ export const AgentConversation: React.FC = () => {
   const isExternalRuntimeBlocked = Boolean(
     agent?.externalRuntime && !agent.externalRuntime.availableForConversation,
   );
+  const externalRuntimeSetupHref = agentId
+    ? `/workforce?configureAgent=${encodeURIComponent(agentId)}&tab=runtime`
+    : "/workforce";
+  const externalRuntimeBlockedMessage = useMemo(() => {
+    const runtime = agent?.externalRuntime;
+    if (!runtime) {
+      return t(
+        "agent.externalRuntimeBlockedConversation",
+        "This external agent is not online yet. Install or reconnect its host before chatting.",
+      );
+    }
+    if (runtime.launchCommandSource === "unset") {
+      return t(
+        "agent.externalRuntimeBlockedConversationNeedsCommand",
+        "This external agent is bound, but its launch command is not configured yet. Open Runtime Host to finish setup.",
+      );
+    }
+    switch (runtime.status) {
+      case "uninstalled":
+        return t(
+          "agent.externalRuntimeBlockedConversationUninstalled",
+          "This external agent has not been installed on a Runtime Host yet.",
+        );
+      case "offline":
+        return t(
+          "agent.externalRuntimeBlockedConversationOffline",
+          "This external agent is currently offline. Reconnect its Runtime Host before chatting.",
+        );
+      case "error":
+        return (
+          runtime.lastErrorMessage ||
+          t(
+            "agent.externalRuntimeBlockedConversationError",
+            "This external agent reported a Runtime Host error.",
+          )
+        );
+      default:
+        return t(
+          "agent.externalRuntimeBlockedConversation",
+          "This external agent is not online yet. Install or reconnect its host before chatting.",
+        );
+    }
+  }, [agent?.externalRuntime, t]);
 
   const loadConversationData = useCallback(async () => {
     if (!agentId) {
@@ -1573,7 +1616,7 @@ export const AgentConversation: React.FC = () => {
       return;
     }
     if (agent?.externalRuntime && !agent.externalRuntime.availableForConversation) {
-      toast.error(t("agent.externalRuntimeNotOnline", "This external agent is not online yet."));
+      toast.error(externalRuntimeBlockedMessage);
       return;
     }
 
@@ -2394,7 +2437,16 @@ export const AgentConversation: React.FC = () => {
             <div className="border-t border-zinc-200 px-5 py-4 dark:border-zinc-800">
               {isExternalRuntimeBlocked && (
                 <div className="mb-3 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800 dark:border-amber-900/40 dark:bg-amber-950/30 dark:text-amber-300">
-                  {t("agent.externalRuntimeBlockedConversation", "This external agent is not online yet. Install or reconnect its host before chatting.")}
+                  <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                    <span>{externalRuntimeBlockedMessage}</span>
+                    <button
+                      type="button"
+                      onClick={() => navigate(externalRuntimeSetupHref)}
+                      className="rounded-full border border-amber-300 px-3 py-1.5 text-xs font-semibold text-amber-800 transition hover:bg-amber-100 dark:border-amber-700 dark:text-amber-200 dark:hover:bg-amber-900/40"
+                    >
+                      {t("agent.openRuntimeHost", "Open Runtime Host")}
+                    </button>
+                  </div>
                 </div>
               )}
               {attachedFiles.length > 0 && (

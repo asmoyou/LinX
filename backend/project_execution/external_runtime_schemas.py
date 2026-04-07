@@ -25,6 +25,13 @@ class ExternalRuntimeStateResponse(BaseModel):
     boundAt: Optional[datetime] = None
     lastErrorMessage: Optional[str] = None
     updateAvailable: bool = False
+    launchCommandSource: str = "unset"
+    resolvedLaunchCommandTemplate: Optional[str] = None
+    localStatusUrl: Optional[str] = None
+    localStatusPort: Optional[int] = None
+    lastDispatchAction: Optional[str] = None
+    lastDispatchStatus: Optional[str] = None
+    lastDispatchErrorMessage: Optional[str] = None
 
 
 class ExternalAgentProfileUpdateRequest(BaseModel):
@@ -59,6 +66,14 @@ class ExternalUpdateCommandRequest(BaseModel):
 
 
 class ExternalUpdateCommandResponse(BaseModel):
+    command: str
+
+
+class ExternalUninstallCommandRequest(BaseModel):
+    target_os: str = Field(..., min_length=1, max_length=32)
+
+
+class ExternalUninstallCommandResponse(BaseModel):
     command: str
 
 

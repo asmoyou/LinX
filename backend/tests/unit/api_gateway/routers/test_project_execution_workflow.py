@@ -786,6 +786,143 @@ def test_request_runtime_update_creates_maintenance_dispatch(
     assert dispatch["request_payload"]["control_action"] == "update_runtime"
 
 
+def test_request_runtime_uninstall_creates_maintenance_dispatch(
+    api_client: TestClient, auth_headers: dict[str, str]
+):
+    project_response = api_client.post(
+        "/api/v1/projects",
+        json={
+            "name": "Runtime Uninstall Dispatch Project",
+            "description": "Create a maintenance dispatch for runtime uninstall.",
+            "status": "draft",
+            "configuration": {},
+        },
+        headers=auth_headers,
+    )
+    assert project_response.status_code == 201, project_response.text
+    project = project_response.json()
+
+    agent_id, machine_token = _provision_bound_external_agent(
+        api_client,
+        auth_headers,
+        project_id=project["project_id"],
+        owner_user_id=project["created_by_user_id"],
+        name="Runtime Uninstall Dispatch Agent",
+    )
+
+    response = api_client.post(
+        f"/api/v1/agents/{agent_id}/external-runtime/request-uninstall",
+        headers=auth_headers,
+    )
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["source_type"] == "maintenance"
+    assert payload["source_id"] == "uninstall_runtime"
+    assert payload["request_payload"]["control_action"] == "uninstall_runtime"
+
+    dispatch_response = api_client.get(
+        "/api/v1/external-runtime/dispatches/next",
+        headers={"Authorization": f"Bearer {machine_token}"},
+    )
+    assert dispatch_response.status_code == 200, dispatch_response.text
+    dispatch = dispatch_response.json()
+    assert dispatch["dispatch_id"] == payload["dispatch_id"]
+    assert dispatch["request_payload"]["control_action"] == "uninstall_runtime"
+
+
+def test_request_runtime_uninstall_revokes_binding_and_rejects_future_heartbeats(
+    api_client: TestClient, auth_headers: dict[str, str]
+):
+    project_response = api_client.post(
+        "/api/v1/projects",
+        json={
+            "name": "Runtime Uninstall Completion Project",
+            "description": "Complete runtime uninstall flow and reject future heartbeats.",
+            "status": "draft",
+            "configuration": {},
+        },
+        headers=auth_headers,
+    )
+    assert project_response.status_code == 201, project_response.text
+    project = project_response.json()
+
+    agent_id, machine_token = _provision_bound_external_agent(
+        api_client,
+        auth_headers,
+        project_id=project["project_id"],
+        owner_user_id=project["created_by_user_id"],
+        name="Runtime Uninstall Completion Agent",
+    )
+    host_headers = {"Authorization": f"Bearer {machine_token}"}
+
+    request_response = api_client.post(
+        f"/api/v1/agents/{agent_id}/external-runtime/request-uninstall",
+        headers=auth_headers,
+    )
+    assert request_response.status_code == 200, request_response.text
+    dispatch_id = request_response.json()["dispatch_id"]
+
+    next_dispatch_response = api_client.get(
+        "/api/v1/external-runtime/dispatches/next",
+        headers=host_headers,
+    )
+    assert next_dispatch_response.status_code == 200, next_dispatch_response.text
+    assert next_dispatch_response.json()["dispatch_id"] == dispatch_id
+
+    ack_response = api_client.post(
+        f"/api/v1/external-runtime/dispatches/{dispatch_id}/ack",
+        json={"status": "running", "result_payload": {"maintenance": True}},
+        headers=host_headers,
+    )
+    assert ack_response.status_code == 200, ack_response.text
+
+    complete_response = api_client.post(
+        f"/api/v1/external-runtime/dispatches/{dispatch_id}/complete",
+        json={
+            "status": "completed",
+            "result_payload": {"mode": "uninstall_runtime", "cleanup_required": True},
+        },
+        headers=host_headers,
+    )
+    assert complete_response.status_code == 200, complete_response.text
+
+    unregister_response = api_client.post(
+        "/api/v1/external-runtime/self-unregister",
+        headers=host_headers,
+    )
+    assert unregister_response.status_code == 200, unregister_response.text
+
+    heartbeat_response = api_client.post(
+        "/api/v1/external-runtime/heartbeat",
+        json={
+            "host_name": "test-host",
+            "host_os": "linux",
+            "host_arch": "amd64",
+            "host_fingerprint": f"fingerprint-{agent_id}",
+            "current_version": "0.1.0",
+            "status": "online",
+            "metadata": {},
+        },
+        headers=host_headers,
+    )
+    assert heartbeat_response.status_code == 401, heartbeat_response.text
+    heartbeat_payload = heartbeat_response.json()
+    heartbeat_detail = heartbeat_payload.get("detail") or heartbeat_payload.get("message")
+    assert heartbeat_detail in {
+        "external_agent_binding_revoked",
+        "external_agent_machine_token_invalid",
+    }
+
+    overview_response = api_client.get(
+        f"/api/v1/agents/{agent_id}/external-runtime",
+        headers=auth_headers,
+    )
+    assert overview_response.status_code == 200, overview_response.text
+    overview = overview_response.json()
+    assert overview["state"]["status"] == "uninstalled"
+    assert overview["state"]["bound"] is False
+
+
 def test_host_action_dispatch_uses_platform_default_launch_command(
     api_client: TestClient, auth_headers: dict[str, str]
 ):

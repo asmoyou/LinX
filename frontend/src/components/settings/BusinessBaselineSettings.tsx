@@ -40,7 +40,7 @@ const INITIAL_SUMMARY: BaselineSummary = {
   healthyProviderCount: 0,
   hasDefaultProvider: false,
   envVarCount: 0,
-  hasProjectExecutionPolicy: true,
+  hasProjectExecutionPolicy: false,
   hasUiExperiencePolicy: false,
   defaultMotionPreference: 'auto',
   emergencyMotionDisabled: false,
@@ -68,12 +68,13 @@ export const BusinessBaselineSettings = ({ onOpenTab }: BusinessBaselineSettings
     const loadBaseline = async () => {
       setLoading(true);
       try {
-        const [llmResult, envResult, experienceResult] =
+        const [llmResult, envResult, experienceResult, projectExecutionResult] =
           await Promise.allSettled([
-          llmApi.getProvidersConfig(),
-          skillsApi.listEnvVars(),
-          platformApi.getUiExperience(),
-        ]);
+            llmApi.getProvidersConfig(),
+            skillsApi.listEnvVars(),
+            platformApi.getUiExperience(),
+            platformApi.getProjectExecutionSettings(),
+          ]);
 
         if (!active) return;
 
@@ -97,6 +98,12 @@ export const BusinessBaselineSettings = ({ onOpenTab }: BusinessBaselineSettings
             experienceResult.value.default_motion_preference;
           nextSummary.emergencyMotionDisabled =
             experienceResult.value.emergency_disable_motion;
+        }
+
+        if (projectExecutionResult.status === 'fulfilled') {
+          nextSummary.hasProjectExecutionPolicy = Boolean(
+            projectExecutionResult.value.default_launch_command_template?.trim(),
+          );
         }
 
         setSummary(nextSummary);

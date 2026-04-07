@@ -2,7 +2,7 @@ import apiClient from './client';
 import type { UiExperienceSettings } from '@/motion';
 
 export interface ProjectExecutionPlatformSettings {
-  external_agent_command_template: string;
+  default_launch_command_template: string;
 }
 
 export const platformApi = {

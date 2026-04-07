@@ -12,7 +12,7 @@ router = APIRouter()
 
 
 class ProjectExecutionSettings(BaseModel):
-    external_agent_command_template: str = Field(default="")
+    default_launch_command_template: str = Field(default="")
 
 
 def _ensure_platform_settings_access(current_user: CurrentUser) -> None:

@@ -8,6 +8,7 @@ import type {
   ConversationMessage,
   FeishuPublicationConfig,
 } from "../types/agent";
+import type { ExternalAgentDispatch } from "../types/projectExecution";
 
 export interface CreateAgentRequest {
   name: string;
@@ -138,6 +139,13 @@ export interface ExternalRuntimeInstallCommandResponse {
 export interface ExternalRuntimeUpdateCommandResponse {
   command: string;
 }
+
+export interface ExternalRuntimeUninstallCommandResponse {
+  command: string;
+}
+
+export interface ExternalRuntimeMaintenanceDispatchResponse
+  extends ExternalAgentDispatch {}
 
 /**
  * Agents API
@@ -843,6 +851,35 @@ export const agentsApi = {
     const response = await apiClient.post<ExternalRuntimeUpdateCommandResponse>(
       `/agents/${agentId}/external-runtime/update-command`,
       { target_os: targetOs },
+    );
+    return response.data;
+  },
+
+  createExternalRuntimeUninstallCommand: async (
+    agentId: string,
+    targetOs: 'windows' | 'darwin' | 'linux',
+  ): Promise<ExternalRuntimeUninstallCommandResponse> => {
+    const response = await apiClient.post<ExternalRuntimeUninstallCommandResponse>(
+      `/agents/${agentId}/external-runtime/uninstall-command`,
+      { target_os: targetOs },
+    );
+    return response.data;
+  },
+
+  requestExternalRuntimeUpdate: async (
+    agentId: string,
+  ): Promise<ExternalRuntimeMaintenanceDispatchResponse> => {
+    const response = await apiClient.post<ExternalRuntimeMaintenanceDispatchResponse>(
+      `/agents/${agentId}/external-runtime/request-update`,
+    );
+    return response.data;
+  },
+
+  requestExternalRuntimeUninstall: async (
+    agentId: string,
+  ): Promise<ExternalRuntimeMaintenanceDispatchResponse> => {
+    const response = await apiClient.post<ExternalRuntimeMaintenanceDispatchResponse>(
+      `/agents/${agentId}/external-runtime/request-uninstall`,
     );
     return response.data;
   },

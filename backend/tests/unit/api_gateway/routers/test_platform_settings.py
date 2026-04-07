@@ -105,3 +105,62 @@ def test_update_ui_experience_rejects_non_admin_roles(client: TestClient) -> Non
 
     assert response.status_code == 403
     assert response.json()["detail"] == "Insufficient permissions to manage platform UI settings"
+
+
+def test_get_project_execution_returns_default_launch_command_template(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client.app.dependency_overrides[platform_settings_router.get_current_user] = (
+        lambda: CurrentUser(user_id="admin-1", username="admin", role="admin")
+    )
+    monkeypatch.setattr(
+        platform_settings_router,
+        "get_project_execution_settings",
+        lambda _session: {
+            "default_launch_command_template": "codex exec \"$LINX_AGENT_PROMPT\"",
+        },
+    )
+
+    response = client.get("/api/v1/platform/settings/project-execution")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "default_launch_command_template": "codex exec \"$LINX_AGENT_PROMPT\"",
+    }
+
+
+def test_update_project_execution_accepts_manager_role(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    captured: dict = {}
+    client.app.dependency_overrides[platform_settings_router.get_current_user] = (
+        lambda: CurrentUser(user_id="manager-1", username="manager", role="manager")
+    )
+
+    def _capture_update(session, value):
+        captured["session"] = session
+        captured["value"] = value
+
+    monkeypatch.setattr(
+        platform_settings_router,
+        "upsert_project_execution_settings",
+        _capture_update,
+    )
+
+    response = client.put(
+        "/api/v1/platform/settings/project-execution",
+        json={
+            "default_launch_command_template": "codex exec --cd \"$LINX_WORKSPACE_ROOT\" \"$LINX_AGENT_PROMPT\"",
+        },
+    )
+
+    assert response.status_code == 200
+    assert (
+        response.json()["default_launch_command_template"]
+        == 'codex exec --cd "$LINX_WORKSPACE_ROOT" "$LINX_AGENT_PROMPT"'
+    )
+    assert (
+        captured["value"]["default_launch_command_template"]
+        == 'codex exec --cd "$LINX_WORKSPACE_ROOT" "$LINX_AGENT_PROMPT"'
+    )
+    assert client.app.state.session.commit_called is True

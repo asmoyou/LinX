@@ -369,6 +369,7 @@ class AgentProvisioningProfile(Base):
     default_skill_ids = Column(ARRAY(String), nullable=False, default=list)
     default_provider = Column(String(100), nullable=True)
     default_model = Column(String(255), nullable=True)
+    runtime_type = Column(String(50), nullable=False, default="project_sandbox")
     temperature = Column(Float, nullable=True, default=0.2)
     max_tokens = Column(Integer, nullable=True, default=4000)
     sandbox_mode = Column(String(50), nullable=False, default="run_shared")

@@ -12,6 +12,13 @@ export interface ExternalRuntimeState {
   boundAt?: string | null;
   lastErrorMessage?: string | null;
   updateAvailable: boolean;
+  launchCommandSource: 'platform' | 'agent' | 'unset' | string;
+  resolvedLaunchCommandTemplate?: string | null;
+  localStatusUrl?: string | null;
+  localStatusPort?: number | null;
+  lastDispatchAction?: string | null;
+  lastDispatchStatus?: string | null;
+  lastDispatchErrorMessage?: string | null;
 }
 
 export interface ExternalRuntimeProfile {

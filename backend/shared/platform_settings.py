@@ -121,14 +121,17 @@ def upsert_ui_experience_settings(
 
 
 DEFAULT_PROJECT_EXECUTION_SETTINGS: dict[str, Any] = {
-    "external_agent_command_template": "",
+    "default_launch_command_template": "",
 }
 
 
 def merge_project_execution_settings(value: dict[str, Any] | None) -> dict[str, Any]:
     payload = value if isinstance(value, dict) else {}
+    legacy_template = str(payload.get("external_agent_command_template") or "").strip()
     return {
-        "external_agent_command_template": str(payload.get("external_agent_command_template") or "").strip(),
+        "default_launch_command_template": str(
+            payload.get("default_launch_command_template") or legacy_template
+        ).strip(),
     }
 
 

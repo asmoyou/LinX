@@ -42,6 +42,9 @@ vi.mock('@/components/settings/EnvVarsSettings', () => ({
   EnvVarsSettings: () => <div>Env Vars Panel</div>,
 }));
 
+vi.mock('@/components/settings/ProjectExecutionSettings', () => ({
+  ProjectExecutionSettings: () => <div>Project Execution Panel</div>,
+}));
 
 const LocationDisplay = () => {
   const location = useLocation();
@@ -96,6 +99,29 @@ describe('Settings page', () => {
 
     expect(screen.getByText('LLM Panel')).toBeInTheDocument();
     expect(screen.getByTestId('location')).toHaveTextContent('/settings?tab=llm');
+  });
+
+  it('supports the project execution tab in the URL and navigation', () => {
+    render(
+      <MemoryRouter initialEntries={['/settings?tab=projectExecution']}>
+        <Routes>
+          <Route
+            path="/settings"
+            element={
+              <>
+                <Settings />
+                <LocationDisplay />
+              </>
+            }
+          />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    expect(screen.getByText('Project Execution Panel')).toBeInTheDocument();
+    expect(screen.getByTestId('location')).toHaveTextContent(
+      '/settings?tab=projectExecution',
+    );
   });
 
   it('lets baseline shortcuts open the experience tab without local-only state', () => {

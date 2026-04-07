@@ -174,6 +174,8 @@ class JWTAuthMiddleware(BaseHTTPMiddleware):
             "/external-runtime/install.ps1",
             "/external-runtime/update.sh",
             "/external-runtime/update.ps1",
+            "/external-runtime/uninstall.sh",
+            "/external-runtime/uninstall.ps1",
         )):
             return True
 

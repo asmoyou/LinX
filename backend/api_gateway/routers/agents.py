@@ -2305,6 +2305,13 @@ class ExternalRuntimeResponse(BaseModel):
     boundAt: Optional[datetime] = None
     lastErrorMessage: Optional[str] = None
     updateAvailable: bool = False
+    launchCommandSource: str = "unset"
+    resolvedLaunchCommandTemplate: Optional[str] = None
+    localStatusUrl: Optional[str] = None
+    localStatusPort: Optional[int] = None
+    lastDispatchAction: Optional[str] = None
+    lastDispatchStatus: Optional[str] = None
+    lastDispatchErrorMessage: Optional[str] = None
 
 
 class AgentResponse(BaseModel):
@@ -2441,6 +2448,13 @@ def _build_agent_response(
                     boundAt=runtime_state.bound_at,
                     lastErrorMessage=runtime_state.last_error_message,
                     updateAvailable=runtime_state.update_available,
+                    launchCommandSource=runtime_state.launch_command_source,
+                    resolvedLaunchCommandTemplate=runtime_state.resolved_launch_command_template,
+                    localStatusUrl=runtime_state.local_status_url,
+                    localStatusPort=runtime_state.local_status_port,
+                    lastDispatchAction=runtime_state.last_dispatch_action,
+                    lastDispatchStatus=runtime_state.last_dispatch_status,
+                    lastDispatchErrorMessage=runtime_state.last_dispatch_error_message,
                 )
                 response_status = "idle" if runtime_state.status == "online" else "offline"
 

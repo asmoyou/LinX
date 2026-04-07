@@ -1,17 +1,11 @@
 from __future__ import annotations
 
-import hashlib
-import io
-import tarfile
-import textwrap
-import zipfile
 from dataclasses import dataclass
-from datetime import timezone
 from typing import Optional
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
-from fastapi.responses import PlainTextResponse, StreamingResponse
+from fastapi.responses import PlainTextResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from access_control.agent_access import load_accessible_agent_or_raise
@@ -19,6 +13,16 @@ from access_control.permissions import CurrentUser, get_current_user
 from api_gateway.feishu_publication_helpers import resolve_public_web_base_url
 from database.connection import get_db_session
 from database.project_execution_models import ExternalAgentBinding
+from project_execution.external_runtime_installer import (
+    build_artifact_bytes,
+    build_manifest,
+    render_install_ps1,
+    render_install_sh,
+    render_uninstall_ps1,
+    render_uninstall_sh,
+    render_update_ps1,
+    render_update_sh,
+)
 from project_execution.external_runtime_schemas import (
     ExternalAgentDispatchResponse,
     ExternalAgentProfileResponse,
@@ -27,20 +31,20 @@ from project_execution.external_runtime_schemas import (
     ExternalInstallCommandRequest,
     ExternalInstallCommandResponse,
     ExternalRuntimeArtifactManifestResponse,
-    ExternalRuntimeArtifactRecord,
     ExternalRuntimeBootstrapRequest,
     ExternalRuntimeBootstrapResponse,
     ExternalRuntimeHeartbeatRequest,
     ExternalRuntimeHeartbeatResponse,
     ExternalRuntimeOverviewResponse,
     ExternalRuntimeStateResponse,
+    ExternalUninstallCommandRequest,
+    ExternalUninstallCommandResponse,
     ExternalRuntimeUpdateCheckResponse,
     ExternalUpdateCommandRequest,
     ExternalUpdateCommandResponse,
 )
 from project_execution.external_runtime_service import (
     CURRENT_EXTERNAL_RUNTIME_VERSION,
-    EXTERNAL_RUNTIME_OFFLINE_SECONDS,
     EXTERNAL_RUNTIME_TYPES,
     SUPPORTED_EXTERNAL_TARGETS,
     ExternalRuntimeBindingRevokedError,
@@ -50,6 +54,7 @@ from project_execution.external_runtime_service import (
     ExternalRuntimePlatformError,
     ExternalRuntimeService,
     ExternalRuntimeTokenError,
+    ExternalRuntimeUnavailableError,
 )
 from project_execution.service import parse_uuid
 
@@ -80,6 +85,13 @@ def _to_state_response(state) -> ExternalRuntimeStateResponse:
         boundAt=state.bound_at,
         lastErrorMessage=state.last_error_message,
         updateAvailable=state.update_available,
+        launchCommandSource=state.launch_command_source,
+        resolvedLaunchCommandTemplate=state.resolved_launch_command_template,
+        localStatusUrl=state.local_status_url,
+        localStatusPort=state.local_status_port,
+        lastDispatchAction=state.last_dispatch_action,
+        lastDispatchStatus=state.last_dispatch_status,
+        lastDispatchErrorMessage=state.last_dispatch_error_message,
     )
 
 
@@ -206,6 +218,92 @@ async def create_external_runtime_update_command(
         return ExternalUpdateCommandResponse(command=command)
 
 
+@user_router.post(
+    "/agents/{agent_id}/external-runtime/request-update",
+    response_model=ExternalAgentDispatchResponse,
+)
+async def request_external_runtime_update(
+    agent_id: str,
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    with get_db_session() as session:
+        agent = _assert_external_agent_for_user(
+            session=session,
+            agent_id=agent_id,
+            current_user=current_user,
+        )
+        service = ExternalRuntimeService(session)
+        try:
+            dispatch = service.create_maintenance_dispatch(
+                agent_id=agent.agent_id,
+                action="update_runtime",
+                request_payload={
+                    "desired_version": (
+                        service.summarize_state(agent=agent).desired_version
+                        if service.summarize_state(agent=agent)
+                        else CURRENT_EXTERNAL_RUNTIME_VERSION
+                    )
+                },
+            )
+        except ExternalRuntimeUnavailableError as exc:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+        return ExternalAgentDispatchResponse.model_validate(dispatch)
+
+
+@user_router.post(
+    "/agents/{agent_id}/external-runtime/request-uninstall",
+    response_model=ExternalAgentDispatchResponse,
+)
+async def request_external_runtime_uninstall(
+    agent_id: str,
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    with get_db_session() as session:
+        agent = _assert_external_agent_for_user(
+            session=session,
+            agent_id=agent_id,
+            current_user=current_user,
+        )
+        service = ExternalRuntimeService(session)
+        try:
+            dispatch = service.create_maintenance_dispatch(
+                agent_id=agent.agent_id,
+                action="uninstall_runtime",
+            )
+        except ExternalRuntimeUnavailableError as exc:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+        return ExternalAgentDispatchResponse.model_validate(dispatch)
+
+
+@user_router.post(
+    "/agents/{agent_id}/external-runtime/uninstall-command",
+    response_model=ExternalUninstallCommandResponse,
+)
+async def create_external_runtime_uninstall_command(
+    agent_id: str,
+    payload: ExternalUninstallCommandRequest,
+    request: Request,
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    base_url = _resolve_public_base_url_or_400(request)
+    with get_db_session() as session:
+        agent = _assert_external_agent_for_user(
+            session=session,
+            agent_id=agent_id,
+            current_user=current_user,
+        )
+        service = ExternalRuntimeService(session)
+        try:
+            command = service.build_uninstall_command(
+                agent_id=agent.agent_id,
+                target_os=payload.target_os,
+                base_url=base_url,
+            )
+        except ExternalRuntimePlatformError as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+        return ExternalUninstallCommandResponse(command=command)
+
+
 @user_router.post("/agents/{agent_id}/external-runtime/unbind", status_code=status.HTTP_200_OK)
 async def unbind_external_runtime(
     agent_id: str,
@@ -215,6 +313,26 @@ async def unbind_external_runtime(
         agent = _assert_external_agent_for_user(session=session, agent_id=agent_id, current_user=current_user)
         ExternalRuntimeService(session).unbind_agent(agent_id=agent.agent_id)
         return {"success": True, "agent_id": str(agent.agent_id)}
+
+
+@host_router.post("/external-runtime/self-unregister", status_code=status.HTTP_200_OK)
+async def self_unregister_external_runtime(
+    principal: ExternalBindingPrincipal = Depends(get_current_external_agent_binding),
+):
+    with get_db_session() as session:
+        service = ExternalRuntimeService(session)
+        binding = (
+            session.query(ExternalAgentBinding)
+            .filter(ExternalAgentBinding.binding_id == principal.binding_id)
+            .first()
+        )
+        if binding is None:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="external_agent_machine_token_invalid",
+            )
+        service.revoke_binding(binding=binding, reason="Runtime uninstalled")
+        return {"success": True, "agent_id": str(binding.agent_id)}
 
 
 @host_router.post("/external-runtime/bootstrap", response_model=ExternalRuntimeBootstrapResponse)
@@ -390,67 +508,10 @@ async def fail_external_dispatch(
         return ExternalAgentDispatchResponse.model_validate(dispatch)
 
 
-# --- artifact helpers -----------------------------------------------------
-
-def _runtime_payload_text(version: str, target_os: str, arch: str) -> str:
-    executable_name = "linx-external-runtime.exe" if target_os == "windows" else "linx-external-runtime"
-    return textwrap.dedent(
-        f"""
-        Placeholder external runtime package
-        version={version}
-        os={target_os}
-        arch={arch}
-        executable={executable_name}
-        """
-    ).strip() + "\n"
-
-
-def _build_artifact_bytes(version: str, target_os: str, arch: str) -> tuple[bytes, str, str]:
-    folder_name = f"linx-external-runtime_{version}_{target_os}_{arch}"
-    payload = _runtime_payload_text(version, target_os, arch).encode("utf-8")
-    if target_os == "windows":
-        buf = io.BytesIO()
-        with zipfile.ZipFile(buf, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
-            zf.writestr(f"{folder_name}/README.txt", payload)
-            zf.writestr(f"{folder_name}/linx-external-runtime.exe", b"placeholder-runtime-binary\n")
-        return buf.getvalue(), f"{folder_name}.zip", "application/zip"
-
-    buf = io.BytesIO()
-    with tarfile.open(fileobj=buf, mode="w:gz") as tar:
-        readme_info = tarfile.TarInfo(name=f"{folder_name}/README.txt")
-        readme_info.size = len(payload)
-        tar.addfile(readme_info, io.BytesIO(payload))
-        binary_bytes = b"#!/usr/bin/env bash\necho 'placeholder runtime binary'\n"
-        binary_info = tarfile.TarInfo(name=f"{folder_name}/linx-external-runtime")
-        binary_info.mode = 0o755
-        binary_info.size = len(binary_bytes)
-        tar.addfile(binary_info, io.BytesIO(binary_bytes))
-    suffix = ".tar.gz"
-    return buf.getvalue(), f"{folder_name}{suffix}", "application/gzip"
-
-
-def _build_manifest(base_url: str) -> ExternalRuntimeArtifactManifestResponse:
-    artifacts: list[ExternalRuntimeArtifactRecord] = []
-    for target_os, archs in SUPPORTED_EXTERNAL_TARGETS.items():
-        for arch in archs:
-            payload, filename, _content_type = _build_artifact_bytes(CURRENT_EXTERNAL_RUNTIME_VERSION, target_os, arch)
-            digest = hashlib.sha256(payload).hexdigest()
-            artifacts.append(
-                ExternalRuntimeArtifactRecord(
-                    version=CURRENT_EXTERNAL_RUNTIME_VERSION,
-                    os=target_os,
-                    arch=arch,
-                    sha256=digest,
-                    download_path=f"{base_url}/api/v1/external-runtime/artifacts/{CURRENT_EXTERNAL_RUNTIME_VERSION}/{target_os}/{arch}/download",
-                )
-            )
-    return ExternalRuntimeArtifactManifestResponse(version=CURRENT_EXTERNAL_RUNTIME_VERSION, artifacts=artifacts)
-
-
 @host_router.get("/external-runtime/artifacts/manifest", response_model=ExternalRuntimeArtifactManifestResponse)
 async def get_external_runtime_artifact_manifest(request: Request):
     base_url = _resolve_public_base_url_or_400(request)
-    return _build_manifest(base_url)
+    return build_manifest(base_url)
 
 
 @host_router.get("/external-runtime/artifacts/{version}/{target_os}/{arch}/download")
@@ -461,7 +522,7 @@ async def download_external_runtime_artifact(version: str, target_os: str, arch:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Artifact version not found")
     if target_os not in SUPPORTED_EXTERNAL_TARGETS or arch not in SUPPORTED_EXTERNAL_TARGETS[target_os]:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Artifact target not found")
-    payload, filename, content_type = _build_artifact_bytes(version, target_os, arch)
+    payload, filename, content_type = build_artifact_bytes(version, target_os, arch)
     headers = {"Content-Disposition": f'attachment; filename="{filename}"'}
     return Response(content=payload, media_type=content_type, headers=headers)
 
@@ -477,21 +538,7 @@ async def render_external_runtime_install_sh(
     target = str(target or "").strip().lower()
     if target not in {"linux", "darwin"}:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="external_agent_platform_not_supported")
-    return textwrap.dedent(
-        f"""
-        #!/usr/bin/env bash
-        set -euo pipefail
-        AGENT_ID="{agent_id}"
-        TARGET_OS="{target}"
-        INSTALL_CODE="{code}"
-        CONTROL_PLANE="{base_url}"
-        MANIFEST_URL="$CONTROL_PLANE/api/v1/external-runtime/artifacts/manifest"
-        echo "Installing LinX external runtime for $AGENT_ID on $TARGET_OS"
-        echo "Fetching manifest from $MANIFEST_URL"
-        echo "Bootstrap endpoint: $CONTROL_PLANE/api/v1/external-runtime/bootstrap"
-        echo "This installer is managed by the control plane."
-        """
-    ).strip() + "\n"
+    return render_install_sh(agent_id=agent_id, base_url=base_url, target=target, code=code)
 
 
 @user_router.get("/agents/{agent_id}/external-runtime/update.sh", response_class=PlainTextResponse)
@@ -501,17 +548,20 @@ async def render_external_runtime_update_sh(
     target: str = Query(...),
 ):
     base_url = _resolve_public_base_url_or_400(request)
-    return textwrap.dedent(
-        f"""
-        #!/usr/bin/env bash
-        set -euo pipefail
-        AGENT_ID="{agent_id}"
-        TARGET_OS="{target}"
-        CONTROL_PLANE="{base_url}"
-        echo "Updating LinX external runtime for $AGENT_ID on $TARGET_OS"
-        echo "Fetch latest artifact manifest from $CONTROL_PLANE/api/v1/external-runtime/artifacts/manifest"
-        """
-    ).strip() + "\n"
+    return render_update_sh(agent_id=agent_id, base_url=base_url, target=str(target or "").strip().lower())
+
+
+@user_router.get("/agents/{agent_id}/external-runtime/uninstall.sh", response_class=PlainTextResponse)
+async def render_external_runtime_uninstall_sh(
+    agent_id: str,
+    request: Request,
+    target: str = Query(...),
+):
+    base_url = _resolve_public_base_url_or_400(request)
+    target = str(target or "").strip().lower()
+    if target not in {"linux", "darwin"}:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="external_agent_platform_not_supported")
+    return render_uninstall_sh(agent_id=agent_id, base_url=base_url, target=target)
 
 
 @user_router.get("/agents/{agent_id}/external-runtime/install.ps1", response_class=PlainTextResponse)
@@ -522,16 +572,12 @@ async def render_external_runtime_install_ps1(
     code: str = Query(...),
 ):
     base_url = _resolve_public_base_url_or_400(request)
-    return textwrap.dedent(
-        f"""
-        $AgentId = "{agent_id}"
-        $TargetOs = "{target}"
-        $InstallCode = "{code}"
-        $ControlPlane = "{base_url}"
-        Write-Host "Installing LinX external runtime for $AgentId on $TargetOs"
-        Write-Host "Bootstrap endpoint: $ControlPlane/api/v1/external-runtime/bootstrap"
-        """
-    ).strip() + "\n"
+    return render_install_ps1(
+        agent_id=agent_id,
+        base_url=base_url,
+        target=str(target or "").strip().lower(),
+        code=code,
+    )
 
 
 @user_router.get("/agents/{agent_id}/external-runtime/update.ps1", response_class=PlainTextResponse)
@@ -541,12 +587,22 @@ async def render_external_runtime_update_ps1(
     target: str = Query(...),
 ):
     base_url = _resolve_public_base_url_or_400(request)
-    return textwrap.dedent(
-        f"""
-        $AgentId = "{agent_id}"
-        $TargetOs = "{target}"
-        $ControlPlane = "{base_url}"
-        Write-Host "Updating LinX external runtime for $AgentId on $TargetOs"
-        Write-Host "Manifest endpoint: $ControlPlane/api/v1/external-runtime/artifacts/manifest"
-        """
-    ).strip() + "\n"
+    return render_update_ps1(
+        agent_id=agent_id,
+        base_url=base_url,
+        target=str(target or "").strip().lower(),
+    )
+
+
+@user_router.get("/agents/{agent_id}/external-runtime/uninstall.ps1", response_class=PlainTextResponse)
+async def render_external_runtime_uninstall_ps1(
+    agent_id: str,
+    request: Request,
+    target: str = Query(...),
+):
+    base_url = _resolve_public_base_url_or_400(request)
+    return render_uninstall_ps1(
+        agent_id=agent_id,
+        base_url=base_url,
+        target=str(target or "").strip().lower(),
+    )

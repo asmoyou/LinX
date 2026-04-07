@@ -72,6 +72,7 @@ const bindingModeOptionsForSkill = (
 interface AgentConfigModalProps {
   agent: Agent | null;
   isOpen: boolean;
+  initialTab?: "basic" | "runtime" | "capabilities" | "model" | "knowledge" | "access" | "channels";
   onClose: () => void;
   onSave: (agent: Agent, bindings: AgentSkillBindingDraft[]) => Promise<void>;
 }
@@ -79,6 +80,7 @@ interface AgentConfigModalProps {
 export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
   agent,
   isOpen,
+  initialTab = "basic",
   onClose,
   onSave,
 }) => {
@@ -135,6 +137,16 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
   const [externalRuntimeTarget, setExternalRuntimeTarget] = useState<"linux" | "darwin" | "windows">("linux");
   const [externalPathAllowlist, setExternalPathAllowlist] = useState("");
   const [externalLaunchCommandTemplate, setExternalLaunchCommandTemplate] = useState("");
+  const [installCommand, setInstallCommand] = useState("");
+  const [installCommandExpiresAt, setInstallCommandExpiresAt] = useState<string | null>(null);
+  const [maintenanceCommand, setMaintenanceCommand] = useState("");
+  const [maintenanceCommandLabel, setMaintenanceCommandLabel] = useState("");
+  const [isGeneratingInstallCommand, setIsGeneratingInstallCommand] = useState(false);
+  const [isGeneratingUpdateCommand, setIsGeneratingUpdateCommand] = useState(false);
+  const [isGeneratingUninstallCommand, setIsGeneratingUninstallCommand] = useState(false);
+  const [isRequestingRuntimeUpdate, setIsRequestingRuntimeUpdate] = useState(false);
+  const [isRequestingRuntimeUninstall, setIsRequestingRuntimeUninstall] = useState(false);
+  const [isSavingExternalRuntimeProfile, setIsSavingExternalRuntimeProfile] = useState(false);
 
   const [formData, setFormData] = useState<Partial<Agent>>({
     name: "",
@@ -196,8 +208,13 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
       setAvatarPreview(agent.avatar || "");
       setSaveError(null);
       setModelMetadata(null);
+      setActiveTab(initialTab);
+      setInstallCommand("");
+      setInstallCommandExpiresAt(null);
+      setMaintenanceCommand("");
+      setMaintenanceCommandLabel("");
     }
-  }, [agent, isOpen]);
+  }, [agent, initialTab, isOpen]);
 
   // Fetch available providers and models
   useEffect(() => {
@@ -482,6 +499,20 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
     }
   };
 
+  useEffect(() => {
+    if (!isOpen || activeTab !== "runtime" || agentKind !== "external" || !agent?.id) {
+      return;
+    }
+
+    const timer = window.setInterval(() => {
+      void loadExternalRuntimeOverview();
+    }, 15000);
+
+    return () => {
+      window.clearInterval(timer);
+    };
+  }, [activeTab, agent?.id, agentKind, isOpen]);
+
   if (!isOpen || !agent) return null;
 
   const hasAdvancedSkillBindingOptions = skillBindings.some((binding) => {
@@ -698,16 +729,103 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
 
   const copyInstallCommand = async () => {
     if (!agent?.id) return;
-    const response = await agentsApi.createExternalRuntimeInstallCommand(agent.id, externalRuntimeTarget);
-    await navigator.clipboard.writeText(response.command);
-    toast.success(t("agent.externalInstallCommandCopied", "Install command copied"));
+    setIsGeneratingInstallCommand(true);
+    try {
+      const response = await agentsApi.createExternalRuntimeInstallCommand(agent.id, externalRuntimeTarget);
+      setInstallCommand(response.command);
+      setInstallCommandExpiresAt(response.expires_at);
+      await navigator.clipboard.writeText(response.command);
+      toast.success(t("agent.externalInstallCommandCopied", "Install command copied"));
+    } finally {
+      setIsGeneratingInstallCommand(false);
+    }
   };
 
   const copyUpdateCommand = async () => {
     if (!agent?.id) return;
-    const response = await agentsApi.createExternalRuntimeUpdateCommand(agent.id, externalRuntimeTarget);
-    await navigator.clipboard.writeText(response.command);
-    toast.success(t("agent.externalUpdateCommandCopied", "Update command copied"));
+    setIsGeneratingUpdateCommand(true);
+    try {
+      const response = await agentsApi.createExternalRuntimeUpdateCommand(agent.id, externalRuntimeTarget);
+      setMaintenanceCommand(response.command);
+      setMaintenanceCommandLabel(
+        t("agent.externalMaintenanceCommandLabelUpdate", "Update command"),
+      );
+      await navigator.clipboard.writeText(response.command);
+      toast.success(t("agent.externalUpdateCommandCopied", "Update command copied"));
+    } finally {
+      setIsGeneratingUpdateCommand(false);
+    }
+  };
+
+  const copyUninstallCommand = async () => {
+    if (!agent?.id) return;
+    setIsGeneratingUninstallCommand(true);
+    try {
+      const response = await agentsApi.createExternalRuntimeUninstallCommand(
+        agent.id,
+        externalRuntimeTarget,
+      );
+      setMaintenanceCommand(response.command);
+      setMaintenanceCommandLabel(
+        t("agent.externalMaintenanceCommandLabelUninstall", "Uninstall command"),
+      );
+      await navigator.clipboard.writeText(response.command);
+      toast.success(
+        t("agent.externalUninstallCommandCopied", "Uninstall command copied"),
+      );
+    } finally {
+      setIsGeneratingUninstallCommand(false);
+    }
+  };
+
+  const handleRequestRuntimeUpdate = async () => {
+    if (!agent?.id) return;
+    setIsRequestingRuntimeUpdate(true);
+    try {
+      await agentsApi.requestExternalRuntimeUpdate(agent.id);
+      toast.success(
+        t(
+          "agent.externalRuntimeUpdateQueued",
+          "Runtime Host update has been queued",
+        ),
+      );
+      await loadExternalRuntimeOverview();
+    } catch (error: any) {
+      toast.error(
+        error?.response?.data?.detail ||
+          t(
+            "agent.externalRuntimeUpdateQueueFailed",
+            "Failed to queue Runtime Host update",
+          ),
+      );
+    } finally {
+      setIsRequestingRuntimeUpdate(false);
+    }
+  };
+
+  const handleRequestRuntimeUninstall = async () => {
+    if (!agent?.id) return;
+    setIsRequestingRuntimeUninstall(true);
+    try {
+      await agentsApi.requestExternalRuntimeUninstall(agent.id);
+      toast.success(
+        t(
+          "agent.externalRuntimeUninstallQueued",
+          "Runtime Host uninstall has been queued",
+        ),
+      );
+      await loadExternalRuntimeOverview();
+    } catch (error: any) {
+      toast.error(
+        error?.response?.data?.detail ||
+          t(
+            "agent.externalRuntimeUninstallQueueFailed",
+            "Failed to queue Runtime Host uninstall",
+          ),
+      );
+    } finally {
+      setIsRequestingRuntimeUninstall(false);
+    }
   };
 
   const handleUnbindExternalRuntime = async () => {
@@ -717,10 +835,96 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
     await loadExternalRuntimeOverview();
   };
 
+  const handleSaveExternalRuntimeProfile = async () => {
+    if (!agent?.id) return;
+    setIsSavingExternalRuntimeProfile(true);
+    try {
+      const overview = await agentsApi.updateExternalRuntimeProfile(agent.id, {
+        pathAllowlist: externalPathAllowlist
+          .split(/\n+/)
+          .map((item) => item.trim())
+          .filter(Boolean),
+        launchCommandTemplate: externalLaunchCommandTemplate.trim() || undefined,
+        desiredVersion: externalRuntimeOverview?.profile?.desired_version || undefined,
+      });
+      setExternalRuntimeOverview(overview);
+      setExternalPathAllowlist((overview.profile.path_allowlist || []).join("\n"));
+      setExternalLaunchCommandTemplate(overview.profile.launch_command_template || "");
+      toast.success(
+        t("agent.externalRuntimeProfileSaved", "Runtime Host settings saved"),
+      );
+    } catch (error: any) {
+      toast.error(
+        error?.response?.data?.detail ||
+          t(
+            "agent.externalRuntimeProfileSaveFailed",
+            "Failed to save Runtime Host settings",
+          ),
+      );
+    } finally {
+      setIsSavingExternalRuntimeProfile(false);
+    }
+  };
+
   const formatExternalRuntimeLabel = (status?: string | null) =>
     t(`agent.externalRuntimeStatus.${status || "uninstalled"}`, {
       defaultValue: status || "uninstalled",
     });
+
+  const formatLaunchCommandSourceLabel = (source?: string | null) => {
+    switch (source) {
+      case "agent":
+        return t("agent.launchCommandSource.agent", "Agent override");
+      case "platform":
+        return t("agent.launchCommandSource.platform", "Platform default");
+      case "unset":
+      default:
+        return t("agent.launchCommandSource.unset", "Not configured");
+    }
+  };
+
+  const formatDispatchStatusLabel = (status?: string | null) => {
+    if (!status) {
+      return t("agent.externalRuntimeLastActionUnknown", "Unknown");
+    }
+    return String(status).replace(/_/g, " ");
+  };
+
+  const getExternalRuntimeSetupMessage = (overview?: ExternalRuntimeOverview | null) => {
+    const state = overview?.state;
+    if (!state) {
+      return t("agent.externalRuntimeSetupUnknown", "Runtime Host status is unavailable.");
+    }
+    if (state.launchCommandSource === "unset") {
+      return t(
+        "agent.externalRuntimeSetupNeedsCommand",
+        "Runtime Host is installed, but no launch command is configured yet.",
+      );
+    }
+    switch (state.status) {
+      case "uninstalled":
+        return t(
+          "agent.externalRuntimeSetupUninstalled",
+          "Generate the install command and run it on the target machine.",
+        );
+      case "offline":
+        return t(
+          "agent.externalRuntimeSetupOffline",
+          "This Runtime Host was bound before, but it is not currently connected.",
+        );
+      case "error":
+        return state.lastErrorMessage ||
+          t(
+            "agent.externalRuntimeSetupError",
+            "The Runtime Host reported an error. Review the binding and reconnect it.",
+          );
+      default:
+        return t(
+          "agent.externalRuntimeSetupOnline",
+          "This Runtime Host is online and ready to accept work.",
+        );
+    }
+  };
 
   const formatFeishuTimestamp = (value?: string | null) => {
     if (!value) {
@@ -1100,72 +1304,269 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
                       </p>
                     </div>
                   </div>
-                  <div className="rounded-xl border border-indigo-500/20 bg-indigo-500/5 p-4 space-y-4">
-                    <div className="flex flex-wrap items-center justify-between gap-3">
-                      <div>
-                        <label className="block text-sm font-semibold text-zinc-700 dark:text-zinc-300 mb-1">
-                          {t("agent.externalRuntimeStatusTitle", "Host Binding Status")}
-                        </label>
-                        <p className="text-sm text-zinc-700 dark:text-zinc-300">
-                          {isLoadingExternalRuntime
-                            ? t("agent.loading", "Loading...")
-                            : formatExternalRuntimeLabel(externalRuntimeOverview?.state.status || agent.externalRuntime?.status || "uninstalled")}
-                        </p>
-                      </div>
-                      <div className="flex items-center gap-2">
+                  <div className="space-y-4 rounded-xl border border-indigo-500/20 bg-indigo-500/5 p-4">
+                    <div className="rounded-xl border border-indigo-500/20 bg-white/70 p-4 dark:bg-zinc-950/40">
+                      <p className="text-xs font-semibold uppercase tracking-[0.18em] text-indigo-500">
+                        {t("agent.externalRuntimeStep1", "Step 1")}
+                      </p>
+                      <p className="mt-2 text-sm font-semibold text-zinc-800 dark:text-zinc-100">
+                        {t("agent.externalRuntimeInstallTitle", "Generate the one-line install command")}
+                      </p>
+                      <p className="mt-1 text-sm text-zinc-600 dark:text-zinc-400">
+                        {t("agent.externalRuntimeInstallDescription", "Pick the target OS, then copy and run the installer on the host machine.")}
+                      </p>
+                      <div className="mt-4 flex items-center gap-2">
                         {(["linux", "darwin", "windows"] as const).map((target) => (
                           <button
                             key={target}
                             type="button"
                             onClick={() => setExternalRuntimeTarget(target)}
-                            className={`rounded-full px-3 py-1 text-xs font-semibold transition ${externalRuntimeTarget === target ? "bg-indigo-600 text-white" : "bg-white/80 text-zinc-700 dark:bg-zinc-900/60 dark:text-zinc-200"}`}
+                            className={`rounded-full px-3 py-1 text-xs font-semibold transition ${externalRuntimeTarget === target ? "bg-indigo-600 text-white" : "bg-zinc-100 text-zinc-700 dark:bg-zinc-900 dark:text-zinc-200"}`}
                           >
                             {target}
                           </button>
                         ))}
                       </div>
+                      <div className="mt-4 flex flex-wrap gap-3">
+                        <button
+                          type="button"
+                          onClick={() => void copyInstallCommand()}
+                          disabled={isGeneratingInstallCommand}
+                          className="rounded-full bg-indigo-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-indigo-500 disabled:opacity-50"
+                        >
+                          {isGeneratingInstallCommand
+                            ? t("agent.loading", "Loading...")
+                            : t("agent.copyInstallCommand", "Copy Install Command")}
+                        </button>
+                        {installCommandExpiresAt ? (
+                          <p className="self-center text-xs text-zinc-500 dark:text-zinc-400">
+                            {t("agent.externalInstallCommandExpires", {
+                              value: formatFeishuTimestamp(installCommandExpiresAt),
+                              defaultValue: `Expires ${formatFeishuTimestamp(installCommandExpiresAt)}`,
+                            })}
+                          </p>
+                        ) : null}
+                      </div>
+                      {installCommand ? (
+                        <textarea
+                          readOnly
+                          value={installCommand}
+                          rows={4}
+                          className="mt-4 w-full rounded-xl border border-zinc-200 bg-zinc-50 px-4 py-3 text-sm text-zinc-900 outline-none dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100"
+                        />
+                      ) : null}
                     </div>
 
-                    <div className="grid gap-3 sm:grid-cols-2 text-sm text-zinc-700 dark:text-zinc-300">
-                      <p>{t("agent.externalRuntimeHost", "Host")}: {externalRuntimeOverview?.state.hostName || "—"}</p>
-                      <p>{t("agent.externalRuntimeOs", "OS")}: {externalRuntimeOverview?.state.hostOs || "—"}</p>
-                      <p>{t("agent.externalRuntimeArch", "Arch")}: {externalRuntimeOverview?.state.hostArch || "—"}</p>
-                      <p>{t("agent.externalRuntimeVersion", "Version")}: {externalRuntimeOverview?.state.currentVersion || "—"}</p>
+                    <div className="rounded-xl border border-zinc-200/80 bg-white/70 p-4 dark:border-zinc-800 dark:bg-zinc-950/40">
+                      <p className="text-xs font-semibold uppercase tracking-[0.18em] text-indigo-500">
+                        {t("agent.externalRuntimeStep2", "Step 2")}
+                      </p>
+                      <div className="mt-2 flex flex-wrap items-center justify-between gap-3">
+                        <div>
+                          <p className="text-sm font-semibold text-zinc-800 dark:text-zinc-100">
+                            {t("agent.externalRuntimeStatusTitle", "Host Binding Status")}
+                          </p>
+                          <p className="mt-1 text-sm text-zinc-600 dark:text-zinc-400">
+                            {isLoadingExternalRuntime
+                              ? t("agent.loading", "Loading...")
+                              : formatExternalRuntimeLabel(externalRuntimeOverview?.state.status || agent.externalRuntime?.status || "uninstalled")}
+                          </p>
+                        </div>
+                        <div className="flex flex-wrap gap-3">
+                          <button type="button" onClick={() => void loadExternalRuntimeOverview()} className="rounded-full border border-zinc-300 px-4 py-2 text-sm font-semibold text-zinc-700 transition hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-200 dark:hover:bg-zinc-800">
+                            {t("agent.refreshExternalRuntime", "Refresh Status")}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => void handleRequestRuntimeUpdate()}
+                            disabled={!externalRuntimeOverview?.state.bound || isRequestingRuntimeUpdate}
+                            className="rounded-full bg-indigo-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-indigo-500 disabled:opacity-50"
+                          >
+                            {isRequestingRuntimeUpdate
+                              ? t("agent.loading", "Loading...")
+                              : t("agent.requestRuntimeUpdate", "Update Now")}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => void handleRequestRuntimeUninstall()}
+                            disabled={!externalRuntimeOverview?.state.bound || isRequestingRuntimeUninstall}
+                            className="rounded-full bg-amber-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-amber-500 disabled:opacity-50"
+                          >
+                            {isRequestingRuntimeUninstall
+                              ? t("agent.loading", "Loading...")
+                              : t("agent.requestRuntimeUninstall", "Uninstall Now")}
+                          </button>
+                          <button type="button" onClick={() => void copyUpdateCommand()} disabled={!externalRuntimeOverview?.state.bound || isGeneratingUpdateCommand} className="rounded-full border border-zinc-300 px-4 py-2 text-sm font-semibold text-zinc-700 transition hover:bg-zinc-100 disabled:opacity-50 dark:border-zinc-700 dark:text-zinc-200 dark:hover:bg-zinc-800">
+                            {isGeneratingUpdateCommand
+                              ? t("agent.loading", "Loading...")
+                              : t("agent.copyUpdateCommand", "Copy Update Command")}
+                          </button>
+                          <button type="button" onClick={() => void copyUninstallCommand()} disabled={!externalRuntimeOverview?.state.bound || isGeneratingUninstallCommand} className="rounded-full border border-amber-300 px-4 py-2 text-sm font-semibold text-amber-700 transition hover:bg-amber-50 disabled:opacity-50 dark:border-amber-900/40 dark:text-amber-300 dark:hover:bg-amber-950/30">
+                            {isGeneratingUninstallCommand
+                              ? t("agent.loading", "Loading...")
+                              : t("agent.copyUninstallCommand", "Copy Uninstall Command")}
+                          </button>
+                          <button type="button" onClick={() => void handleUnbindExternalRuntime()} disabled={!externalRuntimeOverview?.state.bound} className="rounded-full border border-rose-300 px-4 py-2 text-sm font-semibold text-rose-600 transition hover:bg-rose-50 disabled:opacity-50 dark:border-rose-900/40 dark:text-rose-300 dark:hover:bg-rose-950/30">
+                            {t("agent.unbindExternalRuntime", "Unbind Host")}
+                          </button>
+                        </div>
+                      </div>
+                      <p className="mt-3 text-sm text-zinc-600 dark:text-zinc-400">
+                        {getExternalRuntimeSetupMessage(externalRuntimeOverview)}
+                      </p>
+                      <div className="mt-4 grid gap-3 sm:grid-cols-2 text-sm text-zinc-700 dark:text-zinc-300">
+                        <p>{t("agent.externalRuntimeHost", "Host")}: {externalRuntimeOverview?.state.hostName || "—"}</p>
+                        <p>{t("agent.externalRuntimeOs", "OS")}: {externalRuntimeOverview?.state.hostOs || "—"}</p>
+                        <p>{t("agent.externalRuntimeArch", "Arch")}: {externalRuntimeOverview?.state.hostArch || "—"}</p>
+                        <p>{t("agent.externalRuntimeVersion", "Version")}: {externalRuntimeOverview?.state.currentVersion || "—"}</p>
+                        <p>{t("agent.externalRuntimeDesiredVersion", "Desired Version")}: {externalRuntimeOverview?.state.desiredVersion || "—"}</p>
+                        <p>
+                          {t("agent.externalRuntimeUpdateAvailable", {
+                            value: externalRuntimeOverview?.state.updateAvailable
+                              ? t("settings.enabled", "Enabled")
+                              : t("settings.disabled", "Disabled"),
+                            defaultValue: `Update available: ${externalRuntimeOverview?.state.updateAvailable ? "Enabled" : "Disabled"}`,
+                          })}
+                        </p>
+                      </div>
+                      {(externalRuntimeOverview?.state.lastDispatchAction || externalRuntimeOverview?.state.lastDispatchStatus) ? (
+                        <div className="mt-4 rounded-xl border border-zinc-200 bg-zinc-50/80 p-4 dark:border-zinc-800 dark:bg-zinc-950/50">
+                          <p className="text-xs font-semibold uppercase tracking-[0.14em] text-zinc-500 dark:text-zinc-400">
+                            {t("agent.externalRuntimeLastActionTitle", "Last Runtime Action")}
+                          </p>
+                          <p className="mt-2 text-sm text-zinc-700 dark:text-zinc-300">
+                            {t("agent.externalRuntimeLastActionSummary", {
+                              action: externalRuntimeOverview?.state.lastDispatchAction || "—",
+                              status: formatDispatchStatusLabel(externalRuntimeOverview?.state.lastDispatchStatus),
+                              defaultValue: `${externalRuntimeOverview?.state.lastDispatchAction || "—"} · ${formatDispatchStatusLabel(externalRuntimeOverview?.state.lastDispatchStatus)}`,
+                            })}
+                          </p>
+                          {externalRuntimeOverview?.state.lastDispatchErrorMessage ? (
+                            <p className="mt-2 text-xs text-rose-600 dark:text-rose-300">
+                              {externalRuntimeOverview.state.lastDispatchErrorMessage}
+                            </p>
+                          ) : null}
+                        </div>
+                      ) : null}
+                      {maintenanceCommand ? (
+                        <div className="mt-4">
+                          <p className="mb-2 text-xs font-semibold uppercase tracking-[0.14em] text-zinc-500 dark:text-zinc-400">
+                            {maintenanceCommandLabel}
+                          </p>
+                          <textarea
+                            readOnly
+                            value={maintenanceCommand}
+                            rows={4}
+                            className="w-full rounded-xl border border-zinc-200 bg-zinc-50 px-4 py-3 text-sm text-zinc-900 outline-none dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100"
+                          />
+                        </div>
+                      ) : null}
+                      <div className="mt-4 rounded-xl border border-zinc-200 bg-zinc-50/80 p-4 dark:border-zinc-800 dark:bg-zinc-950/50">
+                        <p className="text-xs font-semibold uppercase tracking-[0.14em] text-zinc-500 dark:text-zinc-400">
+                          {t("agent.externalRuntimeLocalStatusTitle", "Local Status Page")}
+                        </p>
+                        {externalRuntimeOverview?.state.localStatusUrl ? (
+                          <>
+                            <a
+                              href={externalRuntimeOverview.state.localStatusUrl}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="mt-2 block break-all text-sm font-medium text-indigo-600 underline-offset-2 hover:underline dark:text-indigo-400"
+                            >
+                              {externalRuntimeOverview.state.localStatusUrl}
+                            </a>
+                            <p className="mt-2 text-xs text-zinc-500 dark:text-zinc-400">
+                              {t(
+                                "agent.externalRuntimeLocalStatusHint",
+                                "This page is served from the Runtime Host itself and is usually only reachable on that machine.",
+                              )}
+                            </p>
+                          </>
+                        ) : (
+                          <p className="mt-2 text-sm text-zinc-600 dark:text-zinc-400">
+                            {t(
+                              "agent.externalRuntimeLocalStatusUnavailable",
+                              "The local status page is not available yet.",
+                            )}
+                          </p>
+                        )}
+                      </div>
                     </div>
 
-                    <div className="flex flex-wrap gap-3">
-                      <button type="button" onClick={() => void copyInstallCommand()} className="rounded-full bg-indigo-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-indigo-500">
-                        {t("agent.copyInstallCommand", "Copy Install Command")}
-                      </button>
-                      <button type="button" onClick={() => void copyUpdateCommand()} disabled={!externalRuntimeOverview?.state.bound} className="rounded-full border border-zinc-300 px-4 py-2 text-sm font-semibold text-zinc-700 transition hover:bg-zinc-100 disabled:opacity-50 dark:border-zinc-700 dark:text-zinc-200 dark:hover:bg-zinc-800">
-                        {t("agent.copyUpdateCommand", "Copy Update Command")}
-                      </button>
-                      <button type="button" onClick={() => void handleUnbindExternalRuntime()} disabled={!externalRuntimeOverview?.state.bound} className="rounded-full border border-rose-300 px-4 py-2 text-sm font-semibold text-rose-600 transition hover:bg-rose-50 disabled:opacity-50 dark:border-rose-900/40 dark:text-rose-300 dark:hover:bg-rose-950/30">
-                        {t("agent.unbindExternalRuntime", "Unbind Host")}
-                      </button>
+                    <div className="rounded-xl border border-zinc-200/80 bg-white/70 p-4 dark:border-zinc-800 dark:bg-zinc-950/40">
+                      <p className="text-xs font-semibold uppercase tracking-[0.18em] text-indigo-500">
+                        {t("agent.externalRuntimeStep3", "Step 3")}
+                      </p>
+                      <p className="mt-2 text-sm font-semibold text-zinc-800 dark:text-zinc-100">
+                        {t("agent.externalRuntimeCommandTitle", "Confirm how this host launches the agent")}
+                      </p>
+                      <p className="mt-1 text-sm text-zinc-600 dark:text-zinc-400">
+                        {t("agent.externalRuntimeCommandSource", {
+                          value: formatLaunchCommandSourceLabel(externalRuntimeOverview?.state.launchCommandSource),
+                          defaultValue: `Current source: ${formatLaunchCommandSourceLabel(externalRuntimeOverview?.state.launchCommandSource)}`,
+                        })}
+                      </p>
+                      <label className="mt-4 block text-sm font-semibold text-zinc-700 dark:text-zinc-300">
+                        {t("agent.externalPathAllowlist", "Path Allowlist")}
+                        <textarea
+                          value={externalPathAllowlist}
+                          onChange={(event) => setExternalPathAllowlist(event.target.value)}
+                          rows={3}
+                          className="mt-2 w-full rounded-xl border border-zinc-200 bg-white px-4 py-3 text-sm text-zinc-900 outline-none transition focus:border-indigo-400 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100"
+                          placeholder={t("agent.externalPathAllowlistPlaceholder", "One path per line")}
+                        />
+                      </label>
+                      <label className="mt-4 block text-sm font-semibold text-zinc-700 dark:text-zinc-300">
+                        {t("agent.externalLaunchCommandTemplate", "Launch Command Template")}
+                        <textarea
+                          value={externalLaunchCommandTemplate}
+                          onChange={(event) => setExternalLaunchCommandTemplate(event.target.value)}
+                          rows={4}
+                          className="mt-2 w-full rounded-xl border border-zinc-200 bg-white px-4 py-3 text-sm text-zinc-900 outline-none transition focus:border-indigo-400 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100"
+                          placeholder={t("agent.externalLaunchCommandTemplatePlaceholder", "Leave blank to inherit the platform default launch command")}
+                        />
+                      </label>
+                      {externalRuntimeOverview?.state.resolvedLaunchCommandTemplate ? (
+                        <textarea
+                          readOnly
+                          value={externalRuntimeOverview.state.resolvedLaunchCommandTemplate}
+                          rows={3}
+                          className="mt-4 w-full rounded-xl border border-zinc-200 bg-zinc-50 px-4 py-3 text-sm text-zinc-900 outline-none dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100"
+                        />
+                      ) : null}
+                      <div className="mt-4 flex justify-end">
+                        <button
+                          type="button"
+                          onClick={() => void handleSaveExternalRuntimeProfile()}
+                          disabled={isSavingExternalRuntimeProfile}
+                          className="rounded-full bg-indigo-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-indigo-500 disabled:opacity-50"
+                        >
+                          {isSavingExternalRuntimeProfile
+                            ? t("agent.loading", "Loading...")
+                            : t("agent.saveExternalRuntimeProfile", "Save Runtime Host Settings")}
+                        </button>
+                      </div>
                     </div>
 
-                    <label className="block text-sm font-semibold text-zinc-700 dark:text-zinc-300">
-                      {t("agent.externalPathAllowlist", "Path Allowlist")}
-                      <textarea
-                        value={externalPathAllowlist}
-                        onChange={(event) => setExternalPathAllowlist(event.target.value)}
-                        rows={3}
-                        className="mt-2 w-full rounded-xl border border-zinc-200 bg-white px-4 py-3 text-sm text-zinc-900 outline-none transition focus:border-indigo-400 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100"
-                        placeholder={t("agent.externalPathAllowlistPlaceholder", "One path per line")}
-                      />
-                    </label>
-
-                    <label className="block text-sm font-semibold text-zinc-700 dark:text-zinc-300">
-                      {t("agent.externalLaunchCommandTemplate", "Launch Command Template")}
-                      <textarea
-                        value={externalLaunchCommandTemplate}
-                        onChange={(event) => setExternalLaunchCommandTemplate(event.target.value)}
-                        rows={4}
-                        className="mt-2 w-full rounded-xl border border-zinc-200 bg-white px-4 py-3 text-sm text-zinc-900 outline-none transition focus:border-indigo-400 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100"
-                        placeholder={t("agent.externalLaunchCommandTemplatePlaceholder", "Leave blank to use the built-in worker")}
-                      />
-                    </label>
+                    <div className="rounded-xl border border-zinc-200/80 bg-white/70 p-4 dark:border-zinc-800 dark:bg-zinc-950/40">
+                      <p className="text-xs font-semibold uppercase tracking-[0.18em] text-indigo-500">
+                        {t("agent.externalRuntimeStep4", "Step 4")}
+                      </p>
+                      <p className="mt-2 text-sm font-semibold text-zinc-800 dark:text-zinc-100">
+                        {t("agent.externalConfigProjectBindingTitle", "Project Usage")}
+                      </p>
+                      <p className="mt-1 text-sm text-zinc-600 dark:text-zinc-400">
+                        {t("agent.externalConfigProjectBindingDescription", "External agents are not bound to a project here. Add them to a project from Project Detail → Project Agent Pool.")}
+                      </p>
+                      <div className="mt-4">
+                        <a
+                          href="/projects"
+                          className="inline-flex rounded-full border border-zinc-300 px-4 py-2 text-sm font-semibold text-zinc-700 transition hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-200 dark:hover:bg-zinc-800"
+                        >
+                          {t("agent.openProjectsForBinding", "Open Projects")}
+                        </a>
+                      </div>
+                    </div>
                   </div>
                 </div>
               ) : (
