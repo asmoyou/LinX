@@ -6,13 +6,13 @@
 - [`AGENTS.md`](AGENTS.md)
 - [`CLAUDE.md`](CLAUDE.md)
 - [`README.md`](README.md)
-- [`COMMERCIAL-USE.md`](COMMERCIAL-USE.md)
+- [`LICENSE`](LICENSE)
 
 ## 贡献与授权说明
 
 - 欢迎提交 Issue、文档修订、测试补充、Bug 修复和功能改进
-- 提交贡献即表示你同意维护者可以将你的提交整合进项目并按仓库当前授权方式发布
-- LinX 当前采用源码公开授权，而不是 MIT；商业使用规则以 [`LICENSE`](LICENSE) 和 [`COMMERCIAL-USE.md`](COMMERCIAL-USE.md) 为准
+- 提交贡献即表示你同意维护者可以将你的提交整合进项目并按仓库当前双许可证方式发布
+- LinX 当前采用 `MIT OR Apache-2.0` 双许可证；具体条款以 [`LICENSE`](LICENSE)、[`LICENSE-MIT`](LICENSE-MIT) 和 [`LICENSE-APACHE`](LICENSE-APACHE) 为准
 
 ## 如何贡献
 
@@ -179,7 +179,7 @@ npm run test
 - 安装与部署步骤
 - 配置项
 - API 或页面行为
-- 授权或商业使用规则
+- 授权说明
 
 至少请检查：
 - [`README.md`](README.md)

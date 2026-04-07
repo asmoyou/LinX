@@ -24,7 +24,7 @@ cd frontend && npm run test
 - [ ] Database / migration
 - [ ] Deployment / infrastructure
 - [ ] Documentation
-- [ ] License / commercial-use docs
+- [ ] License docs
 
 ## Notes
 

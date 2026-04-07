@@ -41,9 +41,6 @@ class TenantMetrics:
     storage_used_gb: float = 0.0
     compute_hours_used: float = 0.0
 
-    # Financial
-    monthly_revenue: float = 0.0
-
     # Engagement
     last_activity_at: Optional[datetime] = None
     days_since_last_activity: int = 0
@@ -76,10 +73,6 @@ class PlatformMetrics:
     total_storage_gb: float = 0.0
     total_compute_hours: float = 0.0
 
-    # Financial
-    total_monthly_revenue: float = 0.0
-    avg_revenue_per_tenant: float = 0.0
-
     # Growth
     new_tenants_this_month: int = 0
     churned_tenants_this_month: int = 0
@@ -92,7 +85,6 @@ class CrossTenantAnalytics:
     Provides platform-wide insights:
     - Tenant metrics and comparisons
     - Platform health metrics
-    - Revenue analytics
     - Usage patterns
     - Churn analysis
     """
@@ -134,7 +126,6 @@ class CrossTenantAnalytics:
             avg_task_duration=45.5,
             storage_used_gb=2.5,
             compute_hours_used=10.0,
-            monthly_revenue=tenant.plan.price_per_month if tenant.plan else 0.0,
             last_activity_at=datetime.now() - timedelta(days=1),
             days_since_last_activity=1,
         )
@@ -185,13 +176,6 @@ class CrossTenantAnalytics:
             metrics.total_storage_gb += tenant_metrics.storage_used_gb
             metrics.total_compute_hours += tenant_metrics.compute_hours_used
 
-            # Aggregate revenue
-            metrics.total_monthly_revenue += tenant_metrics.monthly_revenue
-
-        # Calculate averages
-        if metrics.total_tenants > 0:
-            metrics.avg_revenue_per_tenant = metrics.total_monthly_revenue / metrics.total_tenants
-
         total_tasks = metrics.total_tasks_completed + metrics.total_tasks_failed
         if total_tasks > 0:
             # Calculate weighted average task duration
@@ -236,26 +220,6 @@ class CrossTenantAnalytics:
         sorted_tenants = sorted(
             self.tenant_metrics.values(),
             key=lambda m: m.compute_hours_used,
-            reverse=True,
-        )
-
-        return sorted_tenants[:limit]
-
-    def get_top_tenants_by_revenue(
-        self,
-        limit: int = 10,
-    ) -> List[TenantMetrics]:
-        """Get top tenants by revenue.
-
-        Args:
-            limit: Maximum number of results
-
-        Returns:
-            List of tenant metrics
-        """
-        sorted_tenants = sorted(
-            self.tenant_metrics.values(),
-            key=lambda m: m.monthly_revenue,
             reverse=True,
         )
 
@@ -345,39 +309,6 @@ class CrossTenantAnalytics:
             },
         }
 
-    def get_revenue_breakdown(self) -> Dict[str, Any]:
-        """Get revenue breakdown by plan.
-
-        Returns:
-            Dictionary with revenue data
-        """
-        revenue_by_plan: Dict[str, float] = {}
-        tenant_count_by_plan: Dict[str, int] = {}
-
-        for metrics in self.tenant_metrics.values():
-            # Get plan name (would come from tenant data in real implementation)
-            plan_name = "Standard"  # Mock
-
-            if plan_name not in revenue_by_plan:
-                revenue_by_plan[plan_name] = 0.0
-                tenant_count_by_plan[plan_name] = 0
-
-            revenue_by_plan[plan_name] += metrics.monthly_revenue
-            tenant_count_by_plan[plan_name] += 1
-
-        return {
-            "by_plan": [
-                {
-                    "plan": plan,
-                    "revenue": revenue,
-                    "tenant_count": tenant_count_by_plan[plan],
-                    "avg_revenue_per_tenant": revenue / tenant_count_by_plan[plan],
-                }
-                for plan, revenue in revenue_by_plan.items()
-            ],
-            "total_revenue": sum(revenue_by_plan.values()),
-        }
-
     def generate_platform_report(
         self,
         tenants: List[Tenant],
@@ -418,10 +349,6 @@ class CrossTenantAnalytics:
                     "storage_gb": platform_metrics.total_storage_gb,
                     "compute_hours": platform_metrics.total_compute_hours,
                 },
-                "revenue": {
-                    "total_monthly": platform_metrics.total_monthly_revenue,
-                    "avg_per_tenant": platform_metrics.avg_revenue_per_tenant,
-                },
                 "growth": {
                     "new_tenants": platform_metrics.new_tenants_this_month,
                     "churned_tenants": platform_metrics.churned_tenants_this_month,
@@ -437,14 +364,6 @@ class CrossTenantAnalytics:
                     }
                     for m in self.get_top_tenants_by_usage(5)
                 ],
-                "by_revenue": [
-                    {
-                        "tenant_id": str(m.tenant_id),
-                        "name": m.tenant_name,
-                        "revenue": m.monthly_revenue,
-                    }
-                    for m in self.get_top_tenants_by_revenue(5)
-                ],
             },
             "at_risk_tenants": [
                 {
@@ -455,5 +374,4 @@ class CrossTenantAnalytics:
                 for m in self.get_at_risk_tenants()
             ],
             "usage_distribution": self.get_usage_distribution(),
-            "revenue_breakdown": self.get_revenue_breakdown(),
         }

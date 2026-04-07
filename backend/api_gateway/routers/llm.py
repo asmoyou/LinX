@@ -1897,7 +1897,7 @@ async def get_provider_models_metadata(
     """
     Get detailed metadata for all models of a provider.
 
-    Returns model capabilities, context windows, pricing, and other metadata.
+    Returns model capabilities, context windows, and other metadata.
     Supports both database providers and config.yaml providers.
     Uses enhanced detection based on cherry-studio patterns.
     """
@@ -2040,7 +2040,7 @@ async def get_model_metadata(
     """
     Get detailed metadata for a specific model.
 
-    Returns model capabilities, context window, pricing, and other metadata.
+    Returns model capabilities, context window, and other metadata.
     Used for pre-filling agent configuration forms.
     """
     try:
@@ -2158,7 +2158,7 @@ async def update_model_metadata(
     """
     Update metadata for a specific model.
 
-    Admin only. Allows customizing model capabilities, context windows, pricing, etc.
+    Admin only. Allows customizing model capabilities, context windows, and related metadata.
     """
     try:
         with get_db_session() as db:

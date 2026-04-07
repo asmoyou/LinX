@@ -1624,10 +1624,7 @@
       "reasoning": "Reasoning",
       "functions": "Functions",
       "streaming": "Streaming",
-      "systemPrompt": "System Prompt",
-      "pricing": "Pricing (per 1M tokens)",
-      "input": "Input",
-      "output": "Output"
+      "systemPrompt": "System Prompt"
     },
     "editModel": {
       "title": "Edit Model",
@@ -1671,9 +1668,6 @@
       "tokens": "tokens",
       "defaultTemperature": "Default Temperature",
       "temperatureRange": "Range",
-      "pricing": "Pricing (per 1M tokens)",
-      "inputPrice": "Input Price",
-      "outputPrice": "Output Price",
       "version": "Version",
       "versionPlaceholder": "e.g., v1.0",
       "markDeprecated": "Mark as deprecated",

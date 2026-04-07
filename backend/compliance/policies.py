@@ -206,7 +206,7 @@ LinX Digital Workforce Platform ("we", "our", or "us") is committed to protectin
 ### 2.1 Personal Information
 - Name and contact information
 - Account credentials
-- Payment information
+- Account preferences and settings
 - Usage data and preferences
 
 ### 2.2 Automatically Collected Information
@@ -218,7 +218,7 @@ LinX Digital Workforce Platform ("we", "our", or "us") is committed to protectin
 
 We use your information to:
 - Provide and maintain our services
-- Process your transactions
+- Manage your account and workspace
 - Send you updates and notifications
 - Improve our platform
 - Comply with legal obligations
@@ -314,11 +314,11 @@ You agree not to:
 - You retain rights to your content
 - You grant us license to use your content to provide services
 
-## 6. Payment Terms
+## 6. Service Changes
 
-- Fees are charged according to your subscription plan
-- Payments are non-refundable except as required by law
-- We may change pricing with notice
+- We may add, improve, or retire features over time
+- We may update service limits and operational policies as the platform evolves
+- We will use reasonable efforts to communicate material changes
 
 ## 7. Limitation of Liability
 

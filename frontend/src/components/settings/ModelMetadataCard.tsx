@@ -197,29 +197,6 @@ export const ModelMetadataCard: React.FC<ModelMetadataCardProps> = ({
             )}
           </div>
         </div>
-
-        {/* Pricing */}
-        {(metadata.input_price_per_1m || metadata.output_price_per_1m) && (
-          <div>
-            <h4 className="text-xs font-semibold text-zinc-500 dark:text-zinc-400 uppercase tracking-wide mb-2">
-              Pricing (per 1M tokens)
-            </h4>
-            <div className="grid grid-cols-2 gap-3">
-              {metadata.input_price_per_1m && (
-                <PropertyItem
-                  label="Input"
-                  value={`$${metadata.input_price_per_1m.toFixed(2)}`}
-                />
-              )}
-              {metadata.output_price_per_1m && (
-                <PropertyItem
-                  label="Output"
-                  value={`$${metadata.output_price_per_1m.toFixed(2)}`}
-                />
-              )}
-            </div>
-          </div>
-        )}
       </div>
     </div>
   );

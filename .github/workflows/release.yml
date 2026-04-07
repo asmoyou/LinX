@@ -87,10 +87,10 @@ jobs:
         cp .env.example release/ 2>/dev/null || echo "No .env.example"
         cp README.md release/ 2>/dev/null || echo "No README.md"
         cp LICENSE release/ 2>/dev/null || echo "No LICENSE"
+        cp LICENSE-MIT release/ 2>/dev/null || echo "No LICENSE-MIT"
+        cp LICENSE-APACHE release/ 2>/dev/null || echo "No LICENSE-APACHE"
         
         cp README_EN.md release/ 2>/dev/null || echo "No README_EN.md"
-        cp COMMERCIAL-USE.md release/ 2>/dev/null || echo "No COMMERCIAL-USE.md"
-        cp COMMERCIAL-REQUEST-TEMPLATE.md release/ 2>/dev/null || echo "No COMMERCIAL-REQUEST-TEMPLATE.md"
 
         tar -czf linx-${{ github.ref_name }}.tar.gz release/
     

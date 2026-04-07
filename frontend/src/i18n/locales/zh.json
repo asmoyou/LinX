@@ -1624,10 +1624,7 @@
       "reasoning": "推理",
       "functions": "函数",
       "streaming": "流式",
-      "systemPrompt": "系统提示词",
-      "pricing": "定价（每百万令牌）",
-      "input": "输入",
-      "output": "输出"
+      "systemPrompt": "系统提示词"
     },
     "editModel": {
       "title": "编辑模型",
@@ -1671,9 +1668,6 @@
       "tokens": "令牌",
       "defaultTemperature": "默认温度",
       "temperatureRange": "范围",
-      "pricing": "定价（每百万令牌）",
-      "inputPrice": "输入价格",
-      "outputPrice": "输出价格",
       "version": "版本",
       "versionPlaceholder": "例如：v1.0",
       "markDeprecated": "标记为已弃用",

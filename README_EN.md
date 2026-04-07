@@ -3,7 +3,7 @@
 <div align="center">
   <img src="frontend/public/logo-lg.webp" alt="LinX Logo" width="180" />
 
-  [![License](https://img.shields.io/badge/license-Source%20Available-orange.svg)](LICENSE)
+  [![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](LICENSE)
   [![Python](https://img.shields.io/badge/Python-3.11%2B-blue.svg)](https://www.python.org/)
   [![FastAPI](https://img.shields.io/badge/FastAPI-Backend-009688.svg)](https://fastapi.tiangolo.com/)
   [![React](https://img.shields.io/badge/React-19%20%2B%20TypeScript-61dafb.svg)](https://react.dev/)
@@ -18,8 +18,7 @@
 LinX is a full-stack platform that goes beyond a single chat UI. It connects **agents, projects, tasks, knowledge, memory, skills, scheduling, and execution environments** into one extensible AI collaboration workspace.
 
 - Chinese README: [`README.md`](README.md)
-- Commercial use guide: [`COMMERCIAL-USE.md`](COMMERCIAL-USE.md)
-- Commercial request template: [`COMMERCIAL-REQUEST-TEMPLATE.md`](COMMERCIAL-REQUEST-TEMPLATE.md)
+- License details: [`LICENSE`](LICENSE)
 
 ## What’s in the repo
 
@@ -208,24 +207,23 @@ See: [`node-agent/README.md`](node-agent/README.md)
 ├── docs/                  # Architecture, backend, developer, and deployment docs
 ├── infrastructure/        # Docker / Kubernetes resources
 ├── docker-compose.yml     # Local / test stack
-├── LICENSE                # Source-available license terms
-└── COMMERCIAL-USE.md      # Commercial use explanation
+├── LICENSE                # Dual-license overview (MIT OR Apache-2.0)
+├── LICENSE-MIT            # MIT license text
+└── LICENSE-APACHE         # Apache License 2.0 text
 ```
 
 ## License
 
-LinX is distributed under **LinX Community License 1.0**. See [`LICENSE`](LICENSE) for the full terms.
+LinX is now distributed under a **dual license (`MIT OR Apache-2.0`)**. See:
+- [`LICENSE`](LICENSE)
+- [`LICENSE-MIT`](LICENSE-MIT)
+- [`LICENSE-APACHE`](LICENSE-APACHE)
 
-Summary:
-- Free for personal learning, research, demos, non-commercial evaluation, and non-commercial derivative work
-- Commercial use is restricted
-- Each commercial project must be declared in advance and requires a **USD 150 per-project declaration fee**
+You may choose either license for your use, modification, and distribution of the project:
+- `MIT` for a minimal permissive license
+- `Apache-2.0` if you want explicit patent terms
 
-Related documents:
-- Commercial use guide: [`COMMERCIAL-USE.md`](COMMERCIAL-USE.md)
-- Commercial request template: [`COMMERCIAL-REQUEST-TEMPLATE.md`](COMMERCIAL-REQUEST-TEMPLATE.md)
-
-This repository is publicly available, but because the license restricts commercial use, LinX is released under a **source-available** license rather than an OSI-approved open source license such as `MIT`, `Apache-2.0`, or `GPL`.
+The repository no longer includes commercial declaration or fee requirements and is now published under standard OSI-approved open source licenses.
 
 ## Contributing
 

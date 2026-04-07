@@ -3,7 +3,7 @@
 <div align="center">
   <img src="frontend/public/logo-lg.webp" alt="LinX Logo" width="180" />
 
-  [![License](https://img.shields.io/badge/license-Source%20Available-orange.svg)](LICENSE)
+  [![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](LICENSE)
   [![Python](https://img.shields.io/badge/Python-3.11%2B-blue.svg)](https://www.python.org/)
   [![FastAPI](https://img.shields.io/badge/FastAPI-Backend-009688.svg)](https://fastapi.tiangolo.com/)
   [![React](https://img.shields.io/badge/React-19%20%2B%20TypeScript-61dafb.svg)](https://react.dev/)
@@ -18,7 +18,7 @@
 LinX（灵枢）是一套已经完成较多实际功能开发的全栈平台，目标不是“单个聊天机器人页面”，而是把 **智能体、项目、任务、知识、记忆、技能、调度与外部执行环境** 连接起来，形成可持续扩展的 AI 协作系统。
 
 - English overview: [`README_EN.md`](README_EN.md)
-- 商业使用申请模板：[`COMMERCIAL-REQUEST-TEMPLATE.md`](COMMERCIAL-REQUEST-TEMPLATE.md)
+- 授权说明：[`LICENSE`](LICENSE)
 
 当前仓库已经包含：
 - 完整的前后端实现：`FastAPI + React + TypeScript`
@@ -264,8 +264,9 @@ npm run build
 ├── infrastructure/        # Docker / Kubernetes 等部署相关资源
 ├── docker-compose.yml     # 本地 / 测试环境编排
 ├── .env.example           # 环境变量模板
-├── LICENSE                # 授权条款
-└── COMMERCIAL-USE.md      # 商业使用说明
+├── LICENSE                # 双许可证说明（MIT OR Apache-2.0）
+├── LICENSE-MIT            # MIT 许可证全文
+└── LICENSE-APACHE         # Apache License 2.0 全文
 ```
 
 后端主要模块：
@@ -324,18 +325,16 @@ LinX 适合以下场景：
 
 ## 授权说明
 
-LinX 采用 **LinX Community License 1.0** 授权，完整条款见 [`LICENSE`](LICENSE)。
+LinX 现在采用 **双许可证（MIT OR Apache-2.0）** 发布，完整条款见：
+- [`LICENSE`](LICENSE)
+- [`LICENSE-MIT`](LICENSE-MIT)
+- [`LICENSE-APACHE`](LICENSE-APACHE)
 
-授权规则概要如下：
-- **免费使用范围**：个人学习、研究、演示、非商业评估、非商业二次开发
-- **商业使用范围**：面向客户交付、公司内部生产使用、收费软件、SaaS、托管服务、商业解决方案集成及其他直接或间接商业用途
-- **商业使用要求**：每个商业项目在使用前需完成报备，并缴纳 **150 美元 / 项目** 的声明费用
+这意味着你可以根据自己的使用场景，自行选择以下任一许可证来使用、修改和分发本项目：
+- `MIT`：更简洁宽松
+- `Apache-2.0`：包含更明确的专利授权条款
 
-配套说明文档：
-- 商业使用说明：[`COMMERCIAL-USE.md`](COMMERCIAL-USE.md)
-- 商业使用报备模板：[`COMMERCIAL-REQUEST-TEMPLATE.md`](COMMERCIAL-REQUEST-TEMPLATE.md)
-
-本仓库公开源代码，但由于授权条款限制商业使用，因此该项目采用的是 **源码公开（Source-Available）授权**，并非 `MIT`、`Apache-2.0`、`GPL` 等标准 OSI 批准的开源许可证。
+仓库已移除商业报备与收费要求，当前为标准 OSI 开源许可证发布方式。
 
 ## 贡献
 

@@ -3,6 +3,6 @@ contact_links:
   - name: Documentation
     url: https://github.com/asmoyou/LinX/blob/main/README.md
     about: Start with the README and linked docs before opening a general question.
-  - name: Commercial Use Guide
-    url: https://github.com/asmoyou/LinX/blob/main/COMMERCIAL-USE.md
-    about: Review commercial-use terms and the declaration model before business use.
+  - name: License
+    url: https://github.com/asmoyou/LinX/blob/main/LICENSE
+    about: Review the dual-license terms before opening legal or compliance questions.

@@ -463,51 +463,6 @@ export const EditModelModal: React.FC<EditModelModalProps> = ({
                   </p>
                 </div>
               )}
-
-              {/* Pricing - Shown for all types */}
-              <div className="border-t border-zinc-200 dark:border-zinc-700 pt-3">
-                <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-300 mb-2">
-                  {t('settings.editModel.pricing')}
-                </label>
-                <div className="grid grid-cols-2 gap-3">
-                  <div>
-                    <label className="block text-xs text-zinc-600 dark:text-zinc-400 mb-1">
-                      {t('settings.editModel.inputPrice')}
-                    </label>
-                    <div className="flex items-center gap-2">
-                      <span className="text-zinc-600 dark:text-zinc-400">$</span>
-                      <input
-                        type="number"
-                        step="0.01"
-                        min="0"
-                        value={formData.input_price_per_1m || ''}
-                        onChange={(e) => updateField('input_price_per_1m', parseFloat(e.target.value) || undefined)}
-                        placeholder="0.00"
-                        className="flex-1 px-3 py-2 bg-white dark:bg-zinc-800 border border-zinc-300 dark:border-zinc-700 rounded-lg text-zinc-900 dark:text-zinc-100 focus:outline-none focus:ring-2 focus:ring-blue-500"
-                      />
-                    </div>
-                  </div>
-
-                  <div>
-                    <label className="block text-xs text-zinc-600 dark:text-zinc-400 mb-1">
-                      {t('settings.editModel.outputPrice')}
-                    </label>
-                    <div className="flex items-center gap-2">
-                      <span className="text-zinc-600 dark:text-zinc-400">$</span>
-                      <input
-                        type="number"
-                        step="0.01"
-                        min="0"
-                        value={formData.output_price_per_1m || ''}
-                        onChange={(e) => updateField('output_price_per_1m', parseFloat(e.target.value) || undefined)}
-                        placeholder="0.00"
-                        className="flex-1 px-3 py-2 bg-white dark:bg-zinc-800 border border-zinc-300 dark:border-zinc-700 rounded-lg text-zinc-900 dark:text-zinc-100 focus:outline-none focus:ring-2 focus:ring-blue-500"
-                      />
-                    </div>
-                  </div>
-                </div>
-              </div>
-
               <div>
                 <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-300 mb-1.5">
                   {t('settings.editModel.version')}

@@ -680,33 +680,6 @@ export const LLMSettings: React.FC = () => {
                               </div>
                             </div>
                           )}
-
-                          {/* Pricing */}
-                          {(metadata.input_price_per_1m || metadata.output_price_per_1m) && (
-                            <div className="pt-3 border-t border-zinc-200 dark:border-zinc-700">
-                              <div className="text-xs font-semibold text-zinc-500 dark:text-zinc-400 uppercase tracking-wide mb-2">
-                                {t('settings.modelDetails.pricing')}
-                              </div>
-                              <div className="flex gap-4 text-xs">
-                                {metadata.input_price_per_1m && (
-                                  <div>
-                                    <span className="text-zinc-600 dark:text-zinc-400">{t('settings.modelDetails.input')}: </span>
-                                    <span className="font-semibold text-zinc-900 dark:text-zinc-100">
-                                      ${metadata.input_price_per_1m.toFixed(2)}
-                                    </span>
-                                  </div>
-                                )}
-                                {metadata.output_price_per_1m && (
-                                  <div>
-                                    <span className="text-zinc-600 dark:text-zinc-400">{t('settings.modelDetails.output')}: </span>
-                                    <span className="font-semibold text-zinc-900 dark:text-zinc-100">
-                                      ${metadata.output_price_per_1m.toFixed(2)}
-                                    </span>
-                                  </div>
-                                )}
-                              </div>
-                            </div>
-                          )}
                         </div>
                       );
                     })}

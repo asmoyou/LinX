@@ -94,7 +94,7 @@ class ModelMetadata(BaseModel):
     # Reasoning effort options (for models that support it)
     reasoning_effort_options: Optional[List[str]] = None
 
-    # Pricing (per 1M tokens)
+    # Optional cost metadata (per 1M tokens)
     input_price_per_1m: Optional[float] = None
     output_price_per_1m: Optional[float] = None
 

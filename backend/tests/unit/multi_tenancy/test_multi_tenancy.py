@@ -46,7 +46,6 @@ class TestTenantModel:
             max_storage_gb=100,
             max_compute_hours=1000,
             features=["feature1", "feature2"],
-            price_per_month=99.0,
         )
 
         tenant = Tenant(
@@ -89,8 +88,8 @@ class TestTenantModel:
     def test_tenant_feature_check(self):
         """Test checking if feature is enabled."""
         plan = TenantPlan(
-            plan_id="premium",
-            name="Premium",
+            plan_id="advanced",
+            name="Advanced",
             max_users=50,
             max_agents=20,
             max_storage_gb=500,
@@ -100,10 +99,10 @@ class TestTenantModel:
 
         tenant = Tenant(
             tenant_id=uuid4(),
-            name="Premium Company",
-            slug="premium-company",
+            name="Advanced Company",
+            slug="advanced-company",
             status=TenantStatus.ACTIVE,
-            admin_email="admin@premium.com",
+            admin_email="admin@advanced.com",
             plan=plan,
         )
 
@@ -435,7 +434,6 @@ class TestCrossTenantAnalytics:
             max_agents=5,
             max_storage_gb=100,
             max_compute_hours=1000,
-            price_per_month=99.0,
         )
 
         tenant = Tenant(
@@ -463,7 +461,6 @@ class TestCrossTenantAnalytics:
             max_agents=5,
             max_storage_gb=100,
             max_compute_hours=1000,
-            price_per_month=99.0,
         )
 
         tenants = [
@@ -494,7 +491,6 @@ class TestCrossTenantAnalytics:
             max_agents=5,
             max_storage_gb=100,
             max_compute_hours=1000,
-            price_per_month=99.0,
         )
 
         tenants = [

@@ -267,7 +267,7 @@ class TenantManager:
         tenant_id: UUID,
         plan: TenantPlan,
     ) -> Optional[Tenant]:
-        """Update tenant subscription plan.
+        """Update tenant plan.
 
         Args:
             tenant_id: Tenant ID

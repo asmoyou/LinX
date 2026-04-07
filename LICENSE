@@ -1,94 +1,10 @@
-LinX Community License 1.0
+LinX is dual licensed under your choice of either:
 
-Copyright (c) 2026 LinX Contributors
+- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE))
+- MIT License ([LICENSE-MIT](LICENSE-MIT))
 
-1. Definitions
+SPDX-License-Identifier: MIT OR Apache-2.0
 
-"Software" means this repository and all source code, documentation, configuration,
-scripts, templates, and related materials distributed with it.
-
-"Licensor" means the copyright holder(s) of the Software.
-
-"Non-Commercial Use" means personal learning, academic study, research,
-non-commercial evaluation, non-commercial demonstrations, and non-commercial
-modification for internal testing purposes, where no direct or indirect commercial
-advantage, revenue generation, customer delivery, paid service, or production
-business operation is involved.
-
-"Commercial Use" means any use of the Software or a derivative work for direct or
-indirect commercial advantage, revenue generation, paid consulting, customer
-projects, internal business operations, SaaS or hosted services, paid products,
-production systems used by a for-profit organization, or any other use connected to
-commercial activity.
-
-"Project" means a distinct commercial product, customer delivery, internal business
-system, deployment, or implementation that uses the Software or a derivative work.
-
-2. Non-Commercial License Grant
-
-Subject to the terms of this License, the Licensor grants you a limited,
-revocable, non-exclusive, non-transferable, non-sublicensable license to use,
-copy, modify, and distribute the Software for Non-Commercial Use only.
-
-You must retain this License and all copyright notices in any copy or substantial
-portion of the Software.
-
-3. Commercial Use Requirement
-
-Commercial Use is not permitted under the free license grant above.
-
-Before any Commercial Use, you must obtain permission from the Licensor for each
-Project. Unless the Licensor agrees otherwise in writing, the baseline commercial
-permission for one Project requires:
-
-- prior registration/notification to the Licensor; and
-- payment of a declaration fee of USD 150 per Project.
-
-After the applicable registration and fee are completed, the Licensor may grant a
-commercial permission for that Project, subject to any written terms provided by the
-Licensor.
-
-4. Restrictions
-
-Without separate written permission from the Licensor, you may not:
-
-- use the Software for Commercial Use;
-- sublicense, sell, lease, or offer the Software itself as a commercial product;
-- remove or alter copyright, license, or attribution notices;
-- imply that your use is authorized for Commercial Use when it is not.
-
-5. Derivative Works
-
-You may create and use derivative works for Non-Commercial Use under this License.
-Any Commercial Use of derivative works is subject to Section 3.
-
-6. Contributions
-
-Unless explicitly agreed otherwise in writing, any contribution intentionally
-submitted to the Software by you may be used, modified, and redistributed by the
-Licensor as part of the Software under this License or under separate commercial
-terms.
-
-7. Termination
-
-This License terminates automatically if you violate its terms. Upon termination,
-you must stop using and distributing the Software until you obtain written
-reinstatement from the Licensor.
-
-8. No Warranty
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED,
-INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
-PARTICULAR PURPOSE, AND NONINFRINGEMENT.
-
-9. Limitation of Liability
-
-IN NO EVENT SHALL THE LICENSOR OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM,
-DAMAGES, OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT, OR OTHERWISE,
-ARISING FROM, OUT OF, OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-DEALINGS IN THE SOFTWARE.
-
-10. Clarification
-
-This License is source-available and is not the MIT License. Because it restricts
-Commercial Use, it is not an OSI-approved open source license.
+Unless you explicitly state otherwise, any contribution intentionally submitted
+for inclusion in LinX by you, as defined in the Apache-2.0 license, shall be
+dual licensed as above, without any additional terms or conditions.

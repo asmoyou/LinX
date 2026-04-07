@@ -26,7 +26,7 @@ class TenantStatus(Enum):
 
 @dataclass
 class TenantPlan:
-    """Tenant subscription plan."""
+    """Tenant plan."""
 
     plan_id: str
     name: str
@@ -35,7 +35,6 @@ class TenantPlan:
     max_storage_gb: int
     max_compute_hours: int
     features: list[str] = field(default_factory=list)
-    price_per_month: float = 0.0
 
 
 @dataclass
@@ -51,7 +50,7 @@ class Tenant:
     admin_email: str
     admin_name: Optional[str] = None
 
-    # Subscription
+    # Plan assignment
     plan: Optional[TenantPlan] = None
     trial_ends_at: Optional[datetime] = None
 
