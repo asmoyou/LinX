@@ -17,6 +17,10 @@ from database.project_execution_models import (
 )
 from project_execution.planning import build_step_definitions
 
+_COMPLETED_STATUSES = {"completed", "done", "success", "succeeded", "approved"}
+_FAILED_STATUSES = {"failed", "error", "cancelled", "canceled"}
+_TERMINAL_RUN_STATUSES = _COMPLETED_STATUSES | _FAILED_STATUSES
+
 
 def parse_uuid(value: Any, field_name: str) -> uuid.UUID:
     """Parse a UUID value or raise a 400 error."""
@@ -142,6 +146,98 @@ def append_audit_event(
     )
     session.add(event)
     return event
+
+
+def _normalize_status(value: Any) -> str:
+    return str(value or "").strip().lower()
+
+
+def _is_completed_status(status: Any) -> bool:
+    return _normalize_status(status) in _COMPLETED_STATUSES
+
+
+def _is_failed_status(status: Any) -> bool:
+    normalized = _normalize_status(status)
+    return normalized in _FAILED_STATUSES or "fail" in normalized
+
+
+def _is_terminal_task_status(status: Any) -> bool:
+    return _is_completed_status(status) or _is_failed_status(status)
+
+
+def _latest_timestamp(values: Iterable[Optional[datetime]]) -> Optional[datetime]:
+    filtered = [value for value in values if value is not None]
+    return max(filtered) if filtered else None
+
+
+def reconcile_run_state(
+    session: Session,
+    *,
+    run: Optional[ProjectRun] = None,
+    run_id: Optional[uuid.UUID] = None,
+) -> Optional[ProjectRun]:
+    """Normalize stale run state based on the tasks and steps currently attached to it."""
+    target_run = run
+    if target_run is None and run_id is not None:
+        target_run = session.query(ProjectRun).filter(ProjectRun.run_id == run_id).first()
+
+    if target_run is None:
+        return None
+
+    tasks = session.query(ProjectTask).filter(ProjectTask.run_id == target_run.run_id).all()
+    steps = session.query(ProjectRunStep).filter(ProjectRunStep.run_id == target_run.run_id).all()
+
+    normalized_status = _normalize_status(target_run.status)
+    completion_timestamp = _latest_timestamp(
+        [
+            target_run.completed_at,
+            target_run.updated_at,
+            target_run.started_at,
+            *(task.updated_at for task in tasks),
+            *(step.completed_at for step in steps),
+            *(step.updated_at for step in steps),
+        ]
+    )
+    failed_steps = any(_is_failed_status(step.status) for step in steps)
+    failed_tasks = any(_is_failed_status(task.status) for task in tasks)
+    has_active_tasks = any(not _is_terminal_task_status(task.status) for task in tasks)
+    changed = False
+
+    if normalized_status in _TERMINAL_RUN_STATUSES:
+        if target_run.completed_at is None and completion_timestamp is not None:
+            target_run.completed_at = completion_timestamp
+            changed = True
+    elif not tasks:
+        if target_run.started_at is not None:
+            next_status = "failed" if failed_steps else "completed"
+            if target_run.status != next_status:
+                target_run.status = next_status
+                changed = True
+            resolved_completed_at = completion_timestamp or datetime.now(timezone.utc)
+            if target_run.completed_at != resolved_completed_at:
+                target_run.completed_at = resolved_completed_at
+                changed = True
+        elif target_run.completed_at is not None:
+            target_run.completed_at = None
+            changed = True
+    elif not has_active_tasks:
+        next_status = "failed" if failed_tasks or failed_steps else "completed"
+        if target_run.status != next_status:
+            target_run.status = next_status
+            changed = True
+        resolved_completed_at = completion_timestamp or datetime.now(timezone.utc)
+        if target_run.completed_at != resolved_completed_at:
+            target_run.completed_at = resolved_completed_at
+            changed = True
+    elif target_run.completed_at is not None:
+        target_run.completed_at = None
+        changed = True
+
+    if changed:
+        session.flush()
+        session.refresh(target_run)
+
+    return target_run
 
 
 def create_project_task_and_launch_run(

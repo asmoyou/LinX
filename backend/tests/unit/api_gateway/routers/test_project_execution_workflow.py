@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from fastapi.testclient import TestClient
 
 from api_gateway.main import create_app
+from database.connection import get_db_session
+from database.project_execution_models import ProjectRun
 
 pytestmark = [pytest.mark.usefixtures("cleanup_shared_db_test_artifacts")]
 
@@ -39,6 +41,94 @@ def auth_headers(api_client: TestClient):
     assert login_response.status_code == 200, login_response.text
     access_token = login_response.json()["access_token"]
     return {"Authorization": f"Bearer {access_token}"}
+
+
+def _create_project_and_running_task_run(
+    api_client: TestClient,
+    auth_headers: dict[str, str],
+    *,
+    project_name: str,
+    task_title: str,
+) -> tuple[str, str]:
+    project_response = api_client.post(
+        "/api/v1/projects",
+        json={
+            "name": project_name,
+            "description": "Exercise run reconciliation.",
+            "status": "draft",
+            "configuration": {},
+        },
+        headers=auth_headers,
+    )
+    assert project_response.status_code == 201, project_response.text
+    project_id = project_response.json()["project_id"]
+
+    task_response = api_client.post(
+        "/api/v1/project-tasks",
+        json={
+            "project_id": project_id,
+            "title": task_title,
+            "description": "Create a task bound to a run.",
+            "status": "planning",
+            "priority": "normal",
+            "sort_order": 0,
+            "input_payload": {},
+        },
+        headers=auth_headers,
+    )
+    assert task_response.status_code == 201, task_response.text
+    task_id = task_response.json()["project_task_id"]
+
+    plan_response = api_client.post(
+        "/api/v1/plans",
+        json={
+            "project_id": project_id,
+            "name": f"{task_title} Plan",
+            "goal": task_title,
+            "status": "generated",
+            "version": 1,
+            "definition": {"project_task_id": task_id},
+        },
+        headers=auth_headers,
+    )
+    assert plan_response.status_code == 201, plan_response.text
+    plan_id = plan_response.json()["plan_id"]
+
+    activate_response = api_client.post(
+        f"/api/v1/plans/{plan_id}/activate",
+        json={"status": "active"},
+        headers=auth_headers,
+    )
+    assert activate_response.status_code == 200, activate_response.text
+
+    run_response = api_client.post(
+        "/api/v1/runs",
+        json={
+            "project_id": project_id,
+            "plan_id": plan_id,
+            "status": "queued",
+            "trigger_source": "manual",
+            "runtime_context": {"project_task_id": task_id},
+        },
+        headers=auth_headers,
+    )
+    assert run_response.status_code == 201, run_response.text
+    run_id = run_response.json()["run_id"]
+
+    patch_task_response = api_client.patch(
+        f"/api/v1/project-tasks/{task_id}",
+        json={"plan_id": plan_id, "run_id": run_id, "status": "running"},
+        headers=auth_headers,
+    )
+    assert patch_task_response.status_code == 200, patch_task_response.text
+
+    start_response = api_client.post(
+        f"/api/v1/runs/{run_id}/start",
+        headers=auth_headers,
+    )
+    assert start_response.status_code == 200, start_response.text
+
+    return task_id, run_id
 
 
 def test_project_execution_workflow_chain(api_client: TestClient, auth_headers: dict[str, str]):
@@ -219,6 +309,77 @@ def test_create_project_task_and_launch_run_atomically(
     runs_list = api_client.get("/api/v1/runs", headers=auth_headers)
     assert runs_list.status_code == 200, runs_list.text
     assert any(item["run_id"] == run["run_id"] for item in runs_list.json())
+
+
+def test_list_runs_reconciles_started_run_without_tasks(
+    api_client: TestClient, auth_headers: dict[str, str]
+):
+    project_response = api_client.post(
+        "/api/v1/projects",
+        json={
+            "name": "Orphan Run Project",
+            "description": "Run starts without any tasks.",
+            "status": "draft",
+            "configuration": {},
+        },
+        headers=auth_headers,
+    )
+    assert project_response.status_code == 201, project_response.text
+    project_id = project_response.json()["project_id"]
+
+    run_response = api_client.post(
+        "/api/v1/runs",
+        json={
+            "project_id": project_id,
+            "status": "queued",
+            "trigger_source": "manual",
+            "runtime_context": {},
+        },
+        headers=auth_headers,
+    )
+    assert run_response.status_code == 201, run_response.text
+    run_id = run_response.json()["run_id"]
+
+    start_response = api_client.post(f"/api/v1/runs/{run_id}/start", headers=auth_headers)
+    assert start_response.status_code == 200, start_response.text
+    assert start_response.json()["status"] == "running"
+
+    runs_response = api_client.get("/api/v1/runs", headers=auth_headers)
+    assert runs_response.status_code == 200, runs_response.text
+    reconciled_run = next(item for item in runs_response.json() if item["run_id"] == run_id)
+    assert reconciled_run["status"] == "completed"
+    assert reconciled_run["completed_at"] is not None
+
+    with get_db_session() as session:
+        stored_run = session.query(ProjectRun).filter(ProjectRun.run_id == UUID(run_id)).first()
+        assert stored_run is not None
+        assert stored_run.status == "completed"
+        assert stored_run.completed_at is not None
+
+
+def test_delete_project_task_reconciles_associated_run(
+    api_client: TestClient, auth_headers: dict[str, str]
+):
+    task_id, run_id = _create_project_and_running_task_run(
+        api_client,
+        auth_headers,
+        project_name="Delete Reconcile Project",
+        task_title="Only Task",
+    )
+
+    delete_response = api_client.delete(f"/api/v1/project-tasks/{task_id}", headers=auth_headers)
+    assert delete_response.status_code == 204, delete_response.text
+
+    run_response = api_client.get(f"/api/v1/runs/{run_id}", headers=auth_headers)
+    assert run_response.status_code == 200, run_response.text
+    assert run_response.json()["status"] == "completed"
+    assert run_response.json()["completed_at"] is not None
+
+    with get_db_session() as session:
+        stored_run = session.query(ProjectRun).filter(ProjectRun.run_id == UUID(run_id)).first()
+        assert stored_run is not None
+        assert stored_run.status == "completed"
+        assert stored_run.completed_at is not None
 
 
 def test_host_action_task_creates_execution_lease(

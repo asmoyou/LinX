@@ -83,6 +83,7 @@ from project_execution.service import (
     flush_and_refresh,
     get_current_user_uuid,
     get_or_404,
+    reconcile_run_state,
     parse_uuid,
 )
 from shared.logging import get_logger
@@ -695,6 +696,7 @@ async def update_project_task(
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND, detail="Project task not found"
             )
+        previous_run_id = task.run_id
 
         ensure_related_records(
             session,
@@ -731,6 +733,9 @@ async def update_project_task(
             current_user=current_user,
             payload=request.model_dump(exclude_none=True),
         )
+        reconcile_run_state(session, run_id=previous_run_id)
+        if task.run_id and task.run_id != previous_run_id:
+            reconcile_run_state(session, run_id=task.run_id)
         return task
 
 
@@ -768,6 +773,7 @@ async def transition_project_task(
             current_user=current_user,
             payload=request.model_dump(),
         )
+        reconcile_run_state(session, run_id=task.run_id)
         return task
 
 
@@ -799,7 +805,10 @@ async def delete_project_task(
             run_id=task.run_id,
             current_user=current_user,
         )
+        run_id = task.run_id
         session.delete(task)
+        session.flush()
+        reconcile_run_state(session, run_id=run_id)
         return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
@@ -961,14 +970,19 @@ async def list_runs(project_id: Optional[UUID] = None, _: CurrentUser = Depends(
         query = session.query(ProjectRun)
         if project_id:
             query = query.filter(ProjectRun.project_id == project_id)
-        return query.order_by(ProjectRun.created_at.desc()).all()
+        runs = query.order_by(ProjectRun.created_at.desc()).all()
+        for run in runs:
+            reconcile_run_state(session, run=run)
+        return [ProjectRunResponse.model_validate(run) for run in runs]
 
 
 @runs_router.get("/{run_id}", response_model=ProjectRunResponse)
 async def get_run(run_id: str, _: CurrentUser = Depends(get_current_user)):
     parsed_run_id = parse_uuid(run_id, "run_id")
     with get_db_session() as session:
-        return get_or_404(session, ProjectRun, ProjectRun.run_id, parsed_run_id, "Run not found")
+        run = get_or_404(session, ProjectRun, ProjectRun.run_id, parsed_run_id, "Run not found")
+        reconcile_run_state(session, run=run)
+        return ProjectRunResponse.model_validate(run)
 
 
 @runs_router.patch("/{run_id}", response_model=ProjectRunResponse)
@@ -1219,6 +1233,7 @@ async def update_run_step(
             current_user=current_user,
             payload=request.model_dump(exclude_none=True),
         )
+        reconcile_run_state(session, run_id=step.run_id)
         return step
 
 
@@ -1255,6 +1270,7 @@ async def complete_run_step(
             current_user=current_user,
             payload=request.model_dump(),
         )
+        reconcile_run_state(session, run_id=step.run_id)
         return step
 
 
@@ -1282,7 +1298,10 @@ async def delete_run_step(
             run_id=step.run_id,
             current_user=current_user,
         )
+        run_id = step.run_id
         session.delete(step)
+        session.flush()
+        reconcile_run_state(session, run_id=run_id)
         return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
