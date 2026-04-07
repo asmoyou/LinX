@@ -19,7 +19,6 @@ import {
   ChevronDown,
   GripVertical,
   FolderOpen,
-  Network,
 } from 'lucide-react';
 import { useAuthStore, useUserStore } from '@/stores';
 
@@ -33,7 +32,7 @@ const MAX_QUICK_ACCESS_ITEMS = 5;
 const MIN_DYNAMIC_QUICK_ACCESS_USAGE = 2;
 const QUICK_ACCESS_STORAGE_KEY_PREFIX = 'linx-sidebar-nav-usage';
 const QUICK_ACCESS_ORDER_STORAGE_KEY_PREFIX = 'linx-sidebar-quick-order';
-const DEFAULT_QUICK_ACCESS_PATHS = ['/projects', '/runs', '/execution-nodes'] as const;
+const DEFAULT_QUICK_ACCESS_PATHS = ['/projects', '/runs', '/workforce'] as const;
 
 type NavItem = {
   path: string;
@@ -160,11 +159,6 @@ export const Sidebar: React.FC<SidebarProps> = ({ isCollapsed }) => {
         items: [
           { path: '/projects', icon: FolderOpen, label: t('nav.projects', 'Projects') },
           { path: '/runs', icon: Rocket, label: t('nav.runCenter', 'Run Center') },
-          {
-            path: '/execution-nodes',
-            icon: Network,
-            label: t('nav.executionNodes', 'Execution Nodes'),
-          },
         ],
       },
       {

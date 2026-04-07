@@ -505,6 +505,9 @@ export const AgentConversation: React.FC = () => {
   const activeConversationId = conversationId || draftConversationId || "";
   const conversations = conversationListState.items;
   const messages = messageListState.items;
+  const isExternalRuntimeBlocked = Boolean(
+    agent?.externalRuntime && !agent.externalRuntime.availableForConversation,
+  );
 
   const loadConversationData = useCallback(async () => {
     if (!agentId) {
@@ -1569,6 +1572,10 @@ export const AgentConversation: React.FC = () => {
     if (!agentId || isSending || isRecordingVoice || isTranscribingVoice) {
       return;
     }
+    if (agent?.externalRuntime && !agent.externalRuntime.availableForConversation) {
+      toast.error(t("agent.externalRuntimeNotOnline", "This external agent is not online yet."));
+      return;
+    }
 
     const text = inputMessage.trim();
     if (!text && attachedFiles.length === 0) {
@@ -1930,6 +1937,7 @@ export const AgentConversation: React.FC = () => {
     }
   }, [
     addNotification,
+    agent?.externalRuntime?.availableForConversation,
     agentId,
     attachedFiles,
     conversationId,
@@ -2384,6 +2392,11 @@ export const AgentConversation: React.FC = () => {
             </div>
 
             <div className="border-t border-zinc-200 px-5 py-4 dark:border-zinc-800">
+              {isExternalRuntimeBlocked && (
+                <div className="mb-3 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800 dark:border-amber-900/40 dark:bg-amber-950/30 dark:text-amber-300">
+                  {t("agent.externalRuntimeBlockedConversation", "This external agent is not online yet. Install or reconnect its host before chatting.")}
+                </div>
+              )}
               {attachedFiles.length > 0 && (
                 <div className="mb-3 flex flex-wrap gap-2">
                   {attachedFiles.map((file) => (
@@ -2415,7 +2428,7 @@ export const AgentConversation: React.FC = () => {
                 <button
                   type="button"
                   onClick={() => fileInputRef.current?.click()}
-                  disabled={isSending}
+                  disabled={isSending || isExternalRuntimeBlocked}
                   className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl bg-white text-zinc-600 transition-colors hover:bg-zinc-100 disabled:cursor-not-allowed disabled:opacity-50 dark:bg-zinc-900 dark:text-zinc-300 dark:hover:bg-zinc-800"
                 >
                   <Paperclip className="w-4 h-4" />
@@ -2462,7 +2475,7 @@ export const AgentConversation: React.FC = () => {
                             "Send a message to this agent",
                           )
                   }
-                  disabled={isSending}
+                  disabled={isSending || isExternalRuntimeBlocked}
                   rows={1}
                   className="max-h-[180px] min-h-[24px] flex-1 resize-none bg-transparent px-2 py-2 text-sm leading-6 text-zinc-900 outline-none placeholder:text-zinc-400 dark:text-white"
                 />
@@ -2471,7 +2484,7 @@ export const AgentConversation: React.FC = () => {
                   onClick={() => {
                     void handleVoiceInput();
                   }}
-                  disabled={isSending || isTranscribingVoice}
+                  disabled={isSending || isTranscribingVoice || isExternalRuntimeBlocked}
                   title={
                     isRecordingVoice
                       ? t("agent.voiceInputStop")
@@ -2504,6 +2517,7 @@ export const AgentConversation: React.FC = () => {
                     type="button"
                     onClick={() => void handleSendMessage()}
                     disabled={
+                      isExternalRuntimeBlocked ||
                       (!inputMessage.trim() && attachedFiles.length === 0) ||
                       isRecordingVoice ||
                       isTranscribingVoice

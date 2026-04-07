@@ -2,7 +2,6 @@ import { create } from 'zustand';
 
 import { projectExecutionApi } from '@/api/projectExecution';
 import type {
-  ExecutionNode,
   PlatformExtension,
   ProjectDetail,
   ProjectExecutionSection,
@@ -22,7 +21,6 @@ interface ProjectExecutionState {
   projectTaskDetails: Record<string, ProjectTaskDetail>;
   runs: RunSummary[];
   runDetails: Record<string, RunDetail>;
-  executionNodes: ExecutionNode[];
   skillHub: SkillHubSnapshot | null;
   extensions: PlatformExtension[];
   loading: LoadingMap;
@@ -34,9 +32,6 @@ interface ProjectExecutionState {
   loadProjectTaskDetail: (projectId: string, taskId: string) => Promise<ProjectTaskDetail>;
   loadRuns: () => Promise<RunSummary[]>;
   loadRunDetail: (runId: string) => Promise<RunDetail>;
-  loadExecutionNodes: () => Promise<ExecutionNode[]>;
-  updateExecutionNode: (nodeId: string, payload: { name?: string; status?: string; capabilities?: string[]; config?: Record<string, unknown>; }) => Promise<ExecutionNode>;
-  registerExecutionNode: (payload: { projectId: string; name: string; nodeType?: string; capabilities?: string[]; config?: Record<string, unknown>; }) => Promise<ExecutionNode>;
   loadSkillHub: () => Promise<SkillHubSnapshot>;
   loadExtensions: () => Promise<PlatformExtension[]>;
   createProject: (input: { name: string; description?: string | null }) => Promise<string>;
@@ -69,7 +64,6 @@ const createLoadingMap = (): LoadingMap => ({
   projectTaskDetail: false,
   runs: false,
   runDetail: false,
-  nodes: false,
   skillHub: false,
   extensions: false,
 });
@@ -80,7 +74,6 @@ const createErrorMap = (): ErrorMap => ({
   projectTaskDetail: null,
   runs: null,
   runDetail: null,
-  nodes: null,
   skillHub: null,
   extensions: null,
 });
@@ -130,7 +123,6 @@ const initialState = () => ({
   projectTaskDetails: {},
   runs: [],
   runDetails: {},
-  executionNodes: [],
   skillHub: null,
   extensions: [],
   loading: createLoadingMap(),
@@ -305,44 +297,7 @@ export const useProjectExecutionStore = create<ProjectExecutionState>((set, get)
     }
   },
 
-  loadExecutionNodes: async () => {
-    set((state) => ({
-      loading: { ...state.loading, nodes: true },
-      errors: { ...state.errors, nodes: null },
-    }));
 
-    try {
-      const result = await withRequestCache('nodes', () => projectExecutionApi.listExecutionNodes());
-      set((state) => ({
-        executionNodes: result.fallback && state.executionNodes.length > 0 ? state.executionNodes : result.data,
-        loading: { ...state.loading, nodes: false },
-        errors: { ...state.errors, nodes: result.error || null },
-        fallbackSections: updateFallbackSections(state.fallbackSections, 'nodes', result.fallback && state.executionNodes.length === 0),
-        lastUpdatedAt: new Date().toISOString(),
-      }));
-      return get().executionNodes;
-    } catch (error) {
-      const message = getErrorMessage(error, 'Failed to load execution nodes');
-      set((state) => ({
-        loading: { ...state.loading, nodes: false },
-        errors: { ...state.errors, nodes: message },
-      }));
-      throw error;
-    }
-  },
-
-
-  updateExecutionNode: async (nodeId, payload) => {
-    const node = await projectExecutionApi.updateExecutionNode(nodeId, payload);
-    await get().loadExecutionNodes();
-    return node;
-  },
-
-  registerExecutionNode: async (payload) => {
-    const node = await projectExecutionApi.registerExecutionNode(payload);
-    await get().loadExecutionNodes();
-    return node;
-  },
   loadSkillHub: async () => {
     set((state) => ({
       loading: { ...state.loading, skillHub: true },

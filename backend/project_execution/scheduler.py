@@ -16,11 +16,9 @@ from agent_framework.persistent_conversations import (
 from api_gateway.routers.agent_conversations import execute_persistent_conversation_turn
 from database.connection import get_db_session
 from database.models import AgentConversation
-from database.project_execution_models import AgentRuntimeBinding, ExternalAgentSession, Project, ProjectPlan, ProjectRun, ProjectRunStep, ProjectSpace, ProjectTask
+from database.project_execution_models import ExternalAgentDispatch, Project, ProjectPlan, ProjectRun, ProjectRunStep, ProjectSpace, ProjectTask
 from project_execution.agent_provisioner import ProjectAgentProvisioner, default_required_capabilities
-from project_execution.runtime_binding_service import ensure_agent_runtime_binding
-from project_execution.external_agent_session_service import create_external_agent_session
-from project_execution.execution_lease_service import create_execution_lease, select_execution_node
+from project_execution.external_runtime_service import EXTERNAL_RUNTIME_TYPES, ExternalRuntimeService, ExternalRuntimeUnavailableError
 from project_execution.planning import infer_step_kind
 from project_execution.run_workspace_manager import RunWorkspaceDescriptor, get_run_workspace_manager
 from project_execution.service import append_audit_event, flush_and_refresh
@@ -38,6 +36,183 @@ def _auto_execute_enabled() -> bool:
 
 
 
+
+def _block_pending_step(session, *, pending_step: ProjectRunStep, task: ProjectTask, run: ProjectRun, current_user: CurrentUser, reason: str) -> dict[str, Any]:
+    pending_step.status = "blocked"
+    pending_step.error_message = reason
+    task.status = "blocked"
+    task.error_message = reason
+    run.status = "blocked"
+    run.error_message = reason
+    flush_and_refresh(session, pending_step)
+    flush_and_refresh(session, task)
+    flush_and_refresh(session, run)
+    append_audit_event(
+        session,
+        action="run-step.blocked",
+        resource_type="project_run_step",
+        resource_id=pending_step.run_step_id,
+        project_id=run.project_id,
+        run_id=run.run_id,
+        current_user=current_user,
+        payload={"reason": reason},
+    )
+    return {
+        "executor_kind": "agent",
+        "agent_id": None,
+        "dispatch_id": None,
+        "selection_reason": reason,
+        "provisioned_agent": False,
+        "runtime_type": None,
+        "external_dispatch": None,
+    }
+
+
+def _queue_external_agent_dispatch(
+    session,
+    *,
+    selection,
+    run: ProjectRun,
+    pending_step: ProjectRunStep,
+    task: ProjectTask,
+    project: Optional[Project],
+    current_user: CurrentUser,
+    descriptor: Optional[RunWorkspaceDescriptor],
+    step_kind: str,
+) -> dict[str, Any]:
+    runtime_service = ExternalRuntimeService(session)
+    try:
+        dispatch = runtime_service.create_dispatch(
+            agent_id=selection.agent_id,
+            source_type="project_run_step",
+            source_id=str(pending_step.run_step_id),
+            runtime_type=selection.runtime_type,
+            project_id=run.project_id,
+            run_id=run.run_id,
+            run_step_id=pending_step.run_step_id,
+            request_payload={
+                "selection_reason": selection.selection_reason,
+                "project_id": str(run.project_id),
+                "run_id": str(run.run_id),
+                "run_step_id": str(pending_step.run_step_id),
+                "task_id": str(task.project_task_id),
+                "task_title": task.title,
+                "task_description": task.description,
+                "step_name": pending_step.name,
+                "step_kind": step_kind,
+                "runtime_type": selection.runtime_type,
+                "run_workspace_root": str(
+                    descriptor.run_workspace_root
+                    if descriptor
+                    else get_run_workspace_manager().get_run_workspace_root(run.project_id, run.run_id)
+                ),
+                "project_title": project.name if project else "Project",
+                "execution_prompt": build_external_agent_prompt(
+                    project_title=project.name if project else "Project",
+                    task_title=task.title,
+                    task_description=task.description,
+                    step_name=pending_step.name,
+                    step_kind=step_kind,
+                    selection_reason=selection.selection_reason,
+                    runtime_type=selection.runtime_type,
+                    run_workspace_root=str(
+                        descriptor.run_workspace_root
+                        if descriptor
+                        else get_run_workspace_manager().get_run_workspace_root(run.project_id, run.run_id)
+                    ),
+                ),
+            },
+        )
+    except ExternalRuntimeUnavailableError:
+        return _block_pending_step(
+            session,
+            pending_step=pending_step,
+            task=task,
+            run=run,
+            current_user=current_user,
+            reason="External agent is not online",
+        )
+
+    task.assignee_agent_id = selection.agent_id
+    task.status = "assigned"
+    pending_step.status = "queued"
+    run.status = "scheduled"
+    run.runtime_context = {
+        **(run.runtime_context or {}),
+        "agent_assignment": {
+            "executor_kind": "agent",
+            "agent_id": str(selection.agent_id),
+            "dispatch_id": str(dispatch.dispatch_id),
+            "selection_reason": selection.selection_reason,
+            "provisioned_agent": selection.provisioned_agent,
+            "runtime_type": selection.runtime_type,
+        },
+        "external_dispatch": {
+            "dispatch_id": str(dispatch.dispatch_id),
+            "binding_id": str(dispatch.binding_id),
+            "status": dispatch.status,
+            "runtime_type": dispatch.runtime_type,
+        },
+    }
+    task.input_payload = {
+        **(task.input_payload or {}),
+        "assigned_agent_id": str(selection.agent_id),
+        "assigned_agent_name": selection.agent_name,
+        "selection_reason": selection.selection_reason,
+        "runtime_type": selection.runtime_type,
+        "dispatch_id": str(dispatch.dispatch_id),
+    }
+    pending_step.input_payload = {
+        **(pending_step.input_payload or {}),
+        "selection_reason": selection.selection_reason,
+        "assigned_agent_id": str(selection.agent_id),
+        "assigned_agent_name": selection.agent_name,
+        "runtime_type": selection.runtime_type,
+        "dispatch_id": str(dispatch.dispatch_id),
+    }
+    flush_and_refresh(session, task)
+    flush_and_refresh(session, pending_step)
+    flush_and_refresh(session, run)
+    append_audit_event(
+        session,
+        action="external-agent-dispatch.created",
+        resource_type="external_agent_dispatch",
+        resource_id=dispatch.dispatch_id,
+        project_id=run.project_id,
+        run_id=run.run_id,
+        current_user=current_user,
+        payload={"agent_id": str(selection.agent_id)},
+    )
+    return {
+        "executor_kind": "agent",
+        "agent_id": selection.agent_id,
+        "dispatch_id": dispatch.dispatch_id,
+        "selection_reason": selection.selection_reason,
+        "provisioned_agent": selection.provisioned_agent,
+        "runtime_type": selection.runtime_type,
+        "external_dispatch": {
+            "dispatch_id": dispatch.dispatch_id,
+            "agent_id": dispatch.agent_id,
+            "binding_id": dispatch.binding_id,
+            "project_id": dispatch.project_id,
+            "run_id": dispatch.run_id,
+            "run_step_id": dispatch.run_step_id,
+            "source_type": dispatch.source_type,
+            "source_id": dispatch.source_id,
+            "runtime_type": dispatch.runtime_type,
+            "request_payload": dispatch.request_payload,
+            "result_payload": dispatch.result_payload,
+            "status": dispatch.status,
+            "error_message": dispatch.error_message,
+            "acked_at": dispatch.acked_at,
+            "started_at": dispatch.started_at,
+            "completed_at": dispatch.completed_at,
+            "expires_at": dispatch.expires_at,
+            "created_at": dispatch.created_at,
+            "updated_at": dispatch.updated_at,
+        },
+    }
+
 async def schedule_run_after_launch(*, run_id: UUID, current_user: CurrentUser) -> dict[str, Any]:
     descriptor = _ensure_run_workspace(run_id=run_id)
     assignment = await _schedule_next_pending_step(
@@ -49,8 +224,7 @@ async def schedule_run_after_launch(*, run_id: UUID, current_user: CurrentUser) 
     return {
         "agent_assignment": assignment,
         "executor_assignment": assignment,
-        "runtime_binding": assignment.get("runtime_binding") if isinstance(assignment, dict) else None,
-        "external_session": assignment.get("external_session") if isinstance(assignment, dict) else None,
+        "external_dispatch": assignment.get("external_dispatch") if isinstance(assignment, dict) else None,
         "run_workspace": {
             "workspace_id": str(run_id),
             "root_path": str(descriptor.run_workspace_root),
@@ -164,43 +338,6 @@ async def _schedule_next_pending_step(
         }
 
         if step_kind == "host_action":
-            node = select_execution_node(
-                session=session,
-                project_id=run.project_id,
-                required_capabilities=required_capabilities,
-            )
-            if node is None:
-                reason = "External runtime host is required for this host action step"
-                pending_step.status = "blocked"
-                pending_step.error_message = reason
-                task.status = "blocked"
-                task.error_message = reason
-                run.status = "blocked"
-                run.error_message = reason
-                flush_and_refresh(session, pending_step)
-                flush_and_refresh(session, task)
-                flush_and_refresh(session, run)
-                append_audit_event(
-                    session,
-                    action="run-step.blocked",
-                    resource_type="project_run_step",
-                    resource_id=pending_step.run_step_id,
-                    project_id=run.project_id,
-                    run_id=run.run_id,
-                    current_user=current_user,
-                    payload={"reason": reason},
-                )
-                return {
-                    "executor_kind": "agent",
-                    "agent_id": None,
-                    "node_id": None,
-                    "selection_reason": reason,
-                    "provisioned_agent": False,
-                    "runtime_type": "external_worktree",
-                    "runtime_binding": None,
-                    "external_session": None,
-                }
-
             selection = ProjectAgentProvisioner().select_or_provision_agent(
                 project_id=run.project_id,
                 step_kind=step_kind,
@@ -209,165 +346,17 @@ async def _schedule_next_pending_step(
                 run_id=run.run_id,
                 required_runtime_types=["external_worktree", "external_same_dir", "remote_session"],
             )
-            binding = ensure_agent_runtime_binding(
+            return _queue_external_agent_dispatch(
                 session,
-                agent_id=selection.agent_id,
-                runtime_type=selection.runtime_type,
-                execution_node_id=node.node_id,
-                workspace_strategy=("worktree" if selection.runtime_type == "external_worktree" else "same-dir"),
-                config={"project_id": str(run.project_id), "run_id": str(run.run_id)},
-            )
-            task.assignee_agent_id = selection.agent_id
-            task.status = "assigned"
-            pending_step.status = "leased"
-            run.status = "scheduled"
-            selection_reason = f"Assigned external agent {selection.agent_name} to node {node.name} via {selection.runtime_type}"
-            run.runtime_context = {
-                **(run.runtime_context or {}),
-                "agent_assignment": {
-                    "executor_kind": "agent",
-                    "agent_id": str(selection.agent_id),
-                    "node_id": str(node.node_id),
-                    "selection_reason": selection_reason,
-                    "provisioned_agent": selection.provisioned_agent,
-                    "runtime_type": selection.runtime_type,
-                },
-            }
-            task.input_payload = {
-                **(task.input_payload or {}),
-                "assigned_agent_id": str(selection.agent_id),
-                "assigned_agent_name": selection.agent_name,
-                "selection_reason": selection_reason,
-                "runtime_type": selection.runtime_type,
-                "execution_node_id": str(node.node_id),
-                "execution_node_name": node.name,
-            }
-            pending_step.input_payload = {
-                **pending_step.input_payload,
-                "selection_reason": selection_reason,
-                "assigned_agent_id": str(selection.agent_id),
-                "assigned_agent_name": selection.agent_name,
-                "runtime_type": selection.runtime_type,
-                "execution_node_id": str(node.node_id),
-                "execution_node_name": node.name,
-            }
-            flush_and_refresh(session, task)
-            flush_and_refresh(session, pending_step)
-            flush_and_refresh(session, run)
-            external_session = create_external_agent_session(
-                session,
-                agent_id=selection.agent_id,
-                execution_node_id=node.node_id,
-                project_id=run.project_id,
-                run_id=run.run_id,
-                run_step_id=pending_step.run_step_id,
-                runtime_type=selection.runtime_type,
-                workdir=None,
-                session_metadata={"selection_reason": selection_reason},
-            )
-            lease = create_execution_lease(
-                session=session,
-                project_id=run.project_id,
-                node_id=node.node_id,
-                run_id=run.run_id,
-                run_step_id=pending_step.run_step_id,
-                extra_payload={
-                    "external_agent_session_id": str(external_session.session_id),
-                    "agent": {
-                        "agent_id": str(selection.agent_id),
-                        "agent_name": selection.agent_name,
-                        "runtime_type": selection.runtime_type,
-                        "execution_prompt": build_external_agent_prompt(
-                            project_title=project.name if project else "Project",
-                            task_title=task.title,
-                            task_description=task.description,
-                            step_name=pending_step.name,
-                            step_kind=step_kind,
-                            selection_reason=selection_reason,
-                            runtime_type=selection.runtime_type,
-                            run_workspace_root=str(descriptor.run_workspace_root if descriptor else get_run_workspace_manager().get_run_workspace_root(run.project_id, run.run_id)),
-                        ),
-                    },
-                },
-            )
-            external_session.lease_id = lease.lease_id
-            flush_and_refresh(session, external_session)
-            run.runtime_context = {
-                **(run.runtime_context or {}),
-                "runtime_binding": {
-                    "runtime_binding_id": str(binding.runtime_binding_id),
-                    "runtime_type": binding.runtime_type,
-                    "execution_node_id": str(binding.execution_node_id) if binding.execution_node_id else None,
-                    "workspace_strategy": binding.workspace_strategy,
-                },
-                "external_session": {
-                    "session_id": str(external_session.session_id),
-                    "execution_node_id": str(external_session.execution_node_id),
-                    "runtime_type": external_session.runtime_type,
-                    "status": external_session.status,
-                    "lease_id": str(external_session.lease_id) if external_session.lease_id else None,
-                },
-            }
-            flush_and_refresh(session, run)
-            append_audit_event(
-                session,
-                action="external-agent-session.created",
-                resource_type="external_agent_session",
-                resource_id=external_session.session_id,
-                project_id=run.project_id,
-                run_id=run.run_id,
+                selection=selection,
+                run=run,
+                pending_step=pending_step,
+                task=task,
+                project=project,
                 current_user=current_user,
-                payload={"agent_id": str(selection.agent_id), "node_id": str(node.node_id)},
+                descriptor=descriptor,
+                step_kind=step_kind,
             )
-            append_audit_event(
-                session,
-                action="execution-lease.created",
-                resource_type="execution_lease",
-                resource_id=lease.lease_id,
-                project_id=run.project_id,
-                run_id=run.run_id,
-                current_user=current_user,
-                payload={"node_id": str(node.node_id), "run_step_id": str(pending_step.run_step_id)},
-            )
-            return {
-                "executor_kind": "agent",
-                "agent_id": selection.agent_id,
-                "node_id": node.node_id,
-                "selection_reason": selection_reason,
-                "provisioned_agent": selection.provisioned_agent,
-                "runtime_type": selection.runtime_type,
-                "runtime_binding": {
-                    "runtime_binding_id": binding.runtime_binding_id,
-                    "agent_id": binding.agent_id,
-                    "runtime_type": binding.runtime_type,
-                    "execution_node_id": binding.execution_node_id,
-                    "workspace_strategy": binding.workspace_strategy,
-                    "path_allowlist": binding.path_allowlist,
-                    "status": binding.status,
-                    "config": binding.config,
-                    "created_at": binding.created_at,
-                    "updated_at": binding.updated_at,
-                },
-                "external_session": {
-                    "session_id": external_session.session_id,
-                    "agent_id": external_session.agent_id,
-                    "execution_node_id": external_session.execution_node_id,
-                    "project_id": external_session.project_id,
-                    "run_id": external_session.run_id,
-                    "run_step_id": external_session.run_step_id,
-                    "runtime_type": external_session.runtime_type,
-                    "workdir": external_session.workdir,
-                    "status": external_session.status,
-                    "lease_id": external_session.lease_id,
-                    "error_message": external_session.error_message,
-                    "session_metadata": external_session.session_metadata,
-                    "started_at": external_session.started_at,
-                    "completed_at": external_session.completed_at,
-                    "created_at": external_session.created_at,
-                    "updated_at": external_session.updated_at,
-                },
-            }
-
         selection = ProjectAgentProvisioner().select_or_provision_agent(
             project_id=run.project_id,
             step_kind=step_kind,
@@ -375,14 +364,18 @@ async def _schedule_next_pending_step(
             current_user=current_user,
             run_id=run.run_id,
         )
-        binding = ensure_agent_runtime_binding(
-            session,
-            agent_id=selection.agent_id,
-            runtime_type=selection.runtime_type,
-            execution_node_id=None,
-            workspace_strategy="shared",
-            config={"project_id": str(run.project_id), "run_id": str(run.run_id)},
-        )
+        if selection.runtime_type in EXTERNAL_RUNTIME_TYPES:
+            return _queue_external_agent_dispatch(
+                session,
+                selection=selection,
+                run=run,
+                pending_step=pending_step,
+                task=task,
+                project=project,
+                current_user=current_user,
+                descriptor=descriptor,
+                step_kind=step_kind,
+            )
         task.assignee_agent_id = selection.agent_id
         task.status = "assigned"
         pending_step.status = "assigned"
@@ -392,16 +385,9 @@ async def _schedule_next_pending_step(
             "agent_assignment": {
                 "executor_kind": "agent",
                 "agent_id": str(selection.agent_id),
-                "node_id": None,
                 "selection_reason": selection.selection_reason,
                 "provisioned_agent": selection.provisioned_agent,
                 "runtime_type": selection.runtime_type,
-            },
-            "runtime_binding": {
-                "runtime_binding_id": str(binding.runtime_binding_id),
-                "runtime_type": binding.runtime_type,
-                "execution_node_id": None,
-                "workspace_strategy": binding.workspace_strategy,
             },
         }
         task.input_payload = {
@@ -448,23 +434,11 @@ async def _schedule_next_pending_step(
     return {
         "executor_kind": "agent",
         "agent_id": selection.agent_id,
-        "node_id": None,
+        "dispatch_id": None,
         "selection_reason": selection.selection_reason,
         "provisioned_agent": selection.provisioned_agent,
         "runtime_type": selection.runtime_type,
-        "runtime_binding": {
-            "runtime_binding_id": binding.runtime_binding_id,
-            "agent_id": binding.agent_id,
-            "runtime_type": binding.runtime_type,
-            "execution_node_id": binding.execution_node_id,
-            "workspace_strategy": binding.workspace_strategy,
-            "path_allowlist": binding.path_allowlist,
-            "status": binding.status,
-            "config": binding.config,
-            "created_at": binding.created_at,
-            "updated_at": binding.updated_at,
-        },
-        "external_session": None,
+        "external_dispatch": None,
     }
 
 

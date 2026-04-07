@@ -73,52 +73,24 @@ class ProjectAgentBindingResponse(ORMModel):
     updated_at: datetime
 
 
-class AgentRuntimeBindingCreate(BaseModel):
-    runtime_type: str = Field(..., min_length=1, max_length=50)
-    execution_node_id: Optional[UUID] = None
-    workspace_strategy: Optional[str] = None
-    path_allowlist: list[str] = Field(default_factory=list)
-    status: str = Field(default="active", min_length=1, max_length=32)
-    config: dict[str, Any] = Field(default_factory=dict)
-
-
-class AgentRuntimeBindingUpdate(BaseModel):
-    runtime_type: Optional[str] = Field(default=None, min_length=1, max_length=50)
-    execution_node_id: Optional[UUID] = None
-    workspace_strategy: Optional[str] = None
-    path_allowlist: Optional[list[str]] = None
-    status: Optional[str] = Field(default=None, min_length=1, max_length=32)
-    config: Optional[dict[str, Any]] = None
-
-
-class AgentRuntimeBindingResponse(ORMModel):
-    runtime_binding_id: UUID
+class ExternalAgentDispatchResponse(ORMModel):
+    dispatch_id: UUID
     agent_id: UUID
+    binding_id: UUID
+    project_id: Optional[UUID]
+    run_id: Optional[UUID]
+    run_step_id: Optional[UUID]
+    source_type: str
+    source_id: str
     runtime_type: str
-    execution_node_id: Optional[UUID]
-    workspace_strategy: Optional[str]
-    path_allowlist: list[str]
+    request_payload: dict[str, Any]
+    result_payload: dict[str, Any]
     status: str
-    config: dict[str, Any]
-    created_at: datetime
-    updated_at: datetime
-
-
-class ExternalAgentSessionResponse(ORMModel):
-    session_id: UUID
-    agent_id: UUID
-    execution_node_id: UUID
-    project_id: UUID
-    run_id: UUID
-    run_step_id: UUID
-    runtime_type: str
-    workdir: Optional[str]
-    status: str
-    lease_id: Optional[UUID]
     error_message: Optional[str]
-    session_metadata: dict[str, Any]
+    acked_at: Optional[datetime]
     started_at: Optional[datetime]
     completed_at: Optional[datetime]
+    expires_at: Optional[datetime]
     created_at: datetime
     updated_at: datetime
 
@@ -174,7 +146,7 @@ class AgentProvisioningProfileResponse(ORMModel):
 class StepExecutorAssignmentResponse(BaseModel):
     executor_kind: str
     agent_id: Optional[UUID] = None
-    node_id: Optional[UUID] = None
+    dispatch_id: Optional[UUID] = None
     selection_reason: Optional[str] = None
     provisioned_agent: bool = False
     runtime_type: Optional[str] = None
@@ -189,8 +161,7 @@ class RunWorkspaceDescriptorResponse(BaseModel):
 class RunSchedulingResponse(BaseModel):
     run: ProjectRunResponse
     agent_assignment: Optional[StepExecutorAssignmentResponse] = None
-    runtime_binding: Optional[AgentRuntimeBindingResponse] = None
-    external_session: Optional[ExternalAgentSessionResponse] = None
+    external_dispatch: Optional[ExternalAgentDispatchResponse] = None
     executor_assignment: Optional[StepExecutorAssignmentResponse] = None
     run_workspace: Optional[RunWorkspaceDescriptorResponse] = None
 
@@ -262,8 +233,7 @@ class ProjectTaskLaunchBundleResponse(BaseModel):
     run: ProjectRunResponse
     step: ProjectRunStepResponse
     agent_assignment: Optional[StepExecutorAssignmentResponse] = None
-    runtime_binding: Optional[AgentRuntimeBindingResponse] = None
-    external_session: Optional[ExternalAgentSessionResponse] = None
+    external_dispatch: Optional[ExternalAgentDispatchResponse] = None
     executor_assignment: Optional[StepExecutorAssignmentResponse] = None
     run_workspace: Optional[RunWorkspaceDescriptorResponse] = None
 
@@ -341,7 +311,6 @@ class ProjectRunResponse(ORMModel):
 class ProjectRunStepCreate(BaseModel):
     run_id: UUID
     project_task_id: Optional[UUID] = None
-    node_id: Optional[UUID] = None
     name: str = Field(..., min_length=1, max_length=255)
     step_type: str = Field(default="task", min_length=1, max_length=50)
     status: str = Field(default="pending", min_length=1, max_length=50)
@@ -351,7 +320,6 @@ class ProjectRunStepCreate(BaseModel):
 
 class ProjectRunStepUpdate(BaseModel):
     project_task_id: Optional[UUID] = None
-    node_id: Optional[UUID] = None
     name: Optional[str] = Field(default=None, min_length=1, max_length=255)
     step_type: Optional[str] = Field(default=None, min_length=1, max_length=50)
     status: Optional[str] = Field(default=None, min_length=1, max_length=50)
@@ -371,7 +339,6 @@ class ProjectRunStepResponse(ORMModel):
     run_step_id: UUID
     run_id: UUID
     project_task_id: Optional[UUID]
-    node_id: Optional[UUID]
     name: str
     step_type: str
     status: str
@@ -406,74 +373,6 @@ class ProjectSpaceResponse(ORMModel):
     updated_at: datetime
 
 
-class ExecutionNodeCreate(BaseModel):
-    project_id: UUID
-    plan_id: Optional[UUID] = None
-    name: str = Field(..., min_length=1, max_length=255)
-    node_type: str = Field(default="worker", min_length=1, max_length=50)
-    status: str = Field(default="available", min_length=1, max_length=50)
-    capabilities: list[str] = Field(default_factory=list)
-    config: dict[str, Any] = Field(default_factory=dict)
-
-
-class ExecutionNodeUpdate(BaseModel):
-    plan_id: Optional[UUID] = None
-    name: Optional[str] = Field(default=None, min_length=1, max_length=255)
-    node_type: Optional[str] = Field(default=None, min_length=1, max_length=50)
-    status: Optional[str] = Field(default=None, min_length=1, max_length=50)
-    capabilities: Optional[list[str]] = None
-    config: Optional[dict[str, Any]] = None
-
-
-class ExecutionNodeHeartbeat(BaseModel):
-    status: str = Field(default="available", min_length=1, max_length=50)
-    config: dict[str, Any] = Field(default_factory=dict)
-
-
-class ExecutionNodeRegister(BaseModel):
-    project_id: UUID
-    name: str = Field(..., min_length=1, max_length=255)
-    node_type: str = Field(default="external_cli", min_length=1, max_length=50)
-    capabilities: list[str] = Field(default_factory=list)
-    config: dict[str, Any] = Field(default_factory=dict)
-
-
-class ExecutionLeaseResponse(ORMModel):
-    lease_id: UUID
-    project_id: UUID
-    node_id: UUID
-    run_id: UUID
-    run_step_id: UUID
-    status: str
-    lease_payload: dict[str, Any]
-    result_payload: dict[str, Any]
-    error_message: Optional[str]
-    acked_at: Optional[datetime]
-    started_at: Optional[datetime]
-    completed_at: Optional[datetime]
-    expires_at: Optional[datetime]
-    created_at: datetime
-    updated_at: datetime
-
-
-class ExecutionLeaseProgress(BaseModel):
-    status: str = Field(default="running", min_length=1, max_length=32)
-    result_payload: dict[str, Any] = Field(default_factory=dict)
-    error_message: Optional[str] = None
-
-
-class ExecutionNodeResponse(ORMModel):
-    node_id: UUID
-    project_id: UUID
-    plan_id: Optional[UUID]
-    name: str
-    node_type: str
-    status: str
-    capabilities: list[str]
-    config: dict[str, Any]
-    last_seen_at: Optional[datetime]
-    created_at: datetime
-    updated_at: datetime
 
 
 class ExtensionPackageCreate(BaseModel):

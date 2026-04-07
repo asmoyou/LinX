@@ -159,10 +159,23 @@ class JWTAuthMiddleware(BaseHTTPMiddleware):
             return True
 
         # Prefix match for public paths
-        public_prefixes = ["/docs", "/redoc", "/openapi.json"]
+        public_prefixes = [
+            "/docs",
+            "/redoc",
+            "/openapi.json",
+            "/api/v1/external-runtime/",
+        ]
         for prefix in public_prefixes:
             if path.startswith(prefix):
                 return True
+
+        if path.startswith("/api/v1/agents/") and path.endswith((
+            "/external-runtime/install.sh",
+            "/external-runtime/install.ps1",
+            "/external-runtime/update.sh",
+            "/external-runtime/update.ps1",
+        )):
+            return True
 
         # Only API routes require auth by default; non-API paths should
         # fall through so FastAPI can return canonical 404/405 responses.

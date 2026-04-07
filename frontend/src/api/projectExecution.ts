@@ -2,7 +2,6 @@ import apiClient, { type RequestConfigWithMeta } from './client';
 import { agentsApi } from './agents';
 import { skillsApi } from './skills';
 import type {
-  ExecutionNode,
   PlatformExtension,
   PlatformQueryResult,
   ProjectActivityItem,
@@ -120,20 +119,6 @@ type SkeletonProjectSpaceRecord = {
   updated_at: string;
 };
 
-type SkeletonExecutionNodeRecord = {
-  node_id: string;
-  project_id: string;
-  plan_id?: string | null;
-  name: string;
-  node_type: string;
-  status: string;
-  capabilities: string[];
-  config: Record<string, unknown>;
-  last_seen_at?: string | null;
-  created_at: string;
-  updated_at: string;
-};
-
 type SkeletonProjectAgentBindingRecord = {
   binding_id: string;
   project_id: string;
@@ -181,21 +166,24 @@ type SkeletonRunSchedulingRecord = {
   } | null;
 };
 
-type SkeletonExternalAgentSessionRecord = {
-  session_id: string;
+type SkeletonExternalAgentDispatchRecord = {
+  dispatch_id: string;
   agent_id: string;
-  execution_node_id: string;
-  project_id: string;
-  run_id: string;
-  run_step_id: string;
+  binding_id: string;
+  project_id?: string | null;
+  run_id?: string | null;
+  run_step_id?: string | null;
+  source_type: string;
+  source_id: string;
   runtime_type: string;
-  workdir?: string | null;
+  request_payload: Record<string, unknown>;
+  result_payload: Record<string, unknown>;
   status: string;
-  lease_id?: string | null;
   error_message?: string | null;
-  session_metadata: Record<string, unknown>;
+  acked_at?: string | null;
   started_at?: string | null;
   completed_at?: string | null;
+  expires_at?: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -526,43 +514,6 @@ const fallbackExtensions: PlatformExtension[] = [
   },
 ];
 
-const fallbackNodes: ExecutionNode[] = [
-  {
-    id: 'node-release-lead',
-    name: 'Release Lead',
-    type: 'planner',
-    status: 'working',
-    currentTask: 'Run staging bake and smoke suite',
-    activeProjects: 1,
-    tasksCompleted: 31,
-    tasksFailed: 1,
-    completionRate: 96,
-    skillCount: 5,
-    topSkills: ['Release Planning', 'Risk Review', 'Timeline Design'],
-    model: 'gpt-4.1',
-    provider: 'OpenAI',
-    departmentName: 'Platform',
-    uptime: '18d',
-  },
-  {
-    id: 'node-platform-ops',
-    name: 'Platform Ops',
-    type: 'worker',
-    status: 'working',
-    currentTask: 'Run staging bake and smoke suite',
-    activeProjects: 1,
-    tasksCompleted: 54,
-    tasksFailed: 3,
-    completionRate: 95,
-    skillCount: 7,
-    topSkills: ['CI Diagnostics', 'Canary Analysis', 'Log Triage'],
-    model: 'gpt-4.1-mini',
-    provider: 'OpenAI',
-    departmentName: 'Operations',
-    uptime: '11d',
-  },
-];
-
 const asUnknownRecord = (value: unknown): Record<string, unknown> => {
   if (value && typeof value === 'object' && !Array.isArray(value)) {
     return value as Record<string, unknown>;
@@ -779,6 +730,75 @@ const isFailedStatus = (status: string): boolean => {
   );
 };
 
+const isClosedRunStatus = (status: string): boolean => {
+  const normalized = (status || '').toLowerCase();
+  return ['completed', 'done', 'success', 'succeeded', 'failed', 'cancelled', 'canceled'].includes(
+    normalized,
+  );
+};
+
+const isTerminalTaskStatus = (status: string): boolean =>
+  isCompletedStatus(status) || isFailedStatus(status);
+
+type ResolvedRunLifecycle = {
+  status: string;
+  completedAt: string | null;
+};
+
+const resolveRunLifecycle = (
+  run: SkeletonRunRecord,
+  tasks: SkeletonProjectTaskRecord[],
+  runSteps: SkeletonRunStepRecord[],
+): ResolvedRunLifecycle => {
+  const rawStatus = (run.status || '').toLowerCase();
+  const fallbackCompletedAt =
+    latestIsoString([
+      run.completed_at,
+      ...tasks.map((task) => task.updated_at),
+      ...runSteps.map((step) => step.completed_at || null),
+      ...runSteps.map((step) => step.updated_at),
+      run.updated_at,
+      run.started_at,
+    ]) || null;
+
+  if (isClosedRunStatus(rawStatus)) {
+    return {
+      status: toProjectStatus(run.status),
+      completedAt: run.completed_at || fallbackCompletedAt,
+    };
+  }
+
+  if (tasks.length === 0) {
+    if (run.started_at) {
+      return {
+        status: runSteps.some((step) => isFailedStatus(step.status)) ? 'failed' : 'completed',
+        completedAt: run.completed_at || fallbackCompletedAt,
+      };
+    }
+
+    return {
+      status: toProjectStatus(run.status),
+      completedAt: run.completed_at || null,
+    };
+  }
+
+  if (tasks.every((task) => isTerminalTaskStatus(task.status))) {
+    return {
+      status:
+        tasks.some((task) => isFailedStatus(task.status)) ||
+        runSteps.some((step) => isFailedStatus(step.status))
+          ? 'failed'
+          : 'completed',
+      completedAt: run.completed_at || fallbackCompletedAt,
+    };
+  }
+
+  return {
+    status: toProjectStatus(run.status),
+    completedAt: run.completed_at || null,
+  };
+};
+
 const priorityToNumber = (value: string | number | null | undefined): number => {
   if (typeof value === 'number' && Number.isFinite(value)) {
     return value;
@@ -954,7 +974,7 @@ const seedToRunSummary = (seed: SeedProject): RunSummary => ({
   totalTasks: seed.totalTasks,
   completedTasks: seed.completedTasks,
   failedTasks: seed.failedTasks,
-  nodeCount: seed.agents.length,
+  externalAgentCount: seed.agents.length,
   latestSignal: seed.activity[0]?.description || null,
 });
 
@@ -964,8 +984,8 @@ const seedToRunDetail = (seed: SeedProject): RunDetail => ({
   timeline: [...seed.activity].sort(
     (left, right) => new Date(left.timestamp).getTime() - new Date(right.timestamp).getTime(),
   ),
-  nodes: seedToProjectDetail(seed).agents,
   deliverables: seed.deliverables,
+  externalDispatches: [],
 });
 
 const fallbackProjectMap = new Map(
@@ -1080,8 +1100,8 @@ const skeletonApi = {
     return response.data;
   },
 
-  async listRunExternalSessions(runId: string): Promise<SkeletonExternalAgentSessionRecord[]> {
-    const response = await apiClient.get<SkeletonExternalAgentSessionRecord[]>(`/runs/${runId}/external-sessions`, skeletonRequestConfig);
+  async listRunExternalDispatches(runId: string): Promise<SkeletonExternalAgentDispatchRecord[]> {
+    const response = await apiClient.get<SkeletonExternalAgentDispatchRecord[]>(`/runs/${runId}/external-dispatches`, skeletonRequestConfig);
     return response.data;
   },
 
@@ -1133,30 +1153,6 @@ const skeletonApi = {
 
   async listAgentProvisioningProfiles(projectId: string): Promise<SkeletonAgentProvisioningProfileRecord[]> {
     const response = await apiClient.get<SkeletonAgentProvisioningProfileRecord[]>(`/projects/${projectId}/agent-provisioning-profiles`, skeletonRequestConfig);
-    return response.data;
-  },
-
-  async registerExecutionNode(payload: { projectId: string; name: string; nodeType?: string; capabilities?: string[]; config?: Record<string, unknown>; }): Promise<SkeletonExecutionNodeRecord> {
-    const response = await apiClient.post<SkeletonExecutionNodeRecord>(`/execution-nodes/register`, {
-      project_id: payload.projectId,
-      name: payload.name,
-      node_type: payload.nodeType || 'external_cli',
-      capabilities: payload.capabilities || [],
-      config: payload.config || {},
-    }, skeletonRequestConfig);
-    return response.data;
-  },
-
-  async updateExecutionNode(nodeId: string, payload: { name?: string; status?: string; capabilities?: string[]; config?: Record<string, unknown>; }): Promise<SkeletonExecutionNodeRecord> {
-    const response = await apiClient.patch<SkeletonExecutionNodeRecord>(`/execution-nodes/${nodeId}`, payload, skeletonRequestConfig);
-    return response.data;
-  },
-
-  async listExecutionNodes(projectId?: string): Promise<SkeletonExecutionNodeRecord[]> {
-    const response = await apiClient.get<SkeletonExecutionNodeRecord[]>('/execution-nodes', {
-      ...skeletonRequestConfig,
-      params: projectId ? { project_id: projectId } : undefined,
-    });
     return response.data;
   },
 
@@ -1465,22 +1461,6 @@ const getTaskAssigneeNameFromPayload = (payloads: Array<Record<string, unknown>>
   return null;
 };
 
-const toProjectAgentFromSkeletonNode = (
-  node: SkeletonExecutionNodeRecord,
-): ProjectAgentSummary => {
-  const config = asUnknownRecord(node.config);
-
-  return {
-    id: node.node_id,
-    name: node.name,
-    role: humanizeToken(node.node_type),
-    status: toProjectStatus(node.status),
-    isTemporary: false,
-    avatar: pickFirstString(config, ['avatar', 'avatar_url']),
-    assignedAt: node.last_seen_at || node.created_at,
-  };
-};
-
 const toProjectTaskSummaryFromSkeleton = (
   task: SkeletonProjectTaskRecord,
 ): ProjectTaskSummary => {
@@ -1503,7 +1483,6 @@ const buildSkeletonProjectSummary = (
   project: SkeletonProjectRecord,
   tasks: SkeletonProjectTaskRecord[],
   runs: SkeletonRunRecord[],
-  nodes: SkeletonExecutionNodeRecord[],
   plans: SkeletonPlanRecord[] = [],
 ): ProjectSummary => {
   const configuration = asUnknownRecord(project.configuration);
@@ -1524,7 +1503,6 @@ const buildSkeletonProjectSummary = (
       project.updated_at,
       ...tasks.map((task) => task.updated_at),
       ...runs.map((run) => run.updated_at),
-      ...nodes.map((node) => node.updated_at),
     ]) || project.updated_at;
 
   return {
@@ -1551,7 +1529,7 @@ const buildSkeletonProjectSummary = (
     totalTasks: tasks.length,
     completedTasks,
     failedTasks,
-    activeNodeCount: nodes.length,
+    activeNodeCount: 0,
     needsClarification: tasks.some((task) => task.status.toLowerCase().includes('clarification')),
     latestSignal:
       latestRun?.error_message ||
@@ -1610,7 +1588,6 @@ const buildProjectActivityFromSkeleton = (
   project: SkeletonProjectRecord,
   tasks: SkeletonProjectTaskRecord[],
   runs: SkeletonRunRecord[],
-  nodes: SkeletonExecutionNodeRecord[],
   extensions: SkeletonExtensionRecord[],
   plans: SkeletonPlanRecord[] = [],
   projectSpace: SkeletonProjectSpaceRecord | null = null,
@@ -1661,19 +1638,6 @@ const buildProjectActivityFromSkeleton = (
     level: activityLevelFromStatus(plan.status),
   }));
 
-  const nodeItems: ProjectActivityItem[] = nodes.map((node) => {
-    const config = asUnknownRecord(node.config);
-    return {
-      id: `node-${node.node_id}`,
-      title: `Node ${node.name}`,
-      description:
-        pickFirstString(config, ['current_task', 'currentTask']) ||
-        `${humanizeToken(node.status)} ${humanizeToken(node.node_type)} node.`,
-      timestamp: node.last_seen_at || node.updated_at,
-      level: activityLevelFromStatus(node.status),
-    };
-  });
-
   const extensionItems: ProjectActivityItem[] = extensions.map((extension) => ({
     id: `extension-${extension.extension_package_id}`,
     title: `Extension ${extension.name}`,
@@ -1702,7 +1666,6 @@ const buildProjectActivityFromSkeleton = (
     ...runItems,
     ...planItems,
     ...taskItems,
-    ...nodeItems,
     ...extensionItems,
     ...projectSpaceItems,
   ]
@@ -1714,7 +1677,6 @@ const buildProjectDetailFromSkeleton = (
   project: SkeletonProjectRecord,
   tasks: SkeletonProjectTaskRecord[],
   runs: SkeletonRunRecord[],
-  nodes: SkeletonExecutionNodeRecord[],
   extensions: SkeletonExtensionRecord[],
   plans: SkeletonPlanRecord[],
   projectSpace: SkeletonProjectSpaceRecord | null,
@@ -1726,7 +1688,7 @@ const buildProjectDetailFromSkeleton = (
     (left, right) => new Date(right.updated_at).getTime() - new Date(left.updated_at).getTime(),
   )[0];
   const latestPlanDefinition = latestPlan ? asUnknownRecord(latestPlan.definition) : {};
-  const summary = buildSkeletonProjectSummary(project, tasks, runs, nodes, plans);
+  const summary = buildSkeletonProjectSummary(project, tasks, runs, plans);
   const deliverables = collectDeliverablesFromPayloads([
     configuration,
     ...plans.map((plan) => asUnknownRecord(plan.definition)),
@@ -1757,11 +1719,11 @@ const buildProjectDetailFromSkeleton = (
     tasks: tasks
       .map(toProjectTaskSummaryFromSkeleton)
       .sort((left, right) => right.priority - left.priority),
-    agents: nodes.map(toProjectAgentFromSkeletonNode),
+    agents: [],
     agentBindings: agentBindings.map((binding) =>
       toProjectAgentBindingFromSkeleton(
         binding,
-        new Map(nodes.map((node) => [node.node_id, { name: node.name, type: node.node_type }])),
+        new Map(),
       ),
     ),
     provisioningProfiles: provisioningProfiles.map(toProvisioningProfileFromSkeleton),
@@ -1770,7 +1732,6 @@ const buildProjectDetailFromSkeleton = (
       project,
       tasks,
       runs,
-      nodes,
       extensions,
       plans,
       projectSpace,
@@ -1783,43 +1744,57 @@ const buildRunSummaryFromSkeleton = (
   project: SkeletonProjectRecord | undefined,
   tasks: SkeletonProjectTaskRecord[],
   runSteps: SkeletonRunStepRecord[],
-): RunSummary => ({
-  id: run.run_id,
-  projectId: run.project_id,
-  projectTitle: project?.name || 'Untitled Project',
-  status: toProjectStatus(run.status),
-  startedAt: run.started_at || null,
-  completedAt: run.completed_at || null,
-  updatedAt: run.updated_at,
-  totalTasks: tasks.length,
-  completedTasks: tasks.filter((task) => isCompletedStatus(task.status)).length,
-  failedTasks: tasks.filter((task) => isFailedStatus(task.status)).length,
-  nodeCount: new Set(runSteps.map((step) => step.node_id).filter(Boolean)).size,
-  latestSignal:
-    run.error_message ||
-    summarizeRecord(asUnknownRecord(run.runtime_context)) ||
-    runSteps
-      .slice()
-      .sort((left, right) => new Date(right.updated_at).getTime() - new Date(left.updated_at).getTime())[0]
-      ?.error_message ||
-    null,
-});
+): RunSummary => {
+  const lifecycle = resolveRunLifecycle(run, tasks, runSteps);
+
+  return {
+    id: run.run_id,
+    projectId: run.project_id,
+    projectTitle: project?.name || 'Untitled Project',
+    status: lifecycle.status,
+    startedAt: run.started_at || null,
+    completedAt: lifecycle.completedAt,
+    updatedAt: run.updated_at,
+    totalTasks: tasks.length,
+    completedTasks: tasks.filter((task) => isCompletedStatus(task.status)).length,
+    failedTasks: tasks.filter((task) => isFailedStatus(task.status)).length,
+    externalAgentCount: new Set(
+      runSteps
+        .map((step) => asUnknownRecord(step.input_payload))
+        .map((payload) => ({
+          agentId: pickFirstString(payload, ['assigned_agent_id']),
+          runtimeType: pickFirstString(payload, ['runtime_type']),
+        }))
+        .filter(
+          (item) =>
+            item.agentId &&
+            (item.runtimeType?.startsWith('external') || item.runtimeType === 'remote_session'),
+        )
+        .map((item) => item.agentId),
+    ).size,
+    latestSignal:
+      run.error_message ||
+      summarizeRecord(asUnknownRecord(run.runtime_context)) ||
+      runSteps
+        .slice()
+        .sort(
+          (left, right) => new Date(right.updated_at).getTime() - new Date(left.updated_at).getTime(),
+        )[0]?.error_message ||
+      null,
+  };
+};
 
 const activityFromRunStep = (
   step: SkeletonRunStepRecord,
-  nodeNames: Map<string, string>,
 ): ProjectActivityItem => ({
   id: step.run_step_id,
   title: step.name,
   description:
     step.error_message ||
     summarizeRecord(asUnknownRecord(step.output_payload)) ||
-    `${humanizeToken(step.status)} ${humanizeToken(step.step_type)} step${
-      step.node_id && nodeNames.get(step.node_id) ? ` on ${nodeNames.get(step.node_id)}` : ''
-    }.`,
+    `${humanizeToken(step.status)} ${humanizeToken(step.step_type)} step.`,
   timestamp: step.completed_at || step.started_at || step.updated_at || step.created_at,
   level: activityLevelFromStatus(step.status),
-  actor: step.node_id ? nodeNames.get(step.node_id) || null : null,
   taskId: step.project_task_id || null,
 });
 
@@ -1828,16 +1803,10 @@ const buildRunDetailFromSkeleton = (
   project: SkeletonProjectRecord,
   tasks: SkeletonProjectTaskRecord[],
   steps: SkeletonRunStepRecord[],
-  nodes: SkeletonExecutionNodeRecord[],
   plans: SkeletonPlanRecord[] = [],
   projectSpace: SkeletonProjectSpaceRecord | null = null,
-  externalSessions: SkeletonExternalAgentSessionRecord[] = [],
+  externalDispatches: SkeletonExternalAgentDispatchRecord[] = [],
 ): RunDetail => {
-  const nodeNames = new Map(nodes.map((node) => [node.node_id, node.name]));
-  const involvedNodeIds = new Set(steps.map((step) => step.node_id).filter(Boolean));
-  const involvedNodes = involvedNodeIds.size > 0
-    ? nodes.filter((node) => involvedNodeIds.has(node.node_id))
-    : nodes;
   const timeline: ProjectActivityItem[] = [
     {
       id: `run-${run.run_id}-created`,
@@ -1855,7 +1824,7 @@ const buildRunDetailFromSkeleton = (
           level: 'info' as const,
         }]
       : []),
-    ...steps.map((step) => activityFromRunStep(step, nodeNames)),
+    ...steps.map((step) => activityFromRunStep(step)),
     ...(run.completed_at
       ? [{
           id: `run-${run.run_id}-completed`,
@@ -1870,7 +1839,7 @@ const buildRunDetailFromSkeleton = (
       : []),
   ].sort((left, right) => new Date(left.timestamp).getTime() - new Date(right.timestamp).getTime());
 
-  const projectSummary = buildSkeletonProjectSummary(project, tasks, [run], involvedNodes, plans);
+  const projectSummary = buildSkeletonProjectSummary(project, tasks, [run], plans);
   const deliverables = collectDeliverablesFromPayloads([
     asUnknownRecord(project.configuration),
     ...plans.map((plan) => asUnknownRecord(plan.definition)),
@@ -1891,18 +1860,16 @@ const buildRunDetailFromSkeleton = (
     ...buildRunSummaryFromSkeleton(run, project, tasks, steps),
     projectSummary: projectSummary.summary,
     timeline,
-    nodes: involvedNodes.map(toProjectAgentFromSkeletonNode),
     deliverables,
     runWorkspaceRoot: pickFirstString(runWorkspace || {}, ['root_path']),
     executorAssignment: assignment ? {
       executorKind: pickFirstString(assignment, ['executor_kind']),
       agentId: pickFirstString(assignment, ['agent_id']),
-      nodeId: pickFirstString(assignment, ['node_id']),
       selectionReason: pickFirstString(assignment, ['selection_reason']),
       provisionedAgent: asOptionalBoolean(assignment.provisioned_agent) || false,
       runtimeType: pickFirstString(assignment, ['runtime_type']),
     } : null,
-    externalSessions: externalSessions.map(toExternalAgentSessionFromSkeleton),
+    externalDispatches: externalDispatches.map(toExternalAgentDispatchFromSkeleton),
   };
 };
 
@@ -1988,22 +1955,28 @@ const buildTaskDetailFromSkeleton = (
   };
 };
 
-const toExternalAgentSessionFromSkeleton = (session: SkeletonExternalAgentSessionRecord) => ({
-  id: session.session_id,
-  agentId: session.agent_id,
-  executionNodeId: session.execution_node_id,
-  projectId: session.project_id,
-  runId: session.run_id,
-  runStepId: session.run_step_id,
-  runtimeType: session.runtime_type,
-  workdir: session.workdir || null,
-  status: toProjectStatus(session.status),
-  leaseId: session.lease_id || null,
-  errorMessage: session.error_message || null,
-  startedAt: session.started_at || null,
-  completedAt: session.completed_at || null,
-  createdAt: session.created_at,
-  updatedAt: session.updated_at,
+const toExternalAgentDispatchFromSkeleton = (
+  dispatch: SkeletonExternalAgentDispatchRecord,
+) => ({
+  id: dispatch.dispatch_id,
+  agentId: dispatch.agent_id,
+  bindingId: dispatch.binding_id,
+  projectId: dispatch.project_id || '',
+  runId: dispatch.run_id || '',
+  runStepId: dispatch.run_step_id || '',
+  sourceType: dispatch.source_type,
+  sourceId: dispatch.source_id,
+  runtimeType: dispatch.runtime_type,
+  status: toProjectStatus(dispatch.status),
+  errorMessage: dispatch.error_message || null,
+  requestPayload: dispatch.request_payload || {},
+  resultPayload: dispatch.result_payload || {},
+  ackedAt: dispatch.acked_at || null,
+  startedAt: dispatch.started_at || null,
+  completedAt: dispatch.completed_at || null,
+  expiresAt: dispatch.expires_at || null,
+  createdAt: dispatch.created_at,
+  updatedAt: dispatch.updated_at,
 });
 
 const toPlatformExtensionFromSkeleton = (
@@ -2035,16 +2008,14 @@ const toPlatformExtensionFromSkeleton = (
 };
 
 const listProjectsFromSkeleton = async (): Promise<ProjectSummary[]> => {
-  const [projects, tasks, runs, nodes] = await Promise.all([
+  const [projects, tasks, runs] = await Promise.all([
     skeletonApi.listProjects(),
     skeletonApi.listProjectTasks(),
     skeletonApi.listRuns(),
-    skeletonApi.listExecutionNodes(),
   ]);
 
   const tasksByProject = groupByKey(tasks, (task) => task.project_id);
   const runsByProject = groupByKey(runs, (run) => run.project_id);
-  const nodesByProject = groupByKey(nodes, (node) => node.project_id);
 
   return projects
     .map((project) =>
@@ -2052,18 +2023,16 @@ const listProjectsFromSkeleton = async (): Promise<ProjectSummary[]> => {
         project,
         tasksByProject.get(project.project_id) || [],
         runsByProject.get(project.project_id) || [],
-        nodesByProject.get(project.project_id) || [],
       ),
     )
     .sort(sortByUpdatedDescending);
 };
 
 const getProjectDetailFromSkeleton = async (projectId: string): Promise<ProjectDetail> => {
-  const [project, tasks, runs, nodes, extensions, plans, projectSpace, agentBindings, provisioningProfiles] = await Promise.all([
+  const [project, tasks, runs, extensions, plans, projectSpace, agentBindings, provisioningProfiles] = await Promise.all([
     skeletonApi.getProject(projectId),
     skeletonApi.listProjectTasks(projectId),
     skeletonApi.listRuns(projectId),
-    skeletonApi.listExecutionNodes(projectId),
     skeletonApi.listExtensions(projectId),
     skeletonApi.listPlans(projectId),
     skeletonApi.getProjectSpace(projectId),
@@ -2071,7 +2040,7 @@ const getProjectDetailFromSkeleton = async (projectId: string): Promise<ProjectD
     skeletonApi.listAgentProvisioningProfiles(projectId),
   ]);
 
-  return buildProjectDetailFromSkeleton(project, tasks, runs, nodes, extensions, plans, projectSpace, agentBindings, provisioningProfiles);
+  return buildProjectDetailFromSkeleton(project, tasks, runs, extensions, plans, projectSpace, agentBindings, provisioningProfiles);
 };
 
 const getProjectTaskDetailFromSkeleton = async (
@@ -2113,12 +2082,11 @@ const listRunsFromSkeleton = async (): Promise<RunSummary[]> => {
 
 const getRunDetailFromSkeleton = async (runId: string): Promise<RunDetail> => {
   const run = await skeletonApi.getRun(runId);
-  const [project, tasks, steps, nodes] = await Promise.all([
+  const [project, tasks, steps, externalDispatches] = await Promise.all([
     skeletonApi.getProject(run.project_id),
     skeletonApi.listProjectTasks(run.project_id),
     skeletonApi.listRunSteps(runId),
-    skeletonApi.listExecutionNodes(run.project_id),
-    skeletonApi.listRunExternalSessions(run.run_id),
+    skeletonApi.listRunExternalDispatches(run.run_id),
   ]);
 
   return buildRunDetailFromSkeleton(
@@ -2126,54 +2094,10 @@ const getRunDetailFromSkeleton = async (runId: string): Promise<RunDetail> => {
     project,
     tasks.filter((task) => task.run_id === runId),
     steps,
-    nodes,
+    [],
+    null,
+    externalDispatches,
   );
-};
-
-const listExecutionNodesFromSkeleton = async (): Promise<ExecutionNode[]> => {
-  const [nodes, runs, runSteps] = await Promise.all([
-    skeletonApi.listExecutionNodes(),
-    skeletonApi.listRuns(),
-    skeletonApi.listRunSteps(),
-  ]);
-  const stepsByNode = groupByKey(runSteps, (step) => step.node_id || null);
-  const activeProjectIds = new Set(
-    runs
-      .filter((run) => ['planning', 'running', 'reviewing'].includes(toProjectStatus(run.status)))
-      .map((run) => run.project_id),
-  );
-
-  return nodes.map((node) => {
-    const config = asUnknownRecord(node.config);
-    const nodeSteps = stepsByNode.get(node.node_id) || [];
-    const currentStep = nodeSteps
-      .slice()
-      .sort((left, right) => new Date(right.updated_at).getTime() - new Date(left.updated_at).getTime())
-      .find((step) => !isCompletedStatus(step.status) && !isFailedStatus(step.status));
-    const tasksCompleted = nodeSteps.filter((step) => isCompletedStatus(step.status)).length;
-    const tasksFailed = nodeSteps.filter((step) => isFailedStatus(step.status)).length;
-    const totalSteps = nodeSteps.length;
-
-    return {
-      id: node.node_id,
-      name: node.name,
-      type: node.node_type,
-      status: toProjectStatus(node.status),
-      currentTask:
-        pickFirstString(config, ['current_task', 'currentTask']) || currentStep?.name || null,
-      activeProjects: activeProjectIds.has(node.project_id) ? 1 : 0,
-      tasksCompleted,
-      tasksFailed,
-      completionRate:
-        totalSteps > 0 ? Math.round((tasksCompleted / totalSteps) * 100) : 0,
-      skillCount: node.capabilities.length,
-      topSkills: node.capabilities.slice(0, 4),
-      model: pickFirstString(config, ['model', 'llm_model']),
-      provider: pickFirstString(config, ['provider', 'llm_provider']),
-      departmentName: pickFirstString(config, ['department_name', 'departmentName']),
-      uptime: pickFirstString(config, ['uptime']),
-    };
-  });
 };
 
 const listExtensionsFromSkeleton = async (): Promise<PlatformExtension[]> => {
@@ -2279,32 +2203,6 @@ export const projectExecutionApi = {
         data: seedToRunDetail(fallbackSeed),
         fallback: true,
         error: asErrorMessage(error, 'Failed to load run detail'),
-      };
-    }
-  },
-
-  async registerExecutionNode(payload: { projectId: string; name: string; nodeType?: string; capabilities?: string[]; config?: Record<string, unknown>; }): Promise<ExecutionNode> {
-    const node = await skeletonApi.registerExecutionNode(payload);
-    return listExecutionNodesFromSkeleton().then((nodes) => nodes.find((item) => item.id === node.node_id) as ExecutionNode);
-  },
-
-  async updateExecutionNode(nodeId: string, payload: { name?: string; status?: string; capabilities?: string[]; config?: Record<string, unknown>; }): Promise<ExecutionNode> {
-    await skeletonApi.updateExecutionNode(nodeId, payload);
-    return listExecutionNodesFromSkeleton().then((nodes) => nodes.find((item) => item.id === nodeId) as ExecutionNode);
-  },
-
-  async listExecutionNodes(): Promise<PlatformQueryResult<ExecutionNode[]>> {
-    try {
-      const data = await listExecutionNodesFromSkeleton();
-      return {
-        data,
-        fallback: false,
-      };
-    } catch (error) {
-      return {
-        data: ENABLE_PROJECT_EXECUTION_SEEDS ? fallbackNodes : [],
-        fallback: ENABLE_PROJECT_EXECUTION_SEEDS,
-        error: asErrorMessage(error, 'Failed to load execution nodes'),
       };
     }
   },

@@ -1,3 +1,35 @@
+export interface ExternalRuntimeState {
+  status: 'uninstalled' | 'offline' | 'online' | 'error' | string;
+  bound: boolean;
+  availableForConversation: boolean;
+  availableForExecution: boolean;
+  hostName?: string | null;
+  hostOs?: 'windows' | 'darwin' | 'linux' | string | null;
+  hostArch?: string | null;
+  currentVersion?: string | null;
+  desiredVersion?: string | null;
+  lastSeenAt?: string | null;
+  boundAt?: string | null;
+  lastErrorMessage?: string | null;
+  updateAvailable: boolean;
+}
+
+export interface ExternalRuntimeProfile {
+  profile_id?: string;
+  agent_id?: string;
+  path_allowlist: string[];
+  launch_command_template?: string | null;
+  install_channel: string;
+  desired_version: string;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface ExternalRuntimeOverview {
+  state: ExternalRuntimeState;
+  profile: ExternalRuntimeProfile;
+}
+
 export type AgentSkillSummary = {
   skill_id: string;
   skill_slug: string;
@@ -51,6 +83,7 @@ export type Agent = {
   similarityThreshold?: number;
   createdAt?: string;
   updatedAt?: string;
+  externalRuntime?: ExternalRuntimeState | null;
 };
 
 export interface AgentConversationSummary {

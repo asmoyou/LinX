@@ -56,14 +56,12 @@ def ensure_related_records(
     plan_id: Optional[uuid.UUID] = None,
     run_id: Optional[uuid.UUID] = None,
     task_id: Optional[uuid.UUID] = None,
-    node_id: Optional[uuid.UUID] = None,
     agent_id: Optional[uuid.UUID] = None,
     require_project: bool = False,
 ) -> None:
     """Validate referenced records for common project execution entities."""
     from database.models import Agent
     from database.project_execution_models import (
-        ExecutionNode,
         Project,
         ProjectPlan,
         ProjectRun,
@@ -83,10 +81,6 @@ def ensure_related_records(
     if task_id:
         get_or_404(
             session, ProjectTask, ProjectTask.project_task_id, task_id, "Project task not found"
-        )
-    if node_id:
-        get_or_404(
-            session, ExecutionNode, ExecutionNode.node_id, node_id, "Execution node not found"
         )
     if agent_id:
         get_or_404(session, Agent, Agent.agent_id, agent_id, "Agent not found")

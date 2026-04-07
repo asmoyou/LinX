@@ -16,7 +16,6 @@ export const Layout: React.FC = () => {
   const replaceServerNotifications = useNotificationStore((state) => state.replaceServerNotifications);
   const loadProjects = useProjectExecutionStore((state) => state.loadProjects);
   const loadRuns = useProjectExecutionStore((state) => state.loadRuns);
-  const loadExecutionNodes = useProjectExecutionStore((state) => state.loadExecutionNodes);
 
   const syncNotifications = React.useCallback(async () => {
     try {
@@ -90,10 +89,6 @@ export const Layout: React.FC = () => {
       if (location.pathname.startsWith('/runs')) {
         jobs.push(loadRuns());
       }
-      if (location.pathname.startsWith('/execution-nodes')) {
-        jobs.push(loadExecutionNodes());
-      }
-
       await Promise.allSettled(jobs);
     };
 
@@ -108,7 +103,7 @@ export const Layout: React.FC = () => {
       cancelled = true;
       window.clearInterval(intervalId);
     };
-  }, [loadExecutionNodes, loadProjects, loadRuns, location.pathname, syncNotifications]);
+  }, [loadProjects, loadRuns, location.pathname, syncNotifications]);
 
   useEffect(() => {
     const intervalId = window.setInterval(() => {

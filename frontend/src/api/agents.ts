@@ -1,6 +1,6 @@
 import apiClient, { getAuthToken } from "./client";
 import type { RequestConfigWithMeta } from "./client";
-import type { Agent } from "../types/agent";
+import type { Agent, ExternalRuntimeOverview } from "../types/agent";
 import type {
   AgentConversationDetail,
   AgentConversationHistorySummary,
@@ -121,6 +121,22 @@ export interface AgentConversationMessagesResponse {
 export interface SaveFeishuPublicationRequest {
   appId: string;
   appSecret?: string;
+}
+
+export interface ExternalRuntimeProfileUpdateRequest {
+  pathAllowlist?: string[];
+  launchCommandTemplate?: string;
+  installChannel?: string;
+  desiredVersion?: string;
+}
+
+export interface ExternalRuntimeInstallCommandResponse {
+  command: string;
+  expires_at: string;
+}
+
+export interface ExternalRuntimeUpdateCommandResponse {
+  command: string;
 }
 
 /**
@@ -790,6 +806,49 @@ export const agentsApi = {
       requestConfig,
     );
     return response.data;
+  },
+
+
+  getExternalRuntime: async (agentId: string): Promise<ExternalRuntimeOverview> => {
+    const response = await apiClient.get<ExternalRuntimeOverview>(`/agents/${agentId}/external-runtime`);
+    return response.data;
+  },
+
+  updateExternalRuntimeProfile: async (
+    agentId: string,
+    data: ExternalRuntimeProfileUpdateRequest,
+  ): Promise<ExternalRuntimeOverview> => {
+    const response = await apiClient.patch<ExternalRuntimeOverview>(
+      `/agents/${agentId}/external-runtime/profile`,
+      data,
+    );
+    return response.data;
+  },
+
+  createExternalRuntimeInstallCommand: async (
+    agentId: string,
+    targetOs: 'windows' | 'darwin' | 'linux',
+  ): Promise<ExternalRuntimeInstallCommandResponse> => {
+    const response = await apiClient.post<ExternalRuntimeInstallCommandResponse>(
+      `/agents/${agentId}/external-runtime/install-command`,
+      { target_os: targetOs },
+    );
+    return response.data;
+  },
+
+  createExternalRuntimeUpdateCommand: async (
+    agentId: string,
+    targetOs: 'windows' | 'darwin' | 'linux',
+  ): Promise<ExternalRuntimeUpdateCommandResponse> => {
+    const response = await apiClient.post<ExternalRuntimeUpdateCommandResponse>(
+      `/agents/${agentId}/external-runtime/update-command`,
+      { target_os: targetOs },
+    );
+    return response.data;
+  },
+
+  unbindExternalRuntime: async (agentId: string): Promise<void> => {
+    await apiClient.post(`/agents/${agentId}/external-runtime/unbind`);
   },
 
   getFeishuPublication: async (

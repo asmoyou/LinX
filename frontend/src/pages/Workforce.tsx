@@ -101,6 +101,10 @@ export const Workforce: React.FC = () => {
   };
 
   const handleTestAgent = (agent: Agent) => {
+    if (agent.externalRuntime && !agent.externalRuntime.availableForExecution) {
+      toast.error(t("agent.externalRuntimeNotOnline", "This external agent is not online yet."));
+      return;
+    }
     setSelectedAgent(agent);
     setIsTestModalOpen(true);
   };
@@ -108,6 +112,10 @@ export const Workforce: React.FC = () => {
   const handleStartConversation = (agent: Agent) => {
     if (agent.canExecute === false) {
       toast.error(t("agent.startConversationDenied", "You cannot execute this agent."));
+      return;
+    }
+    if (agent.externalRuntime && !agent.externalRuntime.availableForConversation) {
+      toast.error(t("agent.externalRuntimeNotOnline", "This external agent is not online yet."));
       return;
     }
     navigate(`/workforce/${agent.id}/conversations`);

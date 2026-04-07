@@ -7,6 +7,7 @@ from uuid import UUID, uuid4
 import pytest
 from fastapi.testclient import TestClient
 
+from agent_framework.agent_registry import get_agent_registry
 from api_gateway.main import create_app
 from database.connection import get_db_session
 from database.project_execution_models import ProjectRun
@@ -367,7 +368,10 @@ def test_delete_project_task_reconciles_associated_run(
         task_title="Only Task",
     )
 
-    delete_response = api_client.delete(f"/api/v1/project-tasks/{task_id}", headers=auth_headers)
+    delete_response = api_client.delete(
+        f"/api/v1/project-tasks/{task_id}",
+        headers=auth_headers,
+    )
     assert delete_response.status_code == 204, delete_response.text
 
     run_response = api_client.get(f"/api/v1/runs/{run_id}", headers=auth_headers)
@@ -382,35 +386,95 @@ def test_delete_project_task_reconciles_associated_run(
         assert stored_run.completed_at is not None
 
 
-def test_host_action_task_creates_execution_lease(
+def _provision_bound_external_agent(
+    api_client: TestClient,
+    auth_headers: dict[str, str],
+    *,
+    project_id: str,
+    owner_user_id: str,
+    name: str,
+) -> tuple[str, str]:
+    registry = get_agent_registry()
+    agent_info = registry.register_agent(
+        name=name,
+        agent_type="host_action_agent",
+        owner_user_id=UUID(owner_user_id),
+        capabilities=["ops", "shell", "host_execution"],
+        llm_provider=None,
+        llm_model=None,
+        access_level="private",
+        runtime_preference="external_worktree",
+        project_scope_id=UUID(project_id),
+    )
+    registry.update_agent(agent_id=agent_info.agent_id, status="idle")
+
+    binding_response = api_client.post(
+        f"/api/v1/projects/{project_id}/agent-bindings",
+        json={
+            "agent_id": str(agent_info.agent_id),
+            "role_hint": "host executor",
+            "priority": 100,
+            "status": "active",
+            "allowed_step_kinds": ["host_action"],
+            "preferred_skills": ["ops", "shell", "host_execution"],
+            "preferred_runtime_types": ["external_worktree"],
+        },
+        headers=auth_headers,
+    )
+    assert binding_response.status_code == 201, binding_response.text
+
+    install_command_response = api_client.post(
+        f"/api/v1/agents/{agent_info.agent_id}/external-runtime/install-command",
+        json={"target_os": "linux"},
+        headers=auth_headers,
+    )
+    assert install_command_response.status_code == 200, install_command_response.text
+    command = install_command_response.json()["command"]
+    install_code = command.split("code=", 1)[1].split()[0].split("|")[0].strip()
+
+    bootstrap_response = api_client.post(
+        "/api/v1/external-runtime/bootstrap",
+        json={
+            "agent_id": str(agent_info.agent_id),
+            "install_code": install_code,
+            "host_name": "test-host",
+            "host_os": "linux",
+            "host_arch": "amd64",
+            "host_fingerprint": f"fingerprint-{agent_info.agent_id}",
+            "current_version": "0.1.0",
+            "metadata": {},
+        },
+    )
+    assert bootstrap_response.status_code == 200, bootstrap_response.text
+    machine_token = bootstrap_response.json()["machine_token"]
+    return str(agent_info.agent_id), machine_token
+
+
+def test_host_action_task_creates_external_dispatch(
     api_client: TestClient, auth_headers: dict[str, str]
 ):
     project_response = api_client.post(
         "/api/v1/projects",
         json={
             "name": "Host Action Project",
-            "description": "Exercise external execution node dispatch.",
+            "description": "Exercise external dispatch flow.",
             "status": "draft",
             "configuration": {},
         },
         headers=auth_headers,
     )
     assert project_response.status_code == 201, project_response.text
-    project_id = project_response.json()["project_id"]
+    project = project_response.json()
+    project_id = project["project_id"]
+    owner_user_id = project["created_by_user_id"]
 
-    node_response = api_client.post(
-        "/api/v1/execution-nodes/register",
-        json={
-            "project_id": project_id,
-            "name": "Host Node 1",
-            "node_type": "external_cli",
-            "capabilities": ["host_execution", "ops", "shell"],
-            "config": {"paths": ["/tmp"]},
-        },
-        headers=auth_headers,
+    agent_id, machine_token = _provision_bound_external_agent(
+        api_client,
+        auth_headers,
+        project_id=project_id,
+        owner_user_id=owner_user_id,
+        name="Bound External Agent 1",
     )
-    assert node_response.status_code == 201, node_response.text
-    node_id = node_response.json()["node_id"]
 
     create_and_launch_response = api_client.post(
         "/api/v1/project-tasks/create-and-launch",
@@ -426,51 +490,49 @@ def test_host_action_task_creates_execution_lease(
     assert create_and_launch_response.status_code == 201, create_and_launch_response.text
     payload = create_and_launch_response.json()
     assert payload["agent_assignment"]["executor_kind"] == "agent"
-    assert payload["agent_assignment"]["agent_id"] is not None
-    assert payload["agent_assignment"]["node_id"] == node_id
+    assert payload["agent_assignment"]["agent_id"] == agent_id
+    assert payload["agent_assignment"]["dispatch_id"] is not None
     assert payload["agent_assignment"]["runtime_type"] == "external_worktree"
-    assert payload["runtime_binding"]["execution_node_id"] == node_id
-    assert payload["external_session"]["execution_node_id"] == node_id
-    assert payload["external_session"]["status"] == "pending"
-    assert payload["step"]["status"] == "leased"
+    assert payload["external_dispatch"]["status"] == "pending"
+    assert payload["step"]["status"] == "queued"
     assert payload["run"]["status"] == "scheduled"
 
-    leases_response = api_client.get(f"/api/v1/execution-nodes/{node_id}/leases", headers=auth_headers)
-    assert leases_response.status_code == 200, leases_response.text
-    leases = leases_response.json()
-    assert len(leases) == 1
-    assert leases[0]["run_step_id"] == payload["step"]["run_step_id"]
+    dispatch_response = api_client.get(
+        "/api/v1/external-runtime/dispatches/next",
+        headers={"Authorization": f"Bearer {machine_token}"},
+    )
+    assert dispatch_response.status_code == 200, dispatch_response.text
+    dispatch = dispatch_response.json()
+    assert dispatch["dispatch_id"] == payload["external_dispatch"]["dispatch_id"]
+    assert dispatch["run_step_id"] == payload["step"]["run_step_id"]
 
 
-def test_execution_lease_completion_updates_run_state(
+def test_external_dispatch_completion_updates_run_state(
     api_client: TestClient, auth_headers: dict[str, str]
 ):
     project_response = api_client.post(
         "/api/v1/projects",
         json={
-            "name": "Lease Completion Project",
-            "description": "Exercise lease completion flow.",
+            "name": "Dispatch Completion Project",
+            "description": "Exercise external dispatch completion flow.",
             "status": "draft",
             "configuration": {},
         },
         headers=auth_headers,
     )
     assert project_response.status_code == 201, project_response.text
-    project_id = project_response.json()["project_id"]
+    project = project_response.json()
+    project_id = project["project_id"]
+    owner_user_id = project["created_by_user_id"]
 
-    node_response = api_client.post(
-        "/api/v1/execution-nodes/register",
-        json={
-            "project_id": project_id,
-            "name": "Host Node 2",
-            "node_type": "external_cli",
-            "capabilities": ["host_execution", "ops", "shell"],
-            "config": {},
-        },
-        headers=auth_headers,
+    agent_id, machine_token = _provision_bound_external_agent(
+        api_client,
+        auth_headers,
+        project_id=project_id,
+        owner_user_id=owner_user_id,
+        name="Bound External Agent 2",
     )
-    assert node_response.status_code == 201, node_response.text
-    node_id = node_response.json()["node_id"]
+    assert agent_id
 
     create_and_launch_response = api_client.post(
         "/api/v1/project-tasks/create-and-launch",
@@ -487,32 +549,23 @@ def test_execution_lease_completion_updates_run_state(
     payload = create_and_launch_response.json()
     run_id = payload["run"]["run_id"]
     step_id = payload["step"]["run_step_id"]
-
-    leases_response = api_client.get(f"/api/v1/execution-nodes/{node_id}/leases", headers=auth_headers)
-    assert leases_response.status_code == 200, leases_response.text
-    lease_id = leases_response.json()[0]["lease_id"]
+    dispatch_id = payload["external_dispatch"]["dispatch_id"]
+    host_headers = {"Authorization": f"Bearer {machine_token}"}
 
     ack_response = api_client.post(
-        f"/api/v1/execution-nodes/{node_id}/leases/{lease_id}/ack",
+        f"/api/v1/external-runtime/dispatches/{dispatch_id}/ack",
         json={"status": "running", "result_payload": {}},
-        headers=auth_headers,
+        headers=host_headers,
     )
     assert ack_response.status_code == 200, ack_response.text
 
     complete_response = api_client.post(
-        f"/api/v1/execution-nodes/{node_id}/leases/{lease_id}/complete",
+        f"/api/v1/external-runtime/dispatches/{dispatch_id}/complete",
         json={"status": "completed", "result_payload": {"stdout": "done"}},
-        headers=auth_headers,
+        headers=host_headers,
     )
     assert complete_response.status_code == 200, complete_response.text
     assert complete_response.json()["status"] == "completed"
-
-    external_sessions_response = api_client.get(f"/api/v1/runs/{run_id}/external-sessions", headers=auth_headers)
-    assert external_sessions_response.status_code == 200, external_sessions_response.text
-    external_sessions = external_sessions_response.json()
-    assert len(external_sessions) == 1
-    assert external_sessions[0]["status"] == "completed"
-    assert external_sessions[0]["lease_id"] == lease_id
 
     run_response = api_client.get(f"/api/v1/runs/{run_id}", headers=auth_headers)
     assert run_response.status_code == 200, run_response.text

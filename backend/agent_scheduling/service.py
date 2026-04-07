@@ -42,6 +42,10 @@ from database.models import (
 )
 from project_execution.notification_repository import create_user_notification
 from shared.config import get_config
+from project_execution.external_runtime_service import (
+    ExternalRuntimeService,
+    ExternalRuntimeUnavailableError,
+)
 from shared.platform_settings import PLATFORM_BOOTSTRAP_SETTINGS_KEY, get_platform_setting
 
 logger = logging.getLogger(__name__)
@@ -1147,6 +1151,7 @@ async def execute_schedule_run(*, run_id: str) -> ScheduleRunExecutionResult:
             raise ScheduleNotFoundError(f"Schedule for run {run_id} not found")
         conversation = schedule.bound_conversation
         owner = schedule.owner
+        agent = getattr(schedule, "agent", None)
         if owner is None:
             payload = _mark_invalid_binding(
                 session=session,
@@ -1173,6 +1178,25 @@ async def execute_schedule_run(*, run_id: str) -> ScheduleRunExecutionResult:
                 delivery_channel="web",
                 error=payload["lastError"],
             )
+        if agent is not None:
+            try:
+                ExternalRuntimeService(session).assert_agent_online(
+                    agent=agent,
+                    error_detail="external_agent_not_online",
+                )
+            except ExternalRuntimeUnavailableError:
+                payload = _mark_invalid_binding(
+                    session=session,
+                    run=run,
+                    schedule=schedule,
+                    error_message="External agent is not online.",
+                )
+                return ScheduleRunExecutionResult(
+                    run_id=run_id,
+                    status="failed",
+                    delivery_channel="web",
+                    error=payload["lastError"],
+                )
         principal: ConversationExecutionPrincipal = build_conversation_execution_principal(
             user_id=owner.user_id,
             role=owner.role,

@@ -44,7 +44,10 @@ export const AgentCard: React.FC<AgentCardProps> = ({
   const boundSkillCount =
     agent.skill_summaries?.length || agent.skill_ids?.length || 0;
   const canManage = agent.canManage ?? agent.isOwned ?? false;
-  const canExecute = agent.canExecute ?? true;
+  const canExecute = (agent.canExecute ?? true) && (!agent.externalRuntime || agent.externalRuntime.availableForConversation);
+  const externalRuntimeLabel = agent.externalRuntime
+    ? t(`agent.externalRuntimeStatus.${agent.externalRuntime.status}`, { defaultValue: agent.externalRuntime.status })
+    : null;
   const ownershipLabel = agent.isOwned
     ? t("agent.ownedByYou", "Owned by you")
     : t("agent.sharedBy", {
@@ -252,6 +255,11 @@ export const AgentCard: React.FC<AgentCardProps> = ({
           {agent.projectScopeId ? (
             <span className="px-2 py-1 bg-zinc-500/5 rounded-md text-[9px] font-bold text-zinc-700 dark:text-zinc-300 uppercase tracking-tight border border-zinc-500/5">
               {t("agent.projectScopeBadge", "Project Scoped")}
+            </span>
+          ) : null}
+          {externalRuntimeLabel ? (
+            <span className="px-2 py-1 bg-indigo-500/10 rounded-md text-[9px] font-bold text-indigo-700 dark:text-indigo-300 uppercase tracking-tight border border-indigo-500/20">
+              {t("agent.externalRuntimeBadge", "Host")} · {externalRuntimeLabel}
             </span>
           ) : null}
         </div>

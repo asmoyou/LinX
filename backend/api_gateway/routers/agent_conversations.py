@@ -81,6 +81,10 @@ from database.models import (
     AgentConversationSnapshot,
 )
 from object_storage.minio_client import get_minio_client
+from project_execution.external_runtime_service import (
+    ExternalRuntimeService,
+    ExternalRuntimeUnavailableError,
+)
 from shared.logging import get_logger
 from shared.secret_crypto import encrypt_text
 
@@ -113,6 +117,20 @@ def _is_conversation_execution_active(conversation_id: UUID | str) -> bool:
 
 
 ConversationChunkCallback = Callable[[Dict[str, Any]], Awaitable[None] | None]
+
+
+def _ensure_agent_runtime_available_for_conversation(agent_id: UUID | str) -> None:
+    with get_db_session() as session:
+        agent = session.query(Agent).filter(Agent.agent_id == UUID(str(agent_id))).first()
+        if agent is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent not found")
+        try:
+            ExternalRuntimeService(session).assert_agent_online(
+                agent=agent,
+                error_detail="external_agent_not_online",
+            )
+        except ExternalRuntimeUnavailableError as exc:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
 
 
 class AgentConversationSummaryResponse(BaseModel):
@@ -1380,6 +1398,8 @@ async def execute_persistent_conversation_turn(
     ):
         return {"duplicate": True, "output": "", "artifacts": []}
 
+    _ensure_agent_runtime_available_for_conversation(conversation.agent_id)
+
     user_text = str(message or "").strip()
     persisted_input_text = str(
         input_message_text if input_message_text is not None else user_text
@@ -2027,6 +2047,7 @@ async def create_agent_conversation(
     current_user: CurrentUser = Depends(get_current_user),
 ):
     agents_router._get_accessible_agent_or_raise(agent_id, current_user, access_type="execute")
+    _ensure_agent_runtime_available_for_conversation(agent_id)
     with get_db_session() as session:
         row = AgentConversation(
             agent_id=UUID(agent_id),

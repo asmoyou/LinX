@@ -15,8 +15,7 @@ import {
   ChevronUp,
 } from "lucide-react";
 import toast from "react-hot-toast";
-import type { Agent } from "@/types/agent";
-import type { AgentSkillSummary, FeishuPublicationConfig } from "@/types/agent";
+import type { Agent, AgentSkillSummary, ExternalRuntimeOverview, FeishuPublicationConfig } from "@/types/agent";
 import { llmApi, agentsApi } from "@/api";
 import {
   skillsApi,
@@ -131,6 +130,11 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
   const [isSavingFeishuPublication, setIsSavingFeishuPublication] =
     useState(false);
   const [feishuError, setFeishuError] = useState<string | null>(null);
+  const [externalRuntimeOverview, setExternalRuntimeOverview] = useState<ExternalRuntimeOverview | null>(null);
+  const [isLoadingExternalRuntime, setIsLoadingExternalRuntime] = useState(false);
+  const [externalRuntimeTarget, setExternalRuntimeTarget] = useState<"linux" | "darwin" | "windows">("linux");
+  const [externalPathAllowlist, setExternalPathAllowlist] = useState("");
+  const [externalLaunchCommandTemplate, setExternalLaunchCommandTemplate] = useState("");
 
   const [formData, setFormData] = useState<Partial<Agent>>({
     name: "",
@@ -202,8 +206,9 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
       fetchAvailableSkills();
       fetchKnowledgeBases();
       void fetchFeishuPublication();
+      void loadExternalRuntimeOverview();
     }
-  }, [isOpen]);
+  }, [isOpen, agent?.id, agentKind]);
 
   useEffect(() => {
     if (
@@ -543,6 +548,17 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
       } as Agent;
       console.log("[AgentConfigModal] Calling onSave with:", updatedAgent);
 
+      if (agentKind === "external" && agent?.id) {
+        await agentsApi.updateExternalRuntimeProfile(agent.id, {
+          pathAllowlist: externalPathAllowlist
+            .split(/\n+/)
+            .map((item) => item.trim())
+            .filter(Boolean),
+          launchCommandTemplate: externalLaunchCommandTemplate.trim() || undefined,
+          desiredVersion: externalRuntimeOverview?.profile?.desired_version || undefined,
+        });
+      }
+
       // Call parent's onSave with updated agent data
       await onSave(
         updatedAgent,
@@ -661,6 +677,50 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
         return "bg-zinc-100 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300";
     }
   };
+
+  const loadExternalRuntimeOverview = async () => {
+    if (!agent?.id || agentKind !== "external") {
+      setExternalRuntimeOverview(null);
+      return;
+    }
+    try {
+      setIsLoadingExternalRuntime(true);
+      const overview = await agentsApi.getExternalRuntime(agent.id);
+      setExternalRuntimeOverview(overview);
+      setExternalPathAllowlist((overview.profile.path_allowlist || []).join("\n"));
+      setExternalLaunchCommandTemplate(overview.profile.launch_command_template || "");
+    } catch (error) {
+      console.error("Failed to load external runtime overview:", error);
+    } finally {
+      setIsLoadingExternalRuntime(false);
+    }
+  };
+
+  const copyInstallCommand = async () => {
+    if (!agent?.id) return;
+    const response = await agentsApi.createExternalRuntimeInstallCommand(agent.id, externalRuntimeTarget);
+    await navigator.clipboard.writeText(response.command);
+    toast.success(t("agent.externalInstallCommandCopied", "Install command copied"));
+  };
+
+  const copyUpdateCommand = async () => {
+    if (!agent?.id) return;
+    const response = await agentsApi.createExternalRuntimeUpdateCommand(agent.id, externalRuntimeTarget);
+    await navigator.clipboard.writeText(response.command);
+    toast.success(t("agent.externalUpdateCommandCopied", "Update command copied"));
+  };
+
+  const handleUnbindExternalRuntime = async () => {
+    if (!agent?.id) return;
+    await agentsApi.unbindExternalRuntime(agent.id);
+    toast.success(t("agent.externalRuntimeUnbound", "Host unbound"));
+    await loadExternalRuntimeOverview();
+  };
+
+  const formatExternalRuntimeLabel = (status?: string | null) =>
+    t(`agent.externalRuntimeStatus.${status || "uninstalled"}`, {
+      defaultValue: status || "uninstalled",
+    });
 
   const formatFeishuTimestamp = (value?: string | null) => {
     if (!value) {
@@ -858,7 +918,7 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
                 </p>
                 <p className="mt-2 text-sm text-zinc-600 dark:text-zinc-400">
                   {agentKind === "external"
-                    ? t("agent.runtimeBannerExternal", "This agent runs through an external runtime host. Host-specific deployment and runner settings are configured from Execution Nodes.")
+                    ? t("agent.runtimeBannerExternal", "This agent runs through a bound external host. Install, update, and unbind it directly from this panel.")
                     : t("agent.runtimeBannerInternal", "This agent runs inside project run sandboxes and is attached to projects later from Project Agent Pool.")}
                 </p>
               </div>
@@ -1036,21 +1096,76 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
                         {t("agent.externalConfigNodeBindingTitle", "Runtime Host")}
                       </label>
                       <p className="text-sm text-zinc-700 dark:text-zinc-300">
-                        {t("agent.externalConfigNodeBindingDescription", "External agents use runtime hosts from the Execution Nodes page. Host-specific runner commands and path allowlists are configured there.")}
+                        {t("agent.externalConfigNodeBindingDescription", "This external agent binds directly to one host. Manage install commands, host status, and path allowlists here.")}
                       </p>
                     </div>
                   </div>
-                  <div className="rounded-xl border border-indigo-500/20 bg-indigo-500/5 p-4">
-                    <label className="block text-sm font-semibold text-zinc-700 dark:text-zinc-300 mb-2">
-                      {t("agent.externalDeploymentGuideTitle", "How to deploy to a target host")}
+                  <div className="rounded-xl border border-indigo-500/20 bg-indigo-500/5 p-4 space-y-4">
+                    <div className="flex flex-wrap items-center justify-between gap-3">
+                      <div>
+                        <label className="block text-sm font-semibold text-zinc-700 dark:text-zinc-300 mb-1">
+                          {t("agent.externalRuntimeStatusTitle", "Host Binding Status")}
+                        </label>
+                        <p className="text-sm text-zinc-700 dark:text-zinc-300">
+                          {isLoadingExternalRuntime
+                            ? t("agent.loading", "Loading...")
+                            : formatExternalRuntimeLabel(externalRuntimeOverview?.state.status || agent.externalRuntime?.status || "uninstalled")}
+                        </p>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        {(["linux", "darwin", "windows"] as const).map((target) => (
+                          <button
+                            key={target}
+                            type="button"
+                            onClick={() => setExternalRuntimeTarget(target)}
+                            className={`rounded-full px-3 py-1 text-xs font-semibold transition ${externalRuntimeTarget === target ? "bg-indigo-600 text-white" : "bg-white/80 text-zinc-700 dark:bg-zinc-900/60 dark:text-zinc-200"}`}
+                          >
+                            {target}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div className="grid gap-3 sm:grid-cols-2 text-sm text-zinc-700 dark:text-zinc-300">
+                      <p>{t("agent.externalRuntimeHost", "Host")}: {externalRuntimeOverview?.state.hostName || "—"}</p>
+                      <p>{t("agent.externalRuntimeOs", "OS")}: {externalRuntimeOverview?.state.hostOs || "—"}</p>
+                      <p>{t("agent.externalRuntimeArch", "Arch")}: {externalRuntimeOverview?.state.hostArch || "—"}</p>
+                      <p>{t("agent.externalRuntimeVersion", "Version")}: {externalRuntimeOverview?.state.currentVersion || "—"}</p>
+                    </div>
+
+                    <div className="flex flex-wrap gap-3">
+                      <button type="button" onClick={() => void copyInstallCommand()} className="rounded-full bg-indigo-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-indigo-500">
+                        {t("agent.copyInstallCommand", "Copy Install Command")}
+                      </button>
+                      <button type="button" onClick={() => void copyUpdateCommand()} disabled={!externalRuntimeOverview?.state.bound} className="rounded-full border border-zinc-300 px-4 py-2 text-sm font-semibold text-zinc-700 transition hover:bg-zinc-100 disabled:opacity-50 dark:border-zinc-700 dark:text-zinc-200 dark:hover:bg-zinc-800">
+                        {t("agent.copyUpdateCommand", "Copy Update Command")}
+                      </button>
+                      <button type="button" onClick={() => void handleUnbindExternalRuntime()} disabled={!externalRuntimeOverview?.state.bound} className="rounded-full border border-rose-300 px-4 py-2 text-sm font-semibold text-rose-600 transition hover:bg-rose-50 disabled:opacity-50 dark:border-rose-900/40 dark:text-rose-300 dark:hover:bg-rose-950/30">
+                        {t("agent.unbindExternalRuntime", "Unbind Host")}
+                      </button>
+                    </div>
+
+                    <label className="block text-sm font-semibold text-zinc-700 dark:text-zinc-300">
+                      {t("agent.externalPathAllowlist", "Path Allowlist")}
+                      <textarea
+                        value={externalPathAllowlist}
+                        onChange={(event) => setExternalPathAllowlist(event.target.value)}
+                        rows={3}
+                        className="mt-2 w-full rounded-xl border border-zinc-200 bg-white px-4 py-3 text-sm text-zinc-900 outline-none transition focus:border-indigo-400 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100"
+                        placeholder={t("agent.externalPathAllowlistPlaceholder", "One path per line")}
+                      />
                     </label>
-                    <ol className="list-decimal space-y-2 pl-5 text-sm text-zinc-700 dark:text-zinc-300">
-                      <li>{t("agent.externalDeploymentGuideStep1", "Create the external agent here and save it.")}</li>
-                      <li>{t("agent.externalDeploymentGuideStep2", "Go to Execution Nodes and register a runtime host on the target machine or a reachable host.")}</li>
-                      <li>{t("agent.externalDeploymentGuideStep3", "Configure the host's external runner command, path allowlist, and supported runtime modes.")}</li>
-                      <li>{t("agent.externalDeploymentGuideStep4", "Open your project and add this external agent into Project Agent Pool.")}</li>
-                      <li>{t("agent.externalDeploymentGuideStep5", "For host-affecting tasks, LinX will schedule the external agent onto a compatible runtime host.")}</li>
-                    </ol>
+
+                    <label className="block text-sm font-semibold text-zinc-700 dark:text-zinc-300">
+                      {t("agent.externalLaunchCommandTemplate", "Launch Command Template")}
+                      <textarea
+                        value={externalLaunchCommandTemplate}
+                        onChange={(event) => setExternalLaunchCommandTemplate(event.target.value)}
+                        rows={4}
+                        className="mt-2 w-full rounded-xl border border-zinc-200 bg-white px-4 py-3 text-sm text-zinc-900 outline-none transition focus:border-indigo-400 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100"
+                        placeholder={t("agent.externalLaunchCommandTemplatePlaceholder", "Leave blank to use the built-in worker")}
+                      />
+                    </label>
                   </div>
                 </div>
               ) : (

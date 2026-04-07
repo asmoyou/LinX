@@ -10,7 +10,6 @@ vi.mock('@/api/projectExecution', () => ({
     getProjectTaskDetail: vi.fn(),
     listRuns: vi.fn(),
     getRunDetail: vi.fn(),
-    listExecutionNodes: vi.fn(),
     getSkillHubSnapshot: vi.fn(),
     listExtensions: vi.fn(),
     createProject: vi.fn(),

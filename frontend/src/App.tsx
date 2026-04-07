@@ -53,11 +53,6 @@ const RunCenter = lazy(() =>
 const RunDetail = lazy(() =>
   import('./pages/RunDetail').then((module) => ({ default: module.RunDetail })),
 );
-const ExecutionNodes = lazy(() =>
-  import('./pages/ExecutionNodes').then((module) => ({
-    default: module.ExecutionNodes,
-  })),
-);
 const Workforce = lazy(() =>
   import('./pages/Workforce').then((module) => ({ default: module.Workforce })),
 );
@@ -221,10 +216,6 @@ const AnimatedRoutes = ({ setupStatus, onSetupStatusRefresh }: AnimatedRoutesPro
           />
           <Route path="runs" element={wrapPage('Run Center', <RunCenter />)} />
           <Route path="runs/:runId" element={wrapPage('Run Detail', <RunDetail />)} />
-          <Route
-            path="execution-nodes"
-            element={wrapPage('Execution Nodes', <ExecutionNodes />)}
-          />
           <Route path="skill-hub" element={<Navigate to="/skills/library?section=library" replace />} />
           <Route path="extensions" element={<Navigate to="/skills/library?section=mcp_servers" replace />} />
           <Route path="dashboard" element={wrapPage('仪表盘', <Dashboard />)} />

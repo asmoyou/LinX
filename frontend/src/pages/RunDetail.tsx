@@ -156,7 +156,7 @@ export const RunDetail = () => {
           helper={t('projectExecution.runDetail.tasksHelper', 'Completed vs total')}
         />
         <MetricCard label={t('projectExecution.runDetail.failed', 'Failed')} value={formatNumber(detail.failedTasks)} helper={t('projectExecution.runDetail.failedHelper', 'Task failures in this run')} />
-        <MetricCard label={t('projectExecution.runDetail.nodes', 'Nodes')} value={formatNumber(detail.nodeCount || detail.nodes.length)} helper={t('projectExecution.runDetail.nodesHelper', 'Involved execution nodes')} />
+        <MetricCard label={t('projectExecution.runDetail.externalAgents', 'External Agents')} value={formatNumber(detail.externalDispatches?.length || 0)} helper={t('projectExecution.runDetail.externalAgentsHelper', 'Host-backed agents involved in this run')} />
       </div>
 
       <div className="grid gap-6 xl:grid-cols-[1.2fr_0.8fr]">
@@ -190,28 +190,28 @@ export const RunDetail = () => {
         </SectionCard>
 
         <div className="space-y-6">
-          {detail.externalSessions && detail.externalSessions.length > 0 ? (
-            <SectionCard title={t('projectExecution.runDetail.externalSessionsTitle', 'External Agent Sessions')} description={t('projectExecution.runDetail.externalSessionsDescription', 'External agents currently or previously attached to this run.') }>
+          {detail.externalDispatches && detail.externalDispatches.length > 0 ? (
+            <SectionCard title={t('projectExecution.runDetail.externalSessionsTitle', 'External Agent Dispatches')} description={t('projectExecution.runDetail.externalSessionsDescription', 'External host-backed dispatches attached to this run.') }>
               <div className="space-y-3">
-                {detail.externalSessions.map((session) => (
+                {detail.externalDispatches.map((dispatch) => (
                   <div
-                    key={session.id}
+                    key={dispatch.id}
                     className="rounded-[18px] border border-zinc-200/70 bg-zinc-50/70 px-4 py-3 dark:border-zinc-800 dark:bg-zinc-900/60"
                   >
                     <div className="flex flex-wrap items-center justify-between gap-3">
                       <div>
-                        <p className="font-medium text-zinc-950 dark:text-zinc-50">{session.runtimeType}</p>
+                        <p className="font-medium text-zinc-950 dark:text-zinc-50">{dispatch.runtimeType}</p>
                         <p className="mt-1 text-sm text-zinc-600 dark:text-zinc-400">
-                          {t('projectExecution.runDetail.externalSessionNode', { value: session.executionNodeId, defaultValue: `Node: ${session.executionNodeId}` })}
+                          {t('projectExecution.runDetail.externalSessionNode', { value: dispatch.bindingId, defaultValue: `Binding: ${dispatch.bindingId}` })}
                         </p>
                         <p className="mt-1 break-all text-xs text-zinc-500 dark:text-zinc-400">
-                          {session.workdir || t('projectExecution.runDetail.externalSessionWorkdirPending', 'Workdir will be reported by the node runtime.')}
+                          {dispatch.runStepId || t('projectExecution.runDetail.externalSessionWorkdirPending', 'Dispatch metadata will be reported by the runtime.')}
                         </p>
-                        {session.errorMessage ? (
-                          <p className="mt-1 text-xs text-rose-600 dark:text-rose-400">{session.errorMessage}</p>
+                        {dispatch.errorMessage ? (
+                          <p className="mt-1 text-xs text-rose-600 dark:text-rose-400">{dispatch.errorMessage}</p>
                         ) : null}
                       </div>
-                      <StatusBadge status={session.status} />
+                      <StatusBadge status={dispatch.status} />
                     </div>
                   </div>
                 ))}
@@ -219,28 +219,6 @@ export const RunDetail = () => {
             </SectionCard>
           ) : null}
 
-          <SectionCard title={t('projectExecution.runDetail.nodesTitle', 'Nodes')} description={t('projectExecution.runDetail.nodesDescription', 'Execution nodes that contributed to this run.')}>
-            {detail.nodes.length > 0 ? (
-              <div className="space-y-3">
-                {detail.nodes.map((node) => (
-                  <div
-                    key={node.id}
-                    className="rounded-[18px] border border-zinc-200/70 bg-zinc-50/70 px-4 py-3 dark:border-zinc-800 dark:bg-zinc-900/60"
-                  >
-                    <div className="flex items-start justify-between gap-3">
-                      <div>
-                        <p className="font-medium text-zinc-950 dark:text-zinc-50">{node.name}</p>
-                        <p className="text-sm text-zinc-600 dark:text-zinc-400">{node.role}</p>
-                      </div>
-                      <StatusBadge status={node.status} />
-                    </div>
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <p className="text-sm text-zinc-600 dark:text-zinc-400">No nodes were recorded.</p>
-            )}
-          </SectionCard>
 
           <SectionCard title={t('projectExecution.runDetail.deliverablesTitle', 'Deliverables')} description="Artifacts available from the latest run output.">
             {detail.deliverables.length > 0 ? (

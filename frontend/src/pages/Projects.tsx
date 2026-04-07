@@ -93,11 +93,6 @@ export const Projects = () => {
               className="rounded-full border border-zinc-300 px-4 py-2 text-sm font-medium text-zinc-700 transition hover:border-zinc-400 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-200 dark:hover:border-zinc-600 dark:hover:bg-zinc-900"
             >{t('projectExecution.shared.openRunCenter', 'Open Run Center')}
             </Link>
-            <Link
-              to="/execution-nodes"
-              className="rounded-full bg-zinc-950 px-4 py-2 text-sm font-medium text-white transition hover:bg-zinc-800 dark:bg-zinc-50 dark:text-zinc-950 dark:hover:bg-zinc-200"
-            >{t('projectExecution.shared.viewNodes', 'View Nodes')}
-            </Link>
           </div>
         </section>
 

@@ -29,6 +29,7 @@ from api_gateway.routers import (
     auth,
     dashboard,
     departments,
+    external_runtime,
     integrations,
     knowledge,
     llm,
@@ -611,6 +612,8 @@ def create_app() -> FastAPI:
     app.include_router(
         agent_conversations.router, prefix="/api/v1/agents", tags=["Agent Conversations"]
     )
+    app.include_router(external_runtime.user_router, prefix="/api/v1", tags=["External Runtime"])
+    app.include_router(external_runtime.host_router, prefix="/api/v1", tags=["External Runtime Host"])
     app.include_router(dashboard.router, prefix="/api/v1/dashboard", tags=["Dashboard"])
     app.include_router(knowledge.router, prefix="/api/v1/knowledge", tags=["Knowledge"])
     app.include_router(user_memory.router, prefix="/api/v1/user-memory", tags=["User Memory"])
@@ -655,11 +658,6 @@ def create_app() -> FastAPI:
         tags=["Project Space"],
     )
     app.include_router(
-        project_execution.execution_nodes_router,
-        prefix="/api/v1/execution-nodes",
-        tags=["Execution Nodes"],
-    )
-    app.include_router(
         project_execution.extensions_router,
         prefix="/api/v1/extensions",
         tags=["Extensions"],
@@ -668,16 +666,6 @@ def create_app() -> FastAPI:
         project_execution.skills_import_router,
         prefix="/api/v1/skills",
         tags=["Project Skill Imports"],
-    )
-    app.include_router(
-        project_execution.agent_runtime_bindings_router,
-        prefix="/api/v1/agents",
-        tags=["Agent Runtime Bindings"],
-    )
-    app.include_router(
-        project_execution.external_agent_sessions_router,
-        prefix="/api/v1/external-agent-sessions",
-        tags=["External Agent Sessions"],
     )
     app.include_router(schedules.router, prefix="/api/v1/schedules", tags=["Schedules"])
     app.include_router(notifications.router, prefix="/api/v1/notifications", tags=["Notifications"])

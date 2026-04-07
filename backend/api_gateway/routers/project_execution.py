@@ -11,10 +11,7 @@ from access_control.permissions import CurrentUser, get_current_user
 from database.connection import get_db_session
 from database.project_execution_models import (
     AgentProvisioningProfile,
-    AgentRuntimeBinding,
-    ExecutionLease,
-    ExecutionNode,
-    ExternalAgentSession,
+    ExternalAgentDispatch,
     Project,
     ProjectAgentBinding,
     ProjectExtensionPackage,
@@ -29,17 +26,7 @@ from project_execution.schemas import (
     AgentProvisioningProfileCreate,
     AgentProvisioningProfileResponse,
     AgentProvisioningProfileUpdate,
-    AgentRuntimeBindingCreate,
-    AgentRuntimeBindingResponse,
-    AgentRuntimeBindingUpdate,
-    ExecutionLeaseProgress,
-    ExecutionLeaseResponse,
-    ExternalAgentSessionResponse,
-    ExecutionNodeCreate,
-    ExecutionNodeHeartbeat,
-    ExecutionNodeRegister,
-    ExecutionNodeResponse,
-    ExecutionNodeUpdate,
+    ExternalAgentDispatchResponse,
     ExtensionPackageCreate,
     ExtensionPackageResponse,
     ExtensionPackageUpdate,
@@ -83,8 +70,8 @@ from project_execution.service import (
     flush_and_refresh,
     get_current_user_uuid,
     get_or_404,
-    reconcile_run_state,
     parse_uuid,
+    reconcile_run_state,
 )
 from shared.logging import get_logger
 
@@ -96,11 +83,8 @@ plans_router = APIRouter()
 runs_router = APIRouter()
 run_steps_router = APIRouter()
 project_space_router = APIRouter()
-execution_nodes_router = APIRouter()
 extensions_router = APIRouter()
 skills_import_router = APIRouter()
-agent_runtime_bindings_router = APIRouter()
-external_agent_sessions_router = APIRouter()
 
 
 def _utc_now() -> datetime:
@@ -112,114 +96,24 @@ def _handle_integrity_error(exc: IntegrityError, *, duplicate_detail: str) -> No
     raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=duplicate_detail) from exc
 
 
-
-
-def _sync_external_session_for_lease(session, lease: ExecutionLease, *, status: str, result_payload: Optional[dict] = None, error_message: Optional[str] = None) -> None:
-    external_session = (
-        session.query(ExternalAgentSession)
-        .filter(ExternalAgentSession.lease_id == lease.lease_id)
-        .first()
-    )
-    if external_session is None:
-        return
-    external_session.status = status
-    external_session.error_message = error_message
-    external_session.session_metadata = {
-        **(external_session.session_metadata or {}),
-        **(result_payload or {}),
-    }
-    if status in {"spawning", "connected", "running"} and external_session.started_at is None:
-        external_session.started_at = _utc_now()
-    if status in {"completed", "failed", "terminated"}:
-        external_session.completed_at = _utc_now()
-    flush_and_refresh(session, external_session)
-
-
-@agent_runtime_bindings_router.get("/{agent_id}/runtime-bindings", response_model=list[AgentRuntimeBindingResponse])
-async def list_agent_runtime_bindings(
-    agent_id: str,
-    current_user: CurrentUser = Depends(get_current_user),
-):
-    parsed_agent_id = parse_uuid(agent_id, "agent_id")
-    with get_db_session() as session:
-        bindings = session.query(AgentRuntimeBinding).filter(AgentRuntimeBinding.agent_id == parsed_agent_id).order_by(AgentRuntimeBinding.created_at.asc()).all()
-        return bindings
-
-
-@agent_runtime_bindings_router.post("/{agent_id}/runtime-bindings", response_model=AgentRuntimeBindingResponse, status_code=status.HTTP_201_CREATED)
-async def create_agent_runtime_binding(
-    agent_id: str,
-    request: AgentRuntimeBindingCreate,
-    current_user: CurrentUser = Depends(get_current_user),
-):
-    parsed_agent_id = parse_uuid(agent_id, "agent_id")
-    with get_db_session() as session:
-        binding = AgentRuntimeBinding(
-            agent_id=parsed_agent_id,
-            runtime_type=request.runtime_type,
-            execution_node_id=request.execution_node_id,
-            workspace_strategy=request.workspace_strategy,
-            path_allowlist=request.path_allowlist,
-            status=request.status,
-            config=request.config,
-        )
-        session.add(binding)
-        flush_and_refresh(session, binding)
-        return binding
-
-
-@agent_runtime_bindings_router.patch("/{agent_id}/runtime-bindings/{binding_id}", response_model=AgentRuntimeBindingResponse)
-async def update_agent_runtime_binding(
-    agent_id: str,
-    binding_id: str,
-    request: AgentRuntimeBindingUpdate,
-    current_user: CurrentUser = Depends(get_current_user),
-):
-    parsed_agent_id = parse_uuid(agent_id, "agent_id")
-    parsed_binding_id = parse_uuid(binding_id, "binding_id")
-    with get_db_session() as session:
-        binding = get_or_404(session, AgentRuntimeBinding, AgentRuntimeBinding.runtime_binding_id, parsed_binding_id, "Agent runtime binding not found")
-        if binding.agent_id != parsed_agent_id:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent runtime binding not found")
-        apply_updates(binding, request, ["runtime_type", "execution_node_id", "workspace_strategy", "path_allowlist", "status", "config"])
-        flush_and_refresh(session, binding)
-        return binding
-
-
-@agent_runtime_bindings_router.delete("/{agent_id}/runtime-bindings/{binding_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_agent_runtime_binding(
-    agent_id: str,
-    binding_id: str,
-    current_user: CurrentUser = Depends(get_current_user),
-):
-    parsed_agent_id = parse_uuid(agent_id, "agent_id")
-    parsed_binding_id = parse_uuid(binding_id, "binding_id")
-    with get_db_session() as session:
-        binding = get_or_404(session, AgentRuntimeBinding, AgentRuntimeBinding.runtime_binding_id, parsed_binding_id, "Agent runtime binding not found")
-        if binding.agent_id != parsed_agent_id:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent runtime binding not found")
-        session.delete(binding)
-        return Response(status_code=status.HTTP_204_NO_CONTENT)
-
-
-@external_agent_sessions_router.get("/{session_id}", response_model=ExternalAgentSessionResponse)
-async def get_external_agent_session(
-    session_id: str,
-    current_user: CurrentUser = Depends(get_current_user),
-):
-    parsed_session_id = parse_uuid(session_id, "session_id")
-    with get_db_session() as session:
-        return get_or_404(session, ExternalAgentSession, ExternalAgentSession.session_id, parsed_session_id, "External agent session not found")
-
-
-@runs_router.get("/{run_id}/external-sessions", response_model=list[ExternalAgentSessionResponse])
-async def list_run_external_sessions(
+@runs_router.get(
+    "/{run_id}/external-dispatches", response_model=list[ExternalAgentDispatchResponse]
+)
+async def list_run_external_dispatches(
     run_id: str,
     current_user: CurrentUser = Depends(get_current_user),
 ):
     parsed_run_id = parse_uuid(run_id, "run_id")
     with get_db_session() as session:
-        return session.query(ExternalAgentSession).filter(ExternalAgentSession.run_id == parsed_run_id).order_by(ExternalAgentSession.created_at.asc()).all()
+        run = get_or_404(session, ProjectRun, ProjectRun.run_id, parsed_run_id, "Run not found")
+        if str(run.requested_by_user_id) != str(current_user.user_id):
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Run not found")
+        return (
+            session.query(ExternalAgentDispatch)
+            .filter(ExternalAgentDispatch.run_id == parsed_run_id)
+            .order_by(ExternalAgentDispatch.created_at.asc())
+            .all()
+        )
 
 
 @projects_router.post("", response_model=ProjectResponse, status_code=status.HTTP_201_CREATED)
@@ -354,16 +248,18 @@ async def delete_project(project_id: str, current_user: CurrentUser = Depends(ge
         return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
-
-
-@projects_router.get("/{project_id}/agent-bindings", response_model=list[ProjectAgentBindingResponse])
+@projects_router.get(
+    "/{project_id}/agent-bindings", response_model=list[ProjectAgentBindingResponse]
+)
 async def list_project_agent_bindings(
     project_id: str,
     current_user: CurrentUser = Depends(get_current_user),
 ):
     parsed_project_id = parse_uuid(project_id, "project_id")
     with get_db_session() as session:
-        project = get_or_404(session, Project, Project.project_id, parsed_project_id, "Project not found")
+        project = get_or_404(
+            session, Project, Project.project_id, parsed_project_id, "Project not found"
+        )
         if str(project.created_by_user_id) != str(current_user.user_id):
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
         return (
@@ -374,7 +270,11 @@ async def list_project_agent_bindings(
         )
 
 
-@projects_router.post("/{project_id}/agent-bindings", response_model=ProjectAgentBindingResponse, status_code=status.HTTP_201_CREATED)
+@projects_router.post(
+    "/{project_id}/agent-bindings",
+    response_model=ProjectAgentBindingResponse,
+    status_code=status.HTTP_201_CREATED,
+)
 async def create_project_agent_binding(
     project_id: str,
     request: ProjectAgentBindingCreate,
@@ -382,7 +282,9 @@ async def create_project_agent_binding(
 ):
     parsed_project_id = parse_uuid(project_id, "project_id")
     with get_db_session() as session:
-        project = get_or_404(session, Project, Project.project_id, parsed_project_id, "Project not found")
+        project = get_or_404(
+            session, Project, Project.project_id, parsed_project_id, "Project not found"
+        )
         if str(project.created_by_user_id) != str(current_user.user_id):
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
         binding = ProjectAgentBinding(
@@ -399,7 +301,9 @@ async def create_project_agent_binding(
         try:
             flush_and_refresh(session, binding)
         except IntegrityError as exc:
-            _handle_integrity_error(exc, duplicate_detail="Project agent binding could not be created")
+            _handle_integrity_error(
+                exc, duplicate_detail="Project agent binding could not be created"
+            )
         append_audit_event(
             session,
             action="project-agent-binding.created",
@@ -411,7 +315,9 @@ async def create_project_agent_binding(
         return binding
 
 
-@projects_router.patch("/{project_id}/agent-bindings/{binding_id}", response_model=ProjectAgentBindingResponse)
+@projects_router.patch(
+    "/{project_id}/agent-bindings/{binding_id}", response_model=ProjectAgentBindingResponse
+)
 async def update_project_agent_binding(
     project_id: str,
     binding_id: str,
@@ -421,18 +327,41 @@ async def update_project_agent_binding(
     parsed_project_id = parse_uuid(project_id, "project_id")
     parsed_binding_id = parse_uuid(binding_id, "binding_id")
     with get_db_session() as session:
-        binding = get_or_404(session, ProjectAgentBinding, ProjectAgentBinding.binding_id, parsed_binding_id, "Project agent binding not found")
+        binding = get_or_404(
+            session,
+            ProjectAgentBinding,
+            ProjectAgentBinding.binding_id,
+            parsed_binding_id,
+            "Project agent binding not found",
+        )
         if str(binding.project_id) != str(parsed_project_id):
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project agent binding not found")
-        project = get_or_404(session, Project, Project.project_id, parsed_project_id, "Project not found")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="Project agent binding not found"
+            )
+        project = get_or_404(
+            session, Project, Project.project_id, parsed_project_id, "Project not found"
+        )
         if str(project.created_by_user_id) != str(current_user.user_id):
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
-        apply_updates(binding, request, ["role_hint", "priority", "status", "allowed_step_kinds", "preferred_skills", "preferred_runtime_types"])
+        apply_updates(
+            binding,
+            request,
+            [
+                "role_hint",
+                "priority",
+                "status",
+                "allowed_step_kinds",
+                "preferred_skills",
+                "preferred_runtime_types",
+            ],
+        )
         flush_and_refresh(session, binding)
         return binding
 
 
-@projects_router.delete("/{project_id}/agent-bindings/{binding_id}", status_code=status.HTTP_204_NO_CONTENT)
+@projects_router.delete(
+    "/{project_id}/agent-bindings/{binding_id}", status_code=status.HTTP_204_NO_CONTENT
+)
 async def delete_project_agent_binding(
     project_id: str,
     binding_id: str,
@@ -441,24 +370,39 @@ async def delete_project_agent_binding(
     parsed_project_id = parse_uuid(project_id, "project_id")
     parsed_binding_id = parse_uuid(binding_id, "binding_id")
     with get_db_session() as session:
-        binding = get_or_404(session, ProjectAgentBinding, ProjectAgentBinding.binding_id, parsed_binding_id, "Project agent binding not found")
+        binding = get_or_404(
+            session,
+            ProjectAgentBinding,
+            ProjectAgentBinding.binding_id,
+            parsed_binding_id,
+            "Project agent binding not found",
+        )
         if str(binding.project_id) != str(parsed_project_id):
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project agent binding not found")
-        project = get_or_404(session, Project, Project.project_id, parsed_project_id, "Project not found")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="Project agent binding not found"
+            )
+        project = get_or_404(
+            session, Project, Project.project_id, parsed_project_id, "Project not found"
+        )
         if str(project.created_by_user_id) != str(current_user.user_id):
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
         session.delete(binding)
         return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
-@projects_router.get("/{project_id}/agent-provisioning-profiles", response_model=list[AgentProvisioningProfileResponse])
+@projects_router.get(
+    "/{project_id}/agent-provisioning-profiles",
+    response_model=list[AgentProvisioningProfileResponse],
+)
 async def list_agent_provisioning_profiles(
     project_id: str,
     current_user: CurrentUser = Depends(get_current_user),
 ):
     parsed_project_id = parse_uuid(project_id, "project_id")
     with get_db_session() as session:
-        project = get_or_404(session, Project, Project.project_id, parsed_project_id, "Project not found")
+        project = get_or_404(
+            session, Project, Project.project_id, parsed_project_id, "Project not found"
+        )
         if str(project.created_by_user_id) != str(current_user.user_id):
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
         return (
@@ -469,7 +413,11 @@ async def list_agent_provisioning_profiles(
         )
 
 
-@projects_router.post("/{project_id}/agent-provisioning-profiles", response_model=AgentProvisioningProfileResponse, status_code=status.HTTP_201_CREATED)
+@projects_router.post(
+    "/{project_id}/agent-provisioning-profiles",
+    response_model=AgentProvisioningProfileResponse,
+    status_code=status.HTTP_201_CREATED,
+)
 async def create_agent_provisioning_profile(
     project_id: str,
     request: AgentProvisioningProfileCreate,
@@ -477,7 +425,9 @@ async def create_agent_provisioning_profile(
 ):
     parsed_project_id = parse_uuid(project_id, "project_id")
     with get_db_session() as session:
-        project = get_or_404(session, Project, Project.project_id, parsed_project_id, "Project not found")
+        project = get_or_404(
+            session, Project, Project.project_id, parsed_project_id, "Project not found"
+        )
         if str(project.created_by_user_id) != str(current_user.user_id):
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
         profile = AgentProvisioningProfile(
@@ -499,7 +449,9 @@ async def create_agent_provisioning_profile(
         try:
             flush_and_refresh(session, profile)
         except IntegrityError as exc:
-            _handle_integrity_error(exc, duplicate_detail="Agent provisioning profile could not be created")
+            _handle_integrity_error(
+                exc, duplicate_detail="Agent provisioning profile could not be created"
+            )
         append_audit_event(
             session,
             action="agent-provisioning-profile.created",
@@ -511,7 +463,10 @@ async def create_agent_provisioning_profile(
         return profile
 
 
-@projects_router.patch("/{project_id}/agent-provisioning-profiles/{profile_id}", response_model=AgentProvisioningProfileResponse)
+@projects_router.patch(
+    "/{project_id}/agent-provisioning-profiles/{profile_id}",
+    response_model=AgentProvisioningProfileResponse,
+)
 async def update_agent_provisioning_profile(
     project_id: str,
     profile_id: str,
@@ -521,18 +476,46 @@ async def update_agent_provisioning_profile(
     parsed_project_id = parse_uuid(project_id, "project_id")
     parsed_profile_id = parse_uuid(profile_id, "profile_id")
     with get_db_session() as session:
-        profile = get_or_404(session, AgentProvisioningProfile, AgentProvisioningProfile.profile_id, parsed_profile_id, "Agent provisioning profile not found")
+        profile = get_or_404(
+            session,
+            AgentProvisioningProfile,
+            AgentProvisioningProfile.profile_id,
+            parsed_profile_id,
+            "Agent provisioning profile not found",
+        )
         if str(profile.project_id) != str(parsed_project_id):
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent provisioning profile not found")
-        project = get_or_404(session, Project, Project.project_id, parsed_project_id, "Project not found")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="Agent provisioning profile not found"
+            )
+        project = get_or_404(
+            session, Project, Project.project_id, parsed_project_id, "Project not found"
+        )
         if str(project.created_by_user_id) != str(current_user.user_id):
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
-        apply_updates(profile, request, ["agent_type", "template_id", "default_skill_ids", "default_provider", "default_model", "runtime_type", "preferred_node_selector", "temperature", "max_tokens", "sandbox_mode", "ephemeral"])
+        apply_updates(
+            profile,
+            request,
+            [
+                "agent_type",
+                "template_id",
+                "default_skill_ids",
+                "default_provider",
+                "default_model",
+                "runtime_type",
+                "preferred_node_selector",
+                "temperature",
+                "max_tokens",
+                "sandbox_mode",
+                "ephemeral",
+            ],
+        )
         flush_and_refresh(session, profile)
         return profile
 
 
-@projects_router.delete("/{project_id}/agent-provisioning-profiles/{profile_id}", status_code=status.HTTP_204_NO_CONTENT)
+@projects_router.delete(
+    "/{project_id}/agent-provisioning-profiles/{profile_id}", status_code=status.HTTP_204_NO_CONTENT
+)
 async def delete_agent_provisioning_profile(
     project_id: str,
     profile_id: str,
@@ -541,10 +524,20 @@ async def delete_agent_provisioning_profile(
     parsed_project_id = parse_uuid(project_id, "project_id")
     parsed_profile_id = parse_uuid(profile_id, "profile_id")
     with get_db_session() as session:
-        profile = get_or_404(session, AgentProvisioningProfile, AgentProvisioningProfile.profile_id, parsed_profile_id, "Agent provisioning profile not found")
+        profile = get_or_404(
+            session,
+            AgentProvisioningProfile,
+            AgentProvisioningProfile.profile_id,
+            parsed_profile_id,
+            "Agent provisioning profile not found",
+        )
         if str(profile.project_id) != str(parsed_project_id):
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent provisioning profile not found")
-        project = get_or_404(session, Project, Project.project_id, parsed_project_id, "Project not found")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="Agent provisioning profile not found"
+            )
+        project = get_or_404(
+            session, Project, Project.project_id, parsed_project_id, "Project not found"
+        )
         if str(project.created_by_user_id) != str(current_user.user_id):
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
         session.delete(profile)
@@ -582,18 +575,21 @@ async def create_project_task_and_launch(
     scheduling_result = await schedule_run_after_launch(run_id=run_id, current_user=current_user)
 
     with get_db_session() as session:
-        task = get_or_404(session, ProjectTask, ProjectTask.project_task_id, task_id, "Project task not found")
+        task = get_or_404(
+            session, ProjectTask, ProjectTask.project_task_id, task_id, "Project task not found"
+        )
         plan = get_or_404(session, ProjectPlan, ProjectPlan.plan_id, plan_id, "Plan not found")
         run = get_or_404(session, ProjectRun, ProjectRun.run_id, run_id, "Run not found")
-        step = get_or_404(session, ProjectRunStep, ProjectRunStep.run_step_id, step_id, "Run step not found")
+        step = get_or_404(
+            session, ProjectRunStep, ProjectRunStep.run_step_id, step_id, "Run step not found"
+        )
         return ProjectTaskLaunchBundleResponse(
             task=ProjectTaskResponse.model_validate(task),
             plan=ProjectPlanResponse.model_validate(plan),
             run=ProjectRunResponse.model_validate(run),
             step=ProjectRunStepResponse.model_validate(step),
             agent_assignment=scheduling_result.get("agent_assignment"),
-            runtime_binding=scheduling_result.get("runtime_binding"),
-            external_session=scheduling_result.get("external_session"),
+            external_dispatch=scheduling_result.get("external_dispatch"),
             executor_assignment=scheduling_result.get("executor_assignment"),
             run_workspace=scheduling_result.get("run_workspace"),
         )
@@ -696,8 +692,8 @@ async def update_project_task(
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND, detail="Project task not found"
             )
-        previous_run_id = task.run_id
 
+        previous_run_id = task.run_id
         ensure_related_records(
             session,
             project_id=task.project_id,
@@ -1024,14 +1020,15 @@ async def schedule_run(
         run = get_or_404(session, ProjectRun, ProjectRun.run_id, parsed_run_id, "Run not found")
         if str(run.requested_by_user_id) != str(current_user.user_id):
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Run not found")
-    scheduling_result = await schedule_run_after_launch(run_id=parsed_run_id, current_user=current_user)
+    scheduling_result = await schedule_run_after_launch(
+        run_id=parsed_run_id, current_user=current_user
+    )
     with get_db_session() as session:
         run = get_or_404(session, ProjectRun, ProjectRun.run_id, parsed_run_id, "Run not found")
         return RunSchedulingResponse(
             run=ProjectRunResponse.model_validate(run),
             agent_assignment=scheduling_result.get("agent_assignment"),
-            runtime_binding=scheduling_result.get("runtime_binding"),
-            external_session=scheduling_result.get("external_session"),
+            external_dispatch=scheduling_result.get("external_dispatch"),
             executor_assignment=scheduling_result.get("executor_assignment"),
             run_workspace=scheduling_result.get("run_workspace"),
         )
@@ -1136,12 +1133,10 @@ async def create_run_step(
             session,
             run_id=request.run_id,
             task_id=request.project_task_id,
-            node_id=request.node_id,
         )
         step = ProjectRunStep(
             run_id=request.run_id,
             project_task_id=request.project_task_id,
-            node_id=request.node_id,
             name=request.name,
             step_type=request.step_type,
             status=request.status,
@@ -1204,14 +1199,12 @@ async def update_run_step(
             session,
             run_id=step.run_id,
             task_id=request.project_task_id,
-            node_id=request.node_id,
         )
         apply_updates(
             step,
             request,
             [
                 "project_task_id",
-                "node_id",
                 "name",
                 "step_type",
                 "status",
@@ -1378,328 +1371,6 @@ async def sync_project_space(
             current_user=current_user,
         )
         return project_space
-
-
-@execution_nodes_router.post("/register", response_model=ExecutionNodeResponse, status_code=status.HTTP_201_CREATED)
-async def register_execution_node(
-    request: ExecutionNodeRegister,
-    current_user: CurrentUser = Depends(get_current_user),
-):
-    with get_db_session() as session:
-        ensure_related_records(session, project_id=request.project_id, require_project=True)
-        node = ExecutionNode(
-            project_id=request.project_id,
-            name=request.name,
-            node_type=request.node_type,
-            status="online",
-            capabilities=request.capabilities,
-            config=request.config,
-            last_seen_at=_utc_now(),
-        )
-        session.add(node)
-        flush_and_refresh(session, node)
-        append_audit_event(
-            session,
-            action="execution-node.registered",
-            resource_type="execution_node",
-            resource_id=node.node_id,
-            project_id=node.project_id,
-            current_user=current_user,
-        )
-        return node
-
-
-@execution_nodes_router.post(
-    "", response_model=ExecutionNodeResponse, status_code=status.HTTP_201_CREATED
-)
-async def create_execution_node(
-    request: ExecutionNodeCreate,
-    current_user: CurrentUser = Depends(get_current_user),
-):
-    with get_db_session() as session:
-        ensure_related_records(
-            session,
-            project_id=request.project_id,
-            plan_id=request.plan_id,
-            require_project=True,
-        )
-        node = ExecutionNode(
-            project_id=request.project_id,
-            plan_id=request.plan_id,
-            name=request.name,
-            node_type=request.node_type,
-            status=request.status,
-            capabilities=request.capabilities,
-            config=request.config,
-        )
-        session.add(node)
-        flush_and_refresh(session, node)
-        append_audit_event(
-            session,
-            action="execution-node.created",
-            resource_type="execution_node",
-            resource_id=node.node_id,
-            project_id=node.project_id,
-            current_user=current_user,
-        )
-        return node
-
-
-@execution_nodes_router.get("", response_model=list[ExecutionNodeResponse])
-async def list_execution_nodes(
-    project_id: Optional[UUID] = None,
-    _: CurrentUser = Depends(get_current_user),
-):
-    with get_db_session() as session:
-        query = session.query(ExecutionNode)
-        if project_id:
-            query = query.filter(ExecutionNode.project_id == project_id)
-        return query.order_by(ExecutionNode.created_at.desc()).all()
-
-
-@execution_nodes_router.get("/{node_id}", response_model=ExecutionNodeResponse)
-async def get_execution_node(node_id: str, _: CurrentUser = Depends(get_current_user)):
-    parsed_node_id = parse_uuid(node_id, "node_id")
-    with get_db_session() as session:
-        return get_or_404(
-            session,
-            ExecutionNode,
-            ExecutionNode.node_id,
-            parsed_node_id,
-            "Execution node not found",
-        )
-
-
-@execution_nodes_router.patch("/{node_id}", response_model=ExecutionNodeResponse)
-async def update_execution_node(
-    node_id: str,
-    request: ExecutionNodeUpdate,
-    current_user: CurrentUser = Depends(get_current_user),
-):
-    parsed_node_id = parse_uuid(node_id, "node_id")
-    with get_db_session() as session:
-        node = get_or_404(
-            session,
-            ExecutionNode,
-            ExecutionNode.node_id,
-            parsed_node_id,
-            "Execution node not found",
-        )
-        ensure_related_records(session, project_id=node.project_id, plan_id=request.plan_id)
-        apply_updates(
-            node, request, ["plan_id", "name", "node_type", "status", "capabilities", "config"]
-        )
-        flush_and_refresh(session, node)
-        append_audit_event(
-            session,
-            action="execution-node.updated",
-            resource_type="execution_node",
-            resource_id=node.node_id,
-            project_id=node.project_id,
-            current_user=current_user,
-            payload=request.model_dump(exclude_none=True),
-        )
-        return node
-
-
-@execution_nodes_router.post("/{node_id}/heartbeat", response_model=ExecutionNodeResponse)
-async def heartbeat_execution_node(
-    node_id: str,
-    request: ExecutionNodeHeartbeat,
-    current_user: CurrentUser = Depends(get_current_user),
-):
-    parsed_node_id = parse_uuid(node_id, "node_id")
-    with get_db_session() as session:
-        node = get_or_404(
-            session,
-            ExecutionNode,
-            ExecutionNode.node_id,
-            parsed_node_id,
-            "Execution node not found",
-        )
-        node.status = request.status
-        node.config = request.config
-        node.last_seen_at = _utc_now()
-        flush_and_refresh(session, node)
-        append_audit_event(
-            session,
-            action="execution-node.heartbeat",
-            resource_type="execution_node",
-            resource_id=node.node_id,
-            project_id=node.project_id,
-            current_user=current_user,
-            payload=request.model_dump(),
-        )
-        return node
-
-
-@execution_nodes_router.get("/{node_id}/leases", response_model=list[ExecutionLeaseResponse])
-async def list_execution_node_leases(
-    node_id: str,
-    status: Optional[str] = None,
-    current_user: CurrentUser = Depends(get_current_user),
-):
-    parsed_node_id = parse_uuid(node_id, "node_id")
-    with get_db_session() as session:
-        node = get_or_404(session, ExecutionNode, ExecutionNode.node_id, parsed_node_id, "Execution node not found")
-        project = get_or_404(session, Project, Project.project_id, node.project_id, "Project not found")
-        if str(project.created_by_user_id) != str(current_user.user_id):
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Execution node not found")
-        query = session.query(ExecutionLease).filter(ExecutionLease.node_id == parsed_node_id)
-        if status:
-            query = query.filter(ExecutionLease.status == status)
-        else:
-            query = query.filter(ExecutionLease.status.in_(["pending", "acked", "running"]))
-        return query.order_by(ExecutionLease.created_at.asc()).all()
-
-
-@execution_nodes_router.post("/{node_id}/leases/{lease_id}/ack", response_model=ExecutionLeaseResponse)
-async def ack_execution_lease(
-    node_id: str,
-    lease_id: str,
-    request: ExecutionLeaseProgress,
-    current_user: CurrentUser = Depends(get_current_user),
-):
-    parsed_node_id = parse_uuid(node_id, "node_id")
-    parsed_lease_id = parse_uuid(lease_id, "lease_id")
-    with get_db_session() as session:
-        lease = get_or_404(session, ExecutionLease, ExecutionLease.lease_id, parsed_lease_id, "Execution lease not found")
-        if lease.node_id != parsed_node_id:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Execution lease not found")
-        lease.status = "acked"
-        lease.acked_at = _utc_now()
-        lease.result_payload = {**(lease.result_payload or {}), **request.result_payload}
-        flush_and_refresh(session, lease)
-        _sync_external_session_for_lease(session, lease, status="connected", result_payload=request.result_payload)
-        step = get_or_404(session, ProjectRunStep, ProjectRunStep.run_step_id, lease.run_step_id, "Run step not found")
-        step.status = "leased"
-        flush_and_refresh(session, step)
-        return lease
-
-
-@execution_nodes_router.post("/{node_id}/leases/{lease_id}/progress", response_model=ExecutionLeaseResponse)
-async def update_execution_lease_progress(
-    node_id: str,
-    lease_id: str,
-    request: ExecutionLeaseProgress,
-    current_user: CurrentUser = Depends(get_current_user),
-):
-    parsed_node_id = parse_uuid(node_id, "node_id")
-    parsed_lease_id = parse_uuid(lease_id, "lease_id")
-    with get_db_session() as session:
-        lease = get_or_404(session, ExecutionLease, ExecutionLease.lease_id, parsed_lease_id, "Execution lease not found")
-        if lease.node_id != parsed_node_id:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Execution lease not found")
-        lease.status = request.status
-        if lease.started_at is None:
-            lease.started_at = _utc_now()
-        lease.result_payload = {**(lease.result_payload or {}), **request.result_payload}
-        lease.error_message = request.error_message
-        flush_and_refresh(session, lease)
-        _sync_external_session_for_lease(session, lease, status=request.status, result_payload=request.result_payload, error_message=request.error_message)
-        step = get_or_404(session, ProjectRunStep, ProjectRunStep.run_step_id, lease.run_step_id, "Run step not found")
-        step.status = request.status
-        step.output_payload = {**(step.output_payload or {}), **request.result_payload}
-        step.error_message = request.error_message
-        if step.started_at is None:
-            step.started_at = _utc_now()
-        flush_and_refresh(session, step)
-        return lease
-
-
-@execution_nodes_router.post("/{node_id}/leases/{lease_id}/complete", response_model=ExecutionLeaseResponse)
-async def complete_execution_lease(
-    node_id: str,
-    lease_id: str,
-    request: ExecutionLeaseProgress,
-    current_user: CurrentUser = Depends(get_current_user),
-):
-    parsed_node_id = parse_uuid(node_id, "node_id")
-    parsed_lease_id = parse_uuid(lease_id, "lease_id")
-    with get_db_session() as session:
-        lease = get_or_404(session, ExecutionLease, ExecutionLease.lease_id, parsed_lease_id, "Execution lease not found")
-        if lease.node_id != parsed_node_id:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Execution lease not found")
-        lease.status = "completed"
-        lease.completed_at = _utc_now()
-        if lease.started_at is None:
-            lease.started_at = lease.completed_at
-        lease.result_payload = {**(lease.result_payload or {}), **request.result_payload}
-        flush_and_refresh(session, lease)
-        _sync_external_session_for_lease(session, lease, status="completed", result_payload=request.result_payload)
-        step = get_or_404(session, ProjectRunStep, ProjectRunStep.run_step_id, lease.run_step_id, "Run step not found")
-        step.status = "completed"
-        step.completed_at = lease.completed_at
-        if step.started_at is None:
-            step.started_at = lease.started_at
-        step.output_payload = {**(step.output_payload or {}), **request.result_payload}
-        flush_and_refresh(session, step)
-        run = get_or_404(session, ProjectRun, ProjectRun.run_id, lease.run_id, "Run not found")
-        remaining = session.query(ProjectRunStep).filter(ProjectRunStep.run_id == lease.run_id).filter(ProjectRunStep.status.in_(["pending", "queued", "assigned", "leased", "running"])).count()
-        if remaining == 0:
-            run.status = "completed"
-            run.completed_at = _utc_now()
-            flush_and_refresh(session, run)
-        return lease
-
-
-@execution_nodes_router.post("/{node_id}/leases/{lease_id}/fail", response_model=ExecutionLeaseResponse)
-async def fail_execution_lease(
-    node_id: str,
-    lease_id: str,
-    request: ExecutionLeaseProgress,
-    current_user: CurrentUser = Depends(get_current_user),
-):
-    parsed_node_id = parse_uuid(node_id, "node_id")
-    parsed_lease_id = parse_uuid(lease_id, "lease_id")
-    with get_db_session() as session:
-        lease = get_or_404(session, ExecutionLease, ExecutionLease.lease_id, parsed_lease_id, "Execution lease not found")
-        if lease.node_id != parsed_node_id:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Execution lease not found")
-        lease.status = "failed"
-        lease.completed_at = _utc_now()
-        lease.error_message = request.error_message or "Execution node reported failure"
-        lease.result_payload = {**(lease.result_payload or {}), **request.result_payload}
-        flush_and_refresh(session, lease)
-        _sync_external_session_for_lease(session, lease, status="failed", result_payload=request.result_payload, error_message=lease.error_message)
-        step = get_or_404(session, ProjectRunStep, ProjectRunStep.run_step_id, lease.run_step_id, "Run step not found")
-        step.status = "failed"
-        step.completed_at = lease.completed_at
-        step.error_message = lease.error_message
-        step.output_payload = {**(step.output_payload or {}), **request.result_payload}
-        flush_and_refresh(session, step)
-        run = get_or_404(session, ProjectRun, ProjectRun.run_id, lease.run_id, "Run not found")
-        run.status = "failed"
-        run.completed_at = _utc_now()
-        run.error_message = lease.error_message
-        flush_and_refresh(session, run)
-        return lease
-
-
-@execution_nodes_router.delete("/{node_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_execution_node(
-    node_id: str,
-    current_user: CurrentUser = Depends(get_current_user),
-):
-    parsed_node_id = parse_uuid(node_id, "node_id")
-    with get_db_session() as session:
-        node = get_or_404(
-            session,
-            ExecutionNode,
-            ExecutionNode.node_id,
-            parsed_node_id,
-            "Execution node not found",
-        )
-        append_audit_event(
-            session,
-            action="execution-node.deleted",
-            resource_type="execution_node",
-            resource_id=node.node_id,
-            project_id=node.project_id,
-            current_user=current_user,
-        )
-        session.delete(node)
-        return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @extensions_router.post(

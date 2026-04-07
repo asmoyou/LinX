@@ -1,7 +1,7 @@
 """SQLAlchemy models for the project execution platform skeleton.
 
-Defines DB-backed entities for projects, plans, runs, steps, nodes,
-project spaces, extensions, skill packages, and audit events.
+Defines DB-backed entities for projects, plans, runs, steps,
+project spaces, extensions, skill packages, audit events, and external runtimes.
 """
 
 import uuid
@@ -60,12 +60,6 @@ class Project(Base):
         cascade="all, delete-orphan",
         passive_deletes=True,
         uselist=False,
-    )
-    execution_nodes = relationship(
-        "ExecutionNode",
-        back_populates="project",
-        cascade="all, delete-orphan",
-        passive_deletes=True,
     )
     skill_packages = relationship(
         "ProjectSkillPackage",
@@ -131,8 +125,6 @@ class ProjectPlan(Base):
     creator = relationship("User")
     tasks = relationship("ProjectTask", back_populates="plan")
     runs = relationship("ProjectRun", back_populates="plan")
-    nodes = relationship("ExecutionNode", back_populates="plan")
-
     __table_args__ = (
         Index("idx_project_plan_project_status", "project_id", "status"),
         Index("idx_project_plan_project_version", "project_id", "version"),
@@ -185,8 +177,6 @@ class ProjectRun(Base):
     )
     audit_events = relationship("ProjectAuditEvent", back_populates="run")
     tasks = relationship("ProjectTask", back_populates="run")
-    leases = relationship("ExecutionLease", back_populates="run", cascade="all, delete-orphan", passive_deletes=True)
-
     __table_args__ = (
         Index("idx_project_run_project_status", "project_id", "status"),
         Index("idx_project_run_created_at", "created_at"),
@@ -273,12 +263,6 @@ class ProjectRunStep(Base):
         nullable=True,
         index=True,
     )
-    node_id = Column(
-        UUID(as_uuid=True),
-        ForeignKey("execution_nodes.node_id", ondelete="SET NULL"),
-        nullable=True,
-        index=True,
-    )
     name = Column(String(255), nullable=False)
     step_type = Column(String(50), nullable=False, default="task")
     status = Column(String(50), nullable=False, default="pending", index=True)
@@ -295,8 +279,6 @@ class ProjectRunStep(Base):
 
     run = relationship("ProjectRun", back_populates="steps")
     project_task = relationship("ProjectTask", back_populates="steps")
-    node = relationship("ExecutionNode", back_populates="steps")
-    leases = relationship("ExecutionLease", back_populates="step")
 
     __table_args__ = (
         Index("idx_project_run_step_run_status", "run_id", "status"),
@@ -329,96 +311,6 @@ class ProjectSpace(Base):
     )
 
     project = relationship("Project", back_populates="project_space")
-
-
-class ExecutionNode(Base):
-    """Execution-capable node metadata for project runs."""
-
-    __tablename__ = "execution_nodes"
-
-    node_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    project_id = Column(
-        UUID(as_uuid=True),
-        ForeignKey("projects.project_id", ondelete="CASCADE"),
-        nullable=False,
-        index=True,
-    )
-    plan_id = Column(
-        UUID(as_uuid=True),
-        ForeignKey("project_plans.plan_id", ondelete="SET NULL"),
-        nullable=True,
-        index=True,
-    )
-    name = Column(String(255), nullable=False, index=True)
-    node_type = Column(String(50), nullable=False, default="worker")
-    status = Column(String(50), nullable=False, default="available", index=True)
-    capabilities = Column(ARRAY(String()), nullable=False, default=list)
-    config = Column(JSONB, nullable=False, default=dict)
-    last_seen_at = Column(DateTime(timezone=True), nullable=True)
-    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
-    updated_at = Column(
-        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
-    )
-
-    project = relationship("Project", back_populates="execution_nodes")
-    plan = relationship("ProjectPlan", back_populates="nodes")
-    steps = relationship("ProjectRunStep", back_populates="node")
-    leases = relationship("ExecutionLease", back_populates="node", cascade="all, delete-orphan", passive_deletes=True)
-    external_agent_sessions = relationship("ExternalAgentSession", back_populates="node", cascade="all, delete-orphan", passive_deletes=True)
-
-    __table_args__ = (Index("idx_execution_node_project_status", "project_id", "status"),)
-
-
-class ExecutionLease(Base):
-    """Lease for dispatching one run step to an execution node."""
-
-    __tablename__ = "execution_leases"
-
-    lease_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    project_id = Column(
-        UUID(as_uuid=True),
-        ForeignKey("projects.project_id", ondelete="CASCADE"),
-        nullable=False,
-        index=True,
-    )
-    node_id = Column(
-        UUID(as_uuid=True),
-        ForeignKey("execution_nodes.node_id", ondelete="CASCADE"),
-        nullable=False,
-        index=True,
-    )
-    run_id = Column(
-        UUID(as_uuid=True),
-        ForeignKey("project_runs.run_id", ondelete="CASCADE"),
-        nullable=False,
-        index=True,
-    )
-    run_step_id = Column(
-        UUID(as_uuid=True),
-        ForeignKey("project_run_steps.run_step_id", ondelete="CASCADE"),
-        nullable=False,
-        index=True,
-    )
-    status = Column(String(32), nullable=False, default="pending", index=True)
-    lease_payload = Column(JSONB, nullable=False, default=dict)
-    result_payload = Column(JSONB, nullable=False, default=dict)
-    error_message = Column(Text, nullable=True)
-    acked_at = Column(DateTime(timezone=True), nullable=True)
-    started_at = Column(DateTime(timezone=True), nullable=True)
-    completed_at = Column(DateTime(timezone=True), nullable=True)
-    expires_at = Column(DateTime(timezone=True), nullable=True, index=True)
-    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
-    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
-
-    project = relationship("Project")
-    node = relationship("ExecutionNode", back_populates="leases")
-    run = relationship("ProjectRun", back_populates="leases")
-    step = relationship("ProjectRunStep", back_populates="leases")
-
-    __table_args__ = (
-        Index("idx_execution_lease_node_status", "node_id", "status"),
-        Index("idx_execution_lease_run_step", "run_step_id", unique=True),
-    )
 
 
 class ProjectAgentBinding(Base):
@@ -493,102 +385,159 @@ class AgentProvisioningProfile(Base):
     )
 
 
-class AgentRuntimeBinding(Base):
-    """Runtime binding that determines where/how an agent executes."""
+class ExternalAgentProfile(Base):
+    """Per-agent external runtime configuration."""
 
-    __tablename__ = "agent_runtime_bindings"
+    __tablename__ = "external_agent_profiles"
 
-    runtime_binding_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    profile_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     agent_id = Column(
         UUID(as_uuid=True),
         ForeignKey("agents.agent_id", ondelete="CASCADE"),
         nullable=False,
+        unique=True,
         index=True,
     )
-    runtime_type = Column(String(50), nullable=False, index=True)
-    execution_node_id = Column(
-        UUID(as_uuid=True),
-        ForeignKey("execution_nodes.node_id", ondelete="SET NULL"),
-        nullable=True,
-        index=True,
-    )
-    workspace_strategy = Column(String(50), nullable=True)
     path_allowlist = Column(ARRAY(String), nullable=False, default=list)
-    status = Column(String(32), nullable=False, default="active", index=True)
-    config = Column(JSONB, nullable=False, default=dict)
+    launch_command_template = Column(Text, nullable=True)
+    install_channel = Column(String(32), nullable=False, default="stable")
+    desired_version = Column(String(64), nullable=False, default="0.1.0")
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
-    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+    updated_at = Column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
 
     agent = relationship("Agent")
-    execution_node = relationship("ExecutionNode")
 
-    __table_args__ = (
-        Index("idx_agent_runtime_binding_agent_status", "agent_id", "status"),
+
+class ExternalAgentBinding(Base):
+    """Current host binding for one external agent."""
+
+    __tablename__ = "external_agent_bindings"
+
+    binding_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    agent_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("agents.agent_id", ondelete="CASCADE"),
+        nullable=False,
+        unique=True,
+        index=True,
+    )
+    host_name = Column(String(255), nullable=True)
+    host_os = Column(String(32), nullable=True, index=True)
+    host_arch = Column(String(64), nullable=True)
+    host_fingerprint = Column(String(128), nullable=True)
+    machine_token_hash = Column(String(128), nullable=False, index=True)
+    machine_token_prefix = Column(String(24), nullable=False)
+    status = Column(String(32), nullable=False, default="offline", index=True)
+    current_version = Column(String(64), nullable=True)
+    last_seen_at = Column(DateTime(timezone=True), nullable=True, index=True)
+    bound_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    revoked_at = Column(DateTime(timezone=True), nullable=True)
+    last_error_message = Column(Text, nullable=True)
+    binding_metadata = Column(JSONB, nullable=False, default=dict)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
     )
 
+    agent = relationship("Agent")
 
-class ExternalAgentSession(Base):
-    """One external-agent execution session backed by an execution node."""
 
-    __tablename__ = "external_agent_sessions"
+class ExternalAgentInstallToken(Base):
+    """One-time install codes for binding an external host."""
 
-    session_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    __tablename__ = "external_agent_install_tokens"
+
+    token_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     agent_id = Column(
         UUID(as_uuid=True),
         ForeignKey("agents.agent_id", ondelete="CASCADE"),
         nullable=False,
         index=True,
     )
-    execution_node_id = Column(
+    token_hash = Column(String(128), nullable=False, index=True)
+    token_prefix = Column(String(24), nullable=False)
+    status = Column(String(32), nullable=False, default="active", index=True)
+    expires_at = Column(DateTime(timezone=True), nullable=False, index=True)
+    used_at = Column(DateTime(timezone=True), nullable=True)
+    created_by_user_id = Column(
         UUID(as_uuid=True),
-        ForeignKey("execution_nodes.node_id", ondelete="CASCADE"),
+        ForeignKey("users.user_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    agent = relationship("Agent")
+    creator = relationship("User")
+
+    __table_args__ = (
+        Index("idx_external_agent_install_token_agent_status", "agent_id", "status"),
+    )
+
+
+class ExternalAgentDispatch(Base):
+    """Dispatch queue item consumed by one bound external host."""
+
+    __tablename__ = "external_agent_dispatches"
+
+    dispatch_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    agent_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("agents.agent_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    binding_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("external_agent_bindings.binding_id", ondelete="CASCADE"),
         nullable=False,
         index=True,
     )
     project_id = Column(
         UUID(as_uuid=True),
-        ForeignKey("projects.project_id", ondelete="CASCADE"),
-        nullable=False,
+        ForeignKey("projects.project_id", ondelete="SET NULL"),
+        nullable=True,
         index=True,
     )
     run_id = Column(
         UUID(as_uuid=True),
-        ForeignKey("project_runs.run_id", ondelete="CASCADE"),
-        nullable=False,
+        ForeignKey("project_runs.run_id", ondelete="SET NULL"),
+        nullable=True,
         index=True,
     )
     run_step_id = Column(
         UUID(as_uuid=True),
-        ForeignKey("project_run_steps.run_step_id", ondelete="CASCADE"),
-        nullable=False,
-        index=True,
-    )
-    runtime_type = Column(String(50), nullable=False, index=True)
-    workdir = Column(String(500), nullable=True)
-    status = Column(String(32), nullable=False, default="pending", index=True)
-    lease_id = Column(
-        UUID(as_uuid=True),
-        ForeignKey("execution_leases.lease_id", ondelete="SET NULL"),
+        ForeignKey("project_run_steps.run_step_id", ondelete="SET NULL"),
         nullable=True,
         index=True,
     )
+    source_type = Column(String(32), nullable=False, default="manual", index=True)
+    source_id = Column(String(128), nullable=False, index=True)
+    runtime_type = Column(String(50), nullable=False, index=True)
+    request_payload = Column(JSONB, nullable=False, default=dict)
+    result_payload = Column(JSONB, nullable=False, default=dict)
+    status = Column(String(32), nullable=False, default="pending", index=True)
     error_message = Column(Text, nullable=True)
-    session_metadata = Column(JSONB, nullable=False, default=dict)
+    acked_at = Column(DateTime(timezone=True), nullable=True)
     started_at = Column(DateTime(timezone=True), nullable=True)
     completed_at = Column(DateTime(timezone=True), nullable=True)
+    expires_at = Column(DateTime(timezone=True), nullable=True, index=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
-    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+    updated_at = Column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
 
     agent = relationship("Agent")
-    node = relationship("ExecutionNode", back_populates="external_agent_sessions")
+    binding = relationship("ExternalAgentBinding")
     project = relationship("Project")
     run = relationship("ProjectRun")
-    step = relationship("ProjectRunStep")
-    lease = relationship("ExecutionLease")
+    run_step = relationship("ProjectRunStep")
 
     __table_args__ = (
-        Index("idx_external_agent_session_node_status", "execution_node_id", "status"),
-        Index("idx_external_agent_session_run_step", "run_step_id"),
+        Index("idx_external_agent_dispatch_binding_status", "binding_id", "status"),
+        Index("idx_external_agent_dispatch_agent_status", "agent_id", "status"),
     )
 
 

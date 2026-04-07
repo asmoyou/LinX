@@ -4,7 +4,6 @@ export type ProjectExecutionSection =
   | 'projectTaskDetail'
   | 'runs'
   | 'runDetail'
-  | 'nodes'
   | 'skillHub'
   | 'extensions';
 
@@ -164,65 +163,45 @@ export interface RunSummary {
   totalTasks: number;
   completedTasks: number;
   failedTasks: number;
-  nodeCount?: number;
+  externalAgentCount?: number;
   latestSignal?: string | null;
 }
 
 export interface RunDetail extends RunSummary {
   projectSummary: string;
   timeline: ProjectActivityItem[];
-  nodes: ProjectAgentSummary[];
   deliverables: ProjectDeliverable[];
   runWorkspaceRoot?: string | null;
   executorAssignment?: {
     executorKind?: string | null;
     agentId?: string | null;
-    nodeId?: string | null;
     selectionReason?: string | null;
     provisionedAgent?: boolean;
     runtimeType?: string | null;
   } | null;
-  externalSessions?: ExternalAgentSession[];
+  externalDispatches?: ExternalAgentDispatch[];
 }
 
-export interface ExternalAgentSession {
+export interface ExternalAgentDispatch {
   id: string;
   agentId: string;
-  executionNodeId: string;
+  bindingId: string;
   projectId: string;
   runId: string;
   runStepId: string;
+  sourceType: string;
+  sourceId: string;
   runtimeType: string;
-  workdir?: string | null;
   status: PlatformStatus;
-  leaseId?: string | null;
   errorMessage?: string | null;
+  requestPayload?: Record<string, unknown>;
+  resultPayload?: Record<string, unknown>;
+  ackedAt?: string | null;
   startedAt?: string | null;
   completedAt?: string | null;
+  expiresAt?: string | null;
   createdAt: string;
   updatedAt: string;
-}
-
-export interface ExecutionNode {
-  id: string;
-  name: string;
-  type: string;
-  status: PlatformStatus;
-  currentTask?: string | null;
-  activeProjects: number;
-  tasksCompleted: number;
-  tasksFailed: number;
-  completionRate: number;
-  skillCount: number;
-  topSkills: string[];
-  model?: string | null;
-  provider?: string | null;
-  departmentName?: string | null;
-  uptime?: string | null;
-  externalAgentCommandTemplate?: string | null;
-  pathAllowlist?: string[];
-  supportedRuntimeTypes?: string[];
-  leaseCount?: number;
 }
 
 export interface SkillHubOverview {

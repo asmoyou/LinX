@@ -42,9 +42,6 @@ vi.mock('@/components/settings/EnvVarsSettings', () => ({
   EnvVarsSettings: () => <div>Env Vars Panel</div>,
 }));
 
-vi.mock('@/components/settings/ProjectExecutionPolicySettings', () => ({
-  ProjectExecutionPolicySettings: () => <div>Project Execution Panel</div>,
-}));
 
 const LocationDisplay = () => {
   const location = useLocation();
@@ -95,10 +92,10 @@ describe('Settings page', () => {
       </MemoryRouter>,
     );
 
-    fireEvent.click(screen.getByRole('button', { name: 'Project Execution' }));
+    fireEvent.click(screen.getByRole('button', { name: 'LLM Providers' }));
 
-    expect(screen.getByText('Project Execution Panel')).toBeInTheDocument();
-    expect(screen.getByTestId('location')).toHaveTextContent('/settings?tab=projectExecution');
+    expect(screen.getByText('LLM Panel')).toBeInTheDocument();
+    expect(screen.getByTestId('location')).toHaveTextContent('/settings?tab=llm');
   });
 
   it('lets baseline shortcuts open the experience tab without local-only state', () => {

@@ -132,10 +132,10 @@ export const RunCenter = () => {
                     </p>
                   </div>
                   <div>
-                    <p className="text-xs uppercase tracking-[0.16em] text-zinc-500 dark:text-zinc-400">{t('projectExecution.runCenter.nodes', 'Nodes')}
+                    <p className="text-xs uppercase tracking-[0.16em] text-zinc-500 dark:text-zinc-400">{t('projectExecution.runCenter.externalAgents', 'External Agents')}
                     </p>
                     <p className="mt-2 text-lg font-semibold text-zinc-950 dark:text-zinc-50">
-                      {run.nodeCount ?? '—'}
+                      {run.externalAgentCount ?? '—'}
                     </p>
                   </div>
                 </div>

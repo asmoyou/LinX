@@ -34,6 +34,8 @@ from fastapi import (
 )
 from pydantic import BaseModel, Field
 
+from project_execution.external_runtime_service import ExternalRuntimeService
+
 from access_control.agent_access import (
     AgentAccessType,
     build_agent_access_context,
@@ -2289,6 +2291,22 @@ class UpdateAgentRequest(BaseModel):
     projectScopeId: Optional[str] = None
 
 
+class ExternalRuntimeResponse(BaseModel):
+    status: str
+    bound: bool
+    availableForConversation: bool
+    availableForExecution: bool
+    hostName: Optional[str] = None
+    hostOs: Optional[str] = None
+    hostArch: Optional[str] = None
+    currentVersion: Optional[str] = None
+    desiredVersion: Optional[str] = None
+    lastSeenAt: Optional[datetime] = None
+    boundAt: Optional[datetime] = None
+    lastErrorMessage: Optional[str] = None
+    updateAvailable: bool = False
+
+
 class AgentResponse(BaseModel):
     """Agent response model."""
 
@@ -2330,6 +2348,7 @@ class AgentResponse(BaseModel):
     retiredAt: Optional[datetime] = None
     createdAt: datetime
     updatedAt: datetime
+    externalRuntime: Optional[ExternalRuntimeResponse] = None
 
 
 class AgentLogEntryResponse(BaseModel):
@@ -2402,6 +2421,29 @@ def _build_agent_response(
     else:
         response_status = "offline"
 
+    external_runtime_response = None
+    with get_db_session() as runtime_session:
+        runtime_agent = runtime_session.query(type(agent_info)).filter(type(agent_info).agent_id == agent_info.agent_id).first()
+        if runtime_agent is not None:
+            runtime_state = ExternalRuntimeService(runtime_session).summarize_state(agent=runtime_agent)
+            if runtime_state is not None:
+                external_runtime_response = ExternalRuntimeResponse(
+                    status=runtime_state.status,
+                    bound=runtime_state.bound,
+                    availableForConversation=runtime_state.available_for_conversation,
+                    availableForExecution=runtime_state.available_for_execution,
+                    hostName=runtime_state.host_name,
+                    hostOs=runtime_state.host_os,
+                    hostArch=runtime_state.host_arch,
+                    currentVersion=runtime_state.current_version,
+                    desiredVersion=runtime_state.desired_version,
+                    lastSeenAt=runtime_state.last_seen_at,
+                    boundAt=runtime_state.bound_at,
+                    lastErrorMessage=runtime_state.last_error_message,
+                    updateAvailable=runtime_state.update_available,
+                )
+                response_status = "idle" if runtime_state.status == "online" else "offline"
+
     return AgentResponse(
         id=str(agent_info.agent_id),
         name=agent_info.name,
@@ -2442,7 +2484,21 @@ def _build_agent_response(
         canExecute=can_execute_agent(agent_info, resolved_access_context),
         createdAt=agent_info.created_at,
         updatedAt=agent_info.updated_at,
+        externalRuntime=external_runtime_response,
     )
+
+
+def _ensure_external_agent_runtime_available(agent_info: Any, *, detail: str = "external_agent_not_online") -> None:
+    with get_db_session() as session:
+        runtime_agent = session.query(type(agent_info)).filter(type(agent_info).agent_id == agent_info.agent_id).first()
+        if runtime_agent is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent not found")
+        try:
+            ExternalRuntimeService(session).assert_agent_online(agent=runtime_agent, error_detail=detail)
+        except Exception as exc:
+            if str(exc) == detail:
+                raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=detail) from exc
+            raise
 
 
 def _build_agent_response_payload(agent_info: Any) -> Dict[str, Any]:
@@ -3805,6 +3861,8 @@ async def test_agent(
             current_user,
             access_type="execute",
         )
+
+        _ensure_external_agent_runtime_available(agent_info)
 
         logger.info(
             f"Testing agent: {agent_info.name}",
