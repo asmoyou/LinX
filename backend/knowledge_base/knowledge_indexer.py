@@ -18,6 +18,10 @@ from pymilvus import MilvusException
 from database.connection import get_db_session
 from database.models import KnowledgeChunk, KnowledgeItem
 from knowledge_base.text_normalizer import normalize_knowledge_text
+from knowledge_base.vector_collection import (
+    KNOWLEDGE_EMBEDDINGS_COLLECTION,
+    ensure_knowledge_embeddings_collection,
+)
 from memory_system.embedding_service import get_embedding_service
 from memory_system.milvus_connection import get_milvus_connection
 from shared.config import get_config
@@ -58,7 +62,7 @@ class KnowledgeIndexer:
         """Initialize knowledge indexer."""
         self.embedding_service = get_embedding_service(scope="knowledge_base")
         self.milvus_conn = get_milvus_connection()
-        self.collection_name = "knowledge_embeddings"
+        self.collection_name = KNOWLEDGE_EMBEDDINGS_COLLECTION
         config = get_config()
         self._milvus_flush_timeout_seconds = float(
             config.get("knowledge_base.processing.indexing.flush_timeout_seconds", 8.0)
@@ -81,6 +85,16 @@ class KnowledgeIndexer:
                 "milvus_max_retries": self._milvus_max_retries,
                 "milvus_allow_flush_degrade": self._milvus_allow_flush_degrade,
             },
+        )
+
+    def _ensure_collection_exists(self) -> None:
+        """Create the knowledge-base collection on demand when it is missing."""
+        if self.milvus_conn.collection_exists(self.collection_name):
+            return
+        ensure_knowledge_embeddings_collection()
+        logger.info(
+            "Knowledge-base Milvus collection created on demand",
+            extra={"collection_name": self.collection_name},
         )
 
     def index_chunks(
@@ -156,6 +170,8 @@ class KnowledgeIndexer:
             prepared_metadata = [
                 self._sanitize_chunk_metadata(meta) for meta in normalized_metadata
             ]
+
+            self._ensure_collection_exists()
 
             # Generate embeddings for all chunks
             embeddings = self.embedding_service.generate_embeddings_batch(prepared_chunks)

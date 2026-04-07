@@ -155,3 +155,34 @@ def test_index_chunks_normalizes_multimodal_text_before_embedding_and_storage():
 
     stored_meta = indexer._store_chunks_in_postgres.call_args.kwargs["chunk_metadata"][0]
     assert stored_meta["summary"] == "摘要\n卡丁车高速过弯。"
+
+
+def test_index_chunks_bootstraps_collection_when_missing():
+    """Missing knowledge collection should be created before indexing."""
+    indexer = _build_indexer()
+    indexer.embedding_service.generate_embeddings_batch.return_value = [[0.1, 0.2, 0.3]]
+    indexer.milvus_conn.collection_exists.return_value = False
+
+    collection = Mock()
+    indexer.milvus_conn.get_collection.return_value = collection
+
+    with patch(
+        "knowledge_base.knowledge_indexer.ensure_knowledge_embeddings_collection",
+        return_value=collection,
+    ) as ensure_collection:
+        result = KnowledgeIndexer.index_chunks(
+            indexer,
+            document_id="1fdb519c-9ac8-4c9a-a945-812b82213ae7",
+            chunks=["test chunk"],
+            chunk_metadata=[{"chunk_index": 0}],
+            user_id="user-1",
+        )
+
+    assert result.chunks_indexed == 1
+    ensure_collection.assert_called_once_with()
+    indexer.milvus_conn.get_collection.assert_called_once_with(
+        "knowledge_embeddings",
+        force_refresh=False,
+    )
+    collection.insert.assert_called_once()
+    collection.flush.assert_called_once_with(timeout=3.0)

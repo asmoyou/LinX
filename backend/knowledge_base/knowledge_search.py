@@ -21,6 +21,10 @@ from uuid import UUID
 
 from knowledge_base.config_utils import load_knowledge_base_config
 from knowledge_base.text_normalizer import normalize_knowledge_text
+from knowledge_base.vector_collection import (
+    KNOWLEDGE_EMBEDDINGS_COLLECTION,
+    ensure_knowledge_embeddings_collection,
+)
 from llm_providers.openai_compatible import build_api_url_candidates, normalize_rerank_scores
 from memory_system.embedding_service import get_embedding_service
 from memory_system.milvus_connection import get_milvus_connection
@@ -81,7 +85,7 @@ class KnowledgeSearch:
         """Initialize knowledge search."""
         self.embedding_service = get_embedding_service(scope="knowledge_base")
         self.milvus_conn = get_milvus_connection()
-        self.collection_name = "knowledge_embeddings"
+        self.collection_name = KNOWLEDGE_EMBEDDINGS_COLLECTION
 
         # Load search config
         config = get_config()
@@ -764,10 +768,15 @@ class KnowledgeSearch:
             # Empty expression means unrestricted for privileged roles.
             expr = expr or None
 
-            # Search in Milvus
-            from pymilvus import Collection
+            if not self.milvus_conn.collection_exists(self.collection_name):
+                ensure_knowledge_embeddings_collection()
+                logger.info(
+                    "Knowledge-base Milvus collection created on demand for search",
+                    extra={"collection_name": self.collection_name},
+                )
 
-            collection = Collection(self.collection_name)
+            collection = self.milvus_conn.get_collection(self.collection_name)
+            collection.load(timeout=max(float(self.semantic_timeout_seconds), 1.0))
 
             search_params = {"metric_type": "L2", "params": {"nprobe": 10}}
             results = collection.search(

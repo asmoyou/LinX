@@ -1,6 +1,7 @@
 """Tests for multilingual-aware retrieval heuristics and query expansion."""
 
 import time
+from unittest.mock import Mock, patch
 
 import pytest
 
@@ -261,6 +262,37 @@ def test_parse_rerank_response_normalizes_negative_scores() -> None:
     assert parsed[0][1] == 1.0
     assert 0.0 < parsed[1][1] < 1.0
     assert parsed[-1][1] == 0.0
+
+
+def test_vector_search_bootstraps_collection_when_missing(monkeypatch):
+    """Vector search should create the knowledge collection on demand."""
+    search = _build_search()
+    search.collection_name = "knowledge_embeddings"
+    search.milvus_conn = Mock()
+    search.milvus_conn.collection_exists.return_value = False
+    search.semantic_timeout_seconds = 2
+
+    collection = Mock()
+    collection.search.return_value = []
+    search.milvus_conn.get_collection.return_value = collection
+
+    monkeypatch.setattr(search, "_generate_query_embedding", lambda _query: [0.1, 0.2, 0.3])
+    monkeypatch.setattr(
+        "access_control.knowledge_filter.build_milvus_filter_expr",
+        lambda **_kwargs: "",
+    )
+
+    with patch(
+        "knowledge_base.knowledge_search.ensure_knowledge_embeddings_collection",
+        return_value=collection,
+    ) as ensure_collection:
+        results = search._vector_search("测试问题", SearchFilter(user_id="u1", top_k=2))
+
+    assert results == []
+    ensure_collection.assert_called_once_with()
+    search.milvus_conn.get_collection.assert_called_once_with("knowledge_embeddings")
+    collection.load.assert_called_once_with(timeout=2.0)
+    collection.search.assert_called_once()
 
 
 def test_rerank_blend_uses_base_score_instead_of_rank_prior(monkeypatch) -> None:

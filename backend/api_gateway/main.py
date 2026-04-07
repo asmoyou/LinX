@@ -327,8 +327,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
 
     # Start document processing worker
     try:
+        from knowledge_base.vector_collection import ensure_knowledge_embeddings_collection
         from knowledge_base.document_processor_worker import start_worker
 
+        ensure_knowledge_embeddings_collection()
+        logger.info("Knowledge-base Milvus collection ensured")
         start_worker()
         logger.info("Document processor worker started")
     except Exception as e:
