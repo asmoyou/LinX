@@ -214,16 +214,7 @@ See: [`node-agent/README.md`](node-agent/README.md)
 
 ## License
 
-LinX is now distributed under a **dual license (`MIT OR Apache-2.0`)**. See:
-- [`LICENSE`](LICENSE)
-- [`LICENSE-MIT`](LICENSE-MIT)
-- [`LICENSE-APACHE`](LICENSE-APACHE)
-
-You may choose either license for your use, modification, and distribution of the project:
-- `MIT` for a minimal permissive license
-- `Apache-2.0` if you want explicit patent terms
-
-The repository no longer includes commercial declaration or fee requirements and is now published under standard OSI-approved open source licenses.
+LinX is dual-licensed under `MIT` or `Apache-2.0` at your option. See [`LICENSE`](LICENSE), [`LICENSE-MIT`](LICENSE-MIT), and [`LICENSE-APACHE`](LICENSE-APACHE).
 
 ## Contributing
 

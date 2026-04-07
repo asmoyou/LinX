@@ -7,6 +7,15 @@ readme = "README.md"
 license = "MIT OR Apache-2.0"
 python = "^3.11"
 
+[project]
+name = "linx-platform"
+version = "1.0.0"
+description = "LinX (灵枢) - Intelligent Collaboration Platform"
+readme = "README.md"
+requires-python = ">=3.11,<4.0"
+license = {text = "MIT OR Apache-2.0"}
+authors = [{name = "LinX Team"}]
+
 [tool.poetry.dependencies]
 python = "^3.11"
 

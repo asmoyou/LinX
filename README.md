@@ -323,18 +323,9 @@ LinX 适合以下场景：
 - 需要外部节点执行任务的 AI 平台
 - 面向企业内部协作、运营辅助、知识处理、自动化执行的系统原型
 
-## 授权说明
+## License
 
-LinX 现在采用 **双许可证（MIT OR Apache-2.0）** 发布，完整条款见：
-- [`LICENSE`](LICENSE)
-- [`LICENSE-MIT`](LICENSE-MIT)
-- [`LICENSE-APACHE`](LICENSE-APACHE)
-
-这意味着你可以根据自己的使用场景，自行选择以下任一许可证来使用、修改和分发本项目：
-- `MIT`：更简洁宽松
-- `Apache-2.0`：包含更明确的专利授权条款
-
-仓库已移除商业报备与收费要求，当前为标准 OSI 开源许可证发布方式。
+LinX is dual-licensed under `MIT` or `Apache-2.0` at your option. See [`LICENSE`](LICENSE), [`LICENSE-MIT`](LICENSE-MIT), and [`LICENSE-APACHE`](LICENSE-APACHE).
 
 ## 贡献
 
