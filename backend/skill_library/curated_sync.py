@@ -171,11 +171,23 @@ def _build_revision_payload(definition: CuratedSkillDefinition, storage_path: st
     }
 
 
+def _definition_revision_checksum(definition: CuratedSkillDefinition) -> str:
+    return compute_revision_checksum(
+        version=definition.version,
+        instruction_md=definition.skill_md_content,
+        tool_code=None,
+        interface_definition=definition.interface_definition,
+        config=definition.config,
+    )
+
+
 def _needs_revision(skill: Skill, definition: CuratedSkillDefinition) -> bool:
     active_revision = getattr(skill, "active_revision", None)
     if active_revision is None:
         return True
-    return str(getattr(active_revision, "checksum", "") or "") != definition.package_checksum
+    return str(getattr(active_revision, "checksum", "") or "") != _definition_revision_checksum(
+        definition
+    )
 
 
 def _sync_top_level_skill_fields(skill: Skill, definition: CuratedSkillDefinition) -> bool:

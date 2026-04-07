@@ -5,7 +5,7 @@ from uuid import uuid4
 
 import pytest
 
-from skill_library.curated_sync import sync_curated_skills
+from skill_library.curated_sync import _definition_revision_checksum, sync_curated_skills
 
 
 class _ConfigStub:
@@ -109,7 +109,7 @@ async def test_sync_curated_skills_skips_unchanged_active_revision(tmp_path, mon
     definition = definition_loader._load_curated_definition(tmp_path / "document-artifact-rendering")
     skill = SimpleNamespace(
         skill_id=uuid4(),
-        active_revision=SimpleNamespace(checksum=definition.package_checksum),
+        active_revision=SimpleNamespace(checksum=_definition_revision_checksum(definition)),
         display_name=definition.display_name,
         description=definition.description,
         source_kind="curated",
@@ -190,3 +190,12 @@ async def test_sync_curated_skills_updates_when_package_changes(tmp_path, monkey
     assert summary.updated_count == 1
     canonical_service.create_revision.assert_called_once()
     canonical_service.activate_revision.assert_called_once()
+
+
+def test_definition_revision_checksum_matches_curated_package_checksum(tmp_path):
+    _write_curated_skill(tmp_path, description="Render docs v3")
+
+    definition_loader = __import__("skill_library.curated_sync", fromlist=["_load_curated_definition"])
+    definition = definition_loader._load_curated_definition(tmp_path / "document-artifact-rendering")
+
+    assert _definition_revision_checksum(definition) == definition.package_checksum

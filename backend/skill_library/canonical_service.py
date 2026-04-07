@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Optional
 from uuid import UUID, uuid4
 
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import joinedload
 
 from access_control.skill_access import SkillAccessContext, can_read_skill
@@ -380,13 +381,61 @@ class CanonicalSkillService:
             skill = session.query(Skill).filter(Skill.skill_id == skill_id).one_or_none()
             if skill is None:
                 raise ValueError("Skill not found")
+            version = str(revision_payload.get("version") or "1.0.0")
+            existing = (
+                session.query(SkillRevision)
+                .filter(SkillRevision.skill_id == skill_id, SkillRevision.version == version)
+                .one_or_none()
+            )
+            if existing is not None:
+                candidate = self._create_revision_row(
+                    skill=skill,
+                    owner_user_id=owner_user_id,
+                    revision_payload=revision_payload,
+                )
+                if str(existing.checksum or "") != str(candidate.checksum or ""):
+                    if str(getattr(skill, "source_kind", "") or "") == "curated" and owner_user_id is None:
+                        existing.review_state = candidate.review_state
+                        existing.instruction_md = candidate.instruction_md
+                        existing.tool_code = candidate.tool_code
+                        existing.interface_definition = candidate.interface_definition
+                        existing.artifact_storage_kind = candidate.artifact_storage_kind
+                        existing.artifact_ref = candidate.artifact_ref
+                        existing.manifest = candidate.manifest
+                        existing.config = candidate.config
+                        existing.search_document = candidate.search_document
+                        existing.checksum = candidate.checksum
+                        existing.change_note = candidate.change_note
+                        existing.created_by = candidate.created_by
+                        session.flush()
+                        session.refresh(existing)
+                        return self._to_revision_info(existing)
+                    raise ValueError(
+                        f"Revision version {version} already exists with different content"
+                    )
+                return self._to_revision_info(existing)
             revision = self._create_revision_row(
                 skill=skill,
                 owner_user_id=owner_user_id,
                 revision_payload=revision_payload,
             )
             session.add(revision)
-            session.flush()
+            try:
+                session.flush()
+            except IntegrityError:
+                session.rollback()
+                existing = (
+                    session.query(SkillRevision)
+                    .filter(SkillRevision.skill_id == skill_id, SkillRevision.version == version)
+                    .one_or_none()
+                )
+                if existing is None:
+                    raise
+                if str(existing.checksum or "") != str(revision.checksum or ""):
+                    raise ValueError(
+                        f"Revision version {version} already exists with different content"
+                    )
+                return self._to_revision_info(existing)
             session.refresh(revision)
             return self._to_revision_info(revision)
 
