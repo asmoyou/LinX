@@ -72,12 +72,9 @@ vi.mock('@/api', () => ({
         currentVersion: '0.1.0',
         desiredVersion: '0.1.0',
         updateAvailable: false,
-        launchCommandSource: 'platform',
-        resolvedLaunchCommandTemplate: 'codex exec "$LINX_AGENT_PROMPT"',
       },
       profile: {
         path_allowlist: ['/tmp/workspace'],
-        launch_command_template: null,
         install_channel: 'stable',
         desired_version: '0.1.0',
       },
@@ -132,8 +129,6 @@ describe('AgentConfigModal external runtime wizard', () => {
             availableForConversation: false,
             availableForExecution: false,
             updateAvailable: false,
-            launchCommandSource: 'unset',
-            resolvedLaunchCommandTemplate: null,
           },
         }}
         isOpen={true}
@@ -151,12 +146,11 @@ describe('AgentConfigModal external runtime wizard', () => {
 
     expect(screen.getByText('Host Binding Status')).toBeInTheDocument();
     expect(
-      screen.getByText('Confirm how this host launches the agent'),
+      screen.getByText('Optional Runtime Host access settings'),
     ).toBeInTheDocument();
     expect(screen.getByText('Open Projects')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Update Now' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Uninstall Now' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Copy Uninstall Command' })).toBeInTheDocument();
-    expect(screen.getByDisplayValue('codex exec "$LINX_AGENT_PROMPT"')).toBeInTheDocument();
   });
 });

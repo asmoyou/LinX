@@ -180,8 +180,8 @@ def _queue_external_agent_dispatch(
             run=run,
             current_user=current_user,
             reason=(
-                "External agent launch command is not configured"
-                if detail == "external_agent_launch_command_not_configured"
+                "External agent Runtime Host must be upgraded"
+                if detail == "external_agent_upgrade_required"
                 else "External agent is not online"
             ),
             selection=selection,

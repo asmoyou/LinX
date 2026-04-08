@@ -519,10 +519,10 @@ export const AgentConversation: React.FC = () => {
         "This external agent is not online yet. Install or reconnect its host before chatting.",
       );
     }
-    if (runtime.launchCommandSource === "unset") {
+    if (runtime.runtimeCompatible === false || runtime.status === "upgrade_required") {
       return t(
-        "agent.externalRuntimeBlockedConversationNeedsCommand",
-        "This external agent is bound, but its launch command is not configured yet. Open Runtime Host to finish setup.",
+        "agent.externalRuntimeBlockedConversationUpgradeRequired",
+        "This external agent's Runtime Host must be upgraded before web chat can run on that machine.",
       );
     }
     switch (runtime.status) {
@@ -542,6 +542,14 @@ export const AgentConversation: React.FC = () => {
           t(
             "agent.externalRuntimeBlockedConversationError",
             "This external agent reported a Runtime Host error.",
+          )
+        );
+      case "upgrade_required":
+        return (
+          runtime.compatibilityMessage ||
+          t(
+            "agent.externalRuntimeBlockedConversationUpgradeRequired",
+            "This external agent's Runtime Host must be upgraded before web chat can run on that machine.",
           )
         );
       default:

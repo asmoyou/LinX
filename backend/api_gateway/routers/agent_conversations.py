@@ -80,6 +80,7 @@ from database.models import (
     AgentConversationMessageArchive,
     AgentConversationSnapshot,
 )
+from database.project_execution_models import ExternalAgentDispatch
 from object_storage.minio_client import get_minio_client
 from project_execution.external_runtime_service import (
     ExternalRuntimeService,
@@ -1317,6 +1318,210 @@ def _message_exists_for_external_event(
         return row is not None
 
 
+async def _wait_for_external_dispatch_result(
+    *,
+    dispatch_id: UUID,
+    chunk_callback: ConversationChunkCallback | None = None,
+    poll_interval_seconds: float = 0.4,
+    timeout_seconds: float = 1800,
+) -> dict[str, Any]:
+    last_sequence = 0
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        with get_db_session() as session:
+            service = ExternalRuntimeService(session)
+            dispatch = (
+                session.query(ExternalAgentDispatch)
+                .filter(ExternalAgentDispatch.dispatch_id == dispatch_id)
+                .first()
+            )
+            if dispatch is None:
+                raise RuntimeError("External conversation dispatch was not found")
+            events = service.list_dispatch_events(
+                dispatch_id=dispatch.dispatch_id,
+                after_sequence=last_sequence,
+            )
+            dispatch_status = str(dispatch.status or "").strip().lower()
+            dispatch_error = str(dispatch.error_message or "").strip()
+            dispatch_result = dict(dispatch.result_payload or {})
+        for event in events:
+            payload = dict(event.payload or {})
+            payload.setdefault("type", str(event.event_type or "info").strip() or "info")
+            await _emit_chunk(chunk_callback, payload)
+            last_sequence = max(last_sequence, int(event.sequence_number or 0))
+        if dispatch_status == "completed":
+            await _emit_chunk(chunk_callback, {"type": "done"})
+            return {"success": True, "result_payload": dispatch_result}
+        if dispatch_status == "failed":
+            await _emit_chunk(
+                chunk_callback,
+                {
+                    "type": "error",
+                    "content": dispatch_error or "External Runtime Host execution failed",
+                },
+            )
+            return {
+                "success": False,
+                "error": dispatch_error or "External Runtime Host execution failed",
+                "result_payload": dispatch_result,
+            }
+        await asyncio.sleep(poll_interval_seconds)
+    raise RuntimeError("External conversation dispatch timed out")
+
+
+async def _execute_external_runtime_conversation_turn(
+    *,
+    conversation: AgentConversation,
+    principal: ConversationExecutionPrincipal,
+    message: str,
+    files: List[UploadFile],
+    source: str,
+    external_event_id: Optional[str],
+    chunk_callback: ConversationChunkCallback | None,
+    persist_input_message: bool,
+    input_message_role: str,
+    input_message_text: Optional[str],
+    input_message_content_json: Optional[Dict[str, Any]],
+    execution_intent_text: Optional[str],
+) -> Dict[str, Any]:
+    def assign_external_attachment_workspace_paths(
+        refs: List[agents_router.FileReference],
+        *,
+        target_dir: str = "input",
+    ) -> None:
+        reserved_names: set[str] = set()
+        for file_ref in refs:
+            safe_name = agents_router._sanitize_workspace_attachment_filename(file_ref.name)
+            stem = Path(safe_name).stem or "attachment"
+            suffix = Path(safe_name).suffix
+            candidate = safe_name
+            duplicate_index = 2
+            while candidate in reserved_names:
+                candidate = f"{stem}_{duplicate_index}{suffix}"
+                duplicate_index += 1
+            reserved_names.add(candidate)
+            file_ref.workspace_path = f"{target_dir}/{candidate}".replace("\\", "/")
+
+    user_text = str(message or "").strip()
+    persisted_input_text = str(
+        input_message_text if input_message_text is not None else user_text
+    ).strip()
+    task_intent_text = str(
+        execution_intent_text if execution_intent_text is not None else user_text
+    ).strip()
+    normalized_input_role = str(input_message_role or "user").strip().lower()
+    if normalized_input_role not in {"user", "assistant", "system"}:
+        normalized_input_role = "user"
+
+    agent_info = _load_agent_for_conversation(conversation.agent_id)
+    history, _history_window = await _build_conversation_history(conversation.conversation_id)
+    await _emit_chunk(
+        chunk_callback,
+        {
+            "type": "runtime",
+            "runtime_session_id": f"external:{conversation.conversation_id}",
+            "is_new_runtime": False,
+            "restored_from_snapshot": False,
+            "snapshot_generation": None,
+            "use_sandbox": False,
+        },
+    )
+
+    file_refs, _attachment_payloads = await _prepare_uploaded_files(
+        agent_id=str(conversation.agent_id),
+        current_user=build_conversation_execution_principal(
+            user_id=principal.user_id,
+            role=principal.role,
+            username=principal.username,
+        ),
+        files=files,
+    )
+    assign_external_attachment_workspace_paths(file_refs)
+    attachments_payload = _normalize_attachments_for_storage(file_refs)
+    if persist_input_message:
+        _persist_message(
+            conversation_id=conversation.conversation_id,
+            role=normalized_input_role,
+            content_text=persisted_input_text or "[Attached files]",
+            content_json=input_message_content_json,
+            attachments=attachments_payload,
+            source=source,
+            external_event_id=external_event_id,
+        )
+
+    attachment_context = agents_router._build_attachment_prompt_context(
+        file_refs,
+        include_image_notes=True,
+    )
+    user_message_text = (
+        f"{task_intent_text}{attachment_context}" if attachment_context else task_intent_text
+    )
+    attachment_workspace_context = agents_router._build_attachment_workspace_context(file_refs)
+    if attachment_workspace_context:
+        user_message_text = f"{user_message_text}{attachment_workspace_context}"
+    current_message_content: Any = user_message_text
+    image_refs = [file_ref for file_ref in file_refs if file_ref.type == "image"]
+    if image_refs and await _detect_model_supports_vision(agent_info):
+        multimodal_content: list[dict[str, Any]] = []
+        if user_message_text:
+            multimodal_content.append({"type": "text", "text": user_message_text})
+        minio = get_minio_client()
+        for file_ref in image_refs:
+            bucket_name, object_key = file_ref.path.split("/", 1)
+            image_stream, _ = minio.download_file(bucket_name, object_key)
+            image_data = image_stream.read()
+            encoded = base64.b64encode(image_data).decode("utf-8")
+            image_format = agents_router._infer_image_format(file_ref.content_type, file_ref.name)
+            multimodal_content.append(
+                {
+                    "type": "image_url",
+                    "image_url": {"url": f"data:image/{image_format};base64,{encoded}"},
+                }
+            )
+        current_message_content = multimodal_content
+
+    request_payload = {
+        "conversation_id": str(conversation.conversation_id),
+        "conversation_title": str(conversation.title or ""),
+        "agent_name": str(agent_info.name or ""),
+        "system_prompt": str(agent_info.system_prompt or "").strip(),
+        "conversation_history": history,
+        "current_message": {
+            "role": "user",
+            "content": current_message_content,
+        },
+        "attachments": attachments_payload,
+        "temperature": agent_info.temperature,
+        "max_tokens": agent_info.max_tokens,
+        "user_id": principal.user_id,
+        "username": principal.username,
+    }
+
+    with get_db_session() as session:
+        service = ExternalRuntimeService(session)
+        try:
+            dispatch = service.create_dispatch(
+                agent_id=conversation.agent_id,
+                source_type="conversation_turn",
+                source_id=str(conversation.conversation_id),
+                runtime_type=str(getattr(agent_info, "runtime_preference", None) or "external_worktree"),
+                request_payload=request_payload,
+            )
+        except ExternalRuntimeUnavailableError as exc:
+            raise RuntimeError(str(exc)) from exc
+    await _emit_chunk(
+        chunk_callback,
+        {
+            "type": "info",
+            "content": "Sent to Runtime Host for remote execution.",
+        },
+    )
+    return await _wait_for_external_dispatch_result(
+        dispatch_id=dispatch.dispatch_id,
+        chunk_callback=chunk_callback,
+    )
+
+
 async def _detect_model_supports_vision(agent_info: Agent) -> bool:
     try:
         from llm_providers.db_manager import ProviderDBManager
@@ -1399,6 +1604,24 @@ async def execute_persistent_conversation_turn(
         return {"duplicate": True, "output": "", "artifacts": []}
 
     _ensure_agent_runtime_available_for_conversation(conversation.agent_id)
+    resolved_agent = _load_agent_for_conversation(conversation.agent_id)
+    if ExternalRuntimeService.is_external_runtime_type(
+        getattr(resolved_agent, "runtime_preference", None)
+    ):
+        return await _execute_external_runtime_conversation_turn(
+            conversation=conversation,
+            principal=principal,
+            message=message,
+            files=files,
+            source=source,
+            external_event_id=external_event_id,
+            chunk_callback=chunk_callback,
+            persist_input_message=persist_input_message,
+            input_message_role=input_message_role,
+            input_message_text=input_message_text,
+            input_message_content_json=input_message_content_json,
+            execution_intent_text=execution_intent_text,
+        )
 
     user_text = str(message or "").strip()
     persisted_input_text = str(
@@ -1546,7 +1769,7 @@ async def execute_persistent_conversation_turn(
         recursive=True,
     )
 
-    agent_info = _load_agent_for_conversation(conversation.agent_id)
+    agent_info = resolved_agent
     agent = await initialize_chat_agent(
         agent_info=agent_info,
         owner_user_id=principal_user_id,

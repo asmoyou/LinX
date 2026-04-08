@@ -107,7 +107,7 @@ def test_update_ui_experience_rejects_non_admin_roles(client: TestClient) -> Non
     assert response.json()["detail"] == "Insufficient permissions to manage platform UI settings"
 
 
-def test_get_project_execution_returns_default_launch_command_template(
+def test_get_project_execution_returns_planner_defaults(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     client.app.dependency_overrides[platform_settings_router.get_current_user] = (
@@ -117,7 +117,6 @@ def test_get_project_execution_returns_default_launch_command_template(
         platform_settings_router,
         "get_project_execution_settings",
         lambda _session: {
-            "default_launch_command_template": "codex exec \"$LINX_AGENT_PROMPT\"",
             "planner_provider": "ollama",
             "planner_model": "qwen3-vl:30b",
             "planner_temperature": 0.2,
@@ -129,7 +128,6 @@ def test_get_project_execution_returns_default_launch_command_template(
 
     assert response.status_code == 200
     assert response.json() == {
-        "default_launch_command_template": "codex exec \"$LINX_AGENT_PROMPT\"",
         "planner_provider": "ollama",
         "planner_model": "qwen3-vl:30b",
         "planner_temperature": 0.2,
@@ -158,7 +156,6 @@ def test_update_project_execution_accepts_manager_role(
     response = client.put(
         "/api/v1/platform/settings/project-execution",
         json={
-            "default_launch_command_template": "codex exec --cd \"$LINX_WORKSPACE_ROOT\" \"$LINX_AGENT_PROMPT\"",
             "planner_provider": "vllm",
             "planner_model": "Qwen3-Next-80B-A3B-Instruct-AWQ-4bit",
             "planner_temperature": 0.1,
@@ -167,14 +164,6 @@ def test_update_project_execution_accepts_manager_role(
     )
 
     assert response.status_code == 200
-    assert (
-        response.json()["default_launch_command_template"]
-        == 'codex exec --cd "$LINX_WORKSPACE_ROOT" "$LINX_AGENT_PROMPT"'
-    )
-    assert (
-        captured["value"]["default_launch_command_template"]
-        == 'codex exec --cd "$LINX_WORKSPACE_ROOT" "$LINX_AGENT_PROMPT"'
-    )
     assert captured["value"]["planner_provider"] == "vllm"
     assert captured["value"]["planner_model"] == "Qwen3-Next-80B-A3B-Instruct-AWQ-4bit"
     assert captured["value"]["planner_temperature"] == 0.1

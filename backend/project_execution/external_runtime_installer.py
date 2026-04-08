@@ -110,6 +110,7 @@ def render_install_sh(*, agent_id: str, base_url: str, target: str, code: str) -
           echo "python3 is required to install LinX external runtime." >&2
           exit 1
         fi
+        PYTHON_EXECUTABLE="$(command -v python3)"
 
         if ! command -v curl >/dev/null 2>&1; then
           echo "curl is required to install LinX external runtime." >&2
@@ -255,7 +256,7 @@ def render_install_sh(*, agent_id: str, base_url: str, target: str, code: str) -
         PY
         )"
 
-        python3 - "$CONFIG_PATH" "$bootstrap_json" "$CONTROL_PLANE" "$AGENT_ID" "$TARGET_OS" "$HOST_ARCH" "$HOST_NAME" "$HOST_FINGERPRINT" "$RUNTIME_HOME" "$VERSION" <<'PY'
+        python3 - "$CONFIG_PATH" "$bootstrap_json" "$CONTROL_PLANE" "$AGENT_ID" "$TARGET_OS" "$HOST_ARCH" "$HOST_NAME" "$HOST_FINGERPRINT" "$RUNTIME_HOME" "$VERSION" "$PYTHON_EXECUTABLE" <<'PY'
         import json
         import sys
         from pathlib import Path
@@ -271,7 +272,8 @@ def render_install_sh(*, agent_id: str, base_url: str, target: str, code: str) -
             host_fingerprint,
             runtime_home,
             version,
-        ) = sys.argv[1:11]
+            python_executable,
+        ) = sys.argv[1:12]
         bootstrap = json.loads(bootstrap_json)
         config = {{
             "agent_id": agent_id,
@@ -286,6 +288,7 @@ def render_install_sh(*, agent_id: str, base_url: str, target: str, code: str) -
             "desired_version": bootstrap.get("desired_version"),
             "heartbeat_interval_seconds": bootstrap.get("heartbeat_interval_seconds", 20),
             "dispatch_poll_interval_seconds": bootstrap.get("dispatch_poll_interval_seconds", 25),
+            "python_executable": python_executable,
         }}
         path = Path(config_path)
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -306,7 +309,7 @@ def render_install_sh(*, agent_id: str, base_url: str, target: str, code: str) -
         [Service]
         Type=simple
         WorkingDirectory=$RUNTIME_HOME
-        ExecStart=/usr/bin/env python3 $SCRIPT_PATH --config $CONFIG_PATH
+        ExecStart=$PYTHON_EXECUTABLE $SCRIPT_PATH --config $CONFIG_PATH
         Restart=on-failure
         RestartSec=5
         Environment=PYTHONUNBUFFERED=1
@@ -329,8 +332,7 @@ def render_install_sh(*, agent_id: str, base_url: str, target: str, code: str) -
             <string>$PLIST_LABEL</string>
             <key>ProgramArguments</key>
             <array>
-              <string>/usr/bin/env</string>
-              <string>python3</string>
+              <string>$PYTHON_EXECUTABLE</string>
               <string>$SCRIPT_PATH</string>
               <string>--config</string>
               <string>$CONFIG_PATH</string>
@@ -387,6 +389,18 @@ def render_update_sh(*, agent_id: str, base_url: str, target: str) -> str:
         if ! command -v python3 >/dev/null 2>&1; then
           echo "python3 is required to update LinX external runtime." >&2
           exit 1
+        fi
+        PYTHON_EXECUTABLE="$(python3 - "$CONFIG_PATH" <<'PY'
+        import json
+        import sys
+        from pathlib import Path
+
+        config = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+        print(config.get("python_executable") or "")
+        PY
+        )"
+        if [ -z "$PYTHON_EXECUTABLE" ]; then
+          PYTHON_EXECUTABLE="$(command -v python3)"
         fi
 
         if ! command -v curl >/dev/null 2>&1; then
@@ -451,24 +465,74 @@ def render_update_sh(*, agent_id: str, base_url: str, target: str) -> str:
 
         cp "$SCRIPT_SOURCE" "$SCRIPT_PATH"
         chmod 755 "$SCRIPT_PATH"
-        python3 - "$CONFIG_PATH" "$VERSION" "$RUNTIME_HOME" <<'PY'
+        python3 - "$CONFIG_PATH" "$VERSION" "$RUNTIME_HOME" "$PYTHON_EXECUTABLE" <<'PY'
         import json
         import sys
         from pathlib import Path
 
-        config_path, version, runtime_home = sys.argv[1:4]
+        config_path, version, runtime_home, python_executable = sys.argv[1:5]
         path = Path(config_path)
         config = json.loads(path.read_text(encoding="utf-8"))
         config["runtime_version"] = version
         config["runtime_home"] = runtime_home
+        config["python_executable"] = python_executable
         path.write_text(json.dumps(config, indent=2, ensure_ascii=False), encoding="utf-8")
         PY
 
         if [ "$TARGET_OS" = "linux" ]; then
           SERVICE_NAME="linx-external-runtime-$AGENT_ID.service"
+          SERVICE_PATH="$HOME/.config/systemd/user/$SERVICE_NAME"
+          cat > "$SERVICE_PATH" <<EOF
+        [Unit]
+        Description=LinX External Runtime ($AGENT_ID)
+        After=network-online.target
+
+        [Service]
+        Type=simple
+        WorkingDirectory=$RUNTIME_HOME
+        ExecStart=$PYTHON_EXECUTABLE $SCRIPT_PATH --config $CONFIG_PATH
+        Restart=on-failure
+        RestartSec=5
+        Environment=PYTHONUNBUFFERED=1
+
+        [Install]
+        WantedBy=default.target
+        EOF
+          systemctl --user daemon-reload
           systemctl --user restart "$SERVICE_NAME"
         else
           PLIST_LABEL="com.linx.external-runtime.$AGENT_ID"
+          PLIST_PATH="$HOME/Library/LaunchAgents/$PLIST_LABEL.plist"
+          cat > "$PLIST_PATH" <<EOF
+        <?xml version="1.0" encoding="UTF-8"?>
+        <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+        <plist version="1.0">
+          <dict>
+            <key>Label</key>
+            <string>$PLIST_LABEL</string>
+            <key>ProgramArguments</key>
+            <array>
+              <string>$PYTHON_EXECUTABLE</string>
+              <string>$SCRIPT_PATH</string>
+              <string>--config</string>
+              <string>$CONFIG_PATH</string>
+            </array>
+            <key>WorkingDirectory</key>
+            <string>$RUNTIME_HOME</string>
+            <key>RunAtLoad</key>
+            <true/>
+            <key>KeepAlive</key>
+            <dict>
+              <key>SuccessfulExit</key>
+              <false/>
+            </dict>
+            <key>StandardOutPath</key>
+            <string>$RUNTIME_HOME/runtime.stdout.log</string>
+            <key>StandardErrorPath</key>
+            <string>$RUNTIME_HOME/runtime.stderr.log</string>
+          </dict>
+        </plist>
+        EOF
           launchctl kickstart -k "gui/$(id -u)/$PLIST_LABEL"
         fi
 

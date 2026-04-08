@@ -70,14 +70,12 @@ describe('ProjectExecutionSettings', () => {
       error: null,
     });
     vi.mocked(platformApi.getProjectExecutionSettings).mockResolvedValue({
-      default_launch_command_template: 'codex exec "$LINX_AGENT_PROMPT"',
       planner_provider: 'ollama',
       planner_model: 'qwen3-vl:30b',
       planner_temperature: 0.2,
       planner_max_tokens: 4000,
     });
     vi.mocked(platformApi.updateProjectExecutionSettings).mockResolvedValue({
-      default_launch_command_template: 'codex exec "$LINX_AGENT_PROMPT"',
       planner_provider: 'ollama',
       planner_model: 'qwen3-vl:30b',
       planner_temperature: 0.2,
@@ -134,17 +132,16 @@ describe('ProjectExecutionSettings', () => {
     useUserStore.getState().reset();
   });
 
-  it('loads the platform default launch command template', async () => {
+  it('loads the planner defaults for project execution', async () => {
     render(<ProjectExecutionSettings />);
 
     await waitFor(() => {
       expect(platformApi.getProjectExecutionSettings).toHaveBeenCalledTimes(1);
     });
 
-    const textarea = screen.getByPlaceholderText(
-      'Example: codex exec --skip-git-repo-check --sandbox danger-full-access --cd "$LINX_WORKSPACE_ROOT" "$LINX_AGENT_PROMPT"',
-    );
-    expect(textarea).toHaveValue('codex exec "$LINX_AGENT_PROMPT"');
+    expect(
+      screen.getByText('Native Runtime Execution'),
+    ).toBeInTheDocument();
     expect(screen.getByDisplayValue('ollama')).toBeInTheDocument();
     expect(screen.getByDisplayValue('qwen3-vl:30b')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Save Defaults' })).toBeInTheDocument();

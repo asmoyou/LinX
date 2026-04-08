@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import base64
+import io
+import tarfile
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -13,9 +16,13 @@ from fastapi.testclient import TestClient
 from agent_framework.agent_registry import get_agent_registry
 from api_gateway.main import create_app
 from database.connection import get_db_session
-from database.models import Agent, PlatformSetting
-from database.project_execution_models import ProjectRun, ProjectTask
-from project_execution.external_runtime_service import ExternalRuntimeService
+from database.models import Agent, AgentConversation, PlatformSetting
+from database.project_execution_models import ExternalAgentBinding, ExternalAgentDispatch, ProjectRun, ProjectTask
+from project_execution.run_workspace_manager import get_run_workspace_manager
+from project_execution.external_runtime_service import (
+    CURRENT_EXTERNAL_RUNTIME_VERSION,
+    ExternalRuntimeService,
+)
 
 pytestmark = [pytest.mark.usefixtures("cleanup_shared_db_test_artifacts")]
 
@@ -88,6 +95,17 @@ def _set_platform_launch_command(template: str) -> None:
         else:
             row.setting_value = {"default_launch_command_template": template}
         session.commit()
+
+
+def _build_workspace_archive(entries: dict[str, str]) -> bytes:
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w:gz") as archive:
+        for relative_path, content in entries.items():
+            data = content.encode("utf-8")
+            info = tarfile.TarInfo(name=relative_path)
+            info.size = len(data)
+            archive.addfile(info, io.BytesIO(data))
+    return buffer.getvalue()
 
 
 def _create_project_and_running_task_run(
@@ -285,6 +303,582 @@ def test_project_execution_workflow_chain(api_client: TestClient, auth_headers: 
     runs_list = api_client.get("/api/v1/runs", headers=auth_headers)
     assert runs_list.status_code == 200, runs_list.text
     assert any(item["run_id"] == run_id for item in runs_list.json())
+
+
+def test_project_detail_endpoint_returns_aggregated_view(
+    api_client: TestClient, auth_headers: dict[str, str]
+):
+    task_id, run_id = _create_project_and_running_task_run(
+        api_client,
+        auth_headers,
+        project_name="Project Detail Aggregate",
+        task_title="Aggregate Me",
+    )
+
+    task_response = api_client.get(f"/api/v1/project-tasks/{task_id}", headers=auth_headers)
+    assert task_response.status_code == 200, task_response.text
+    project_id = task_response.json()["project_id"]
+
+    detail_response = api_client.get(f"/api/v1/projects/{project_id}/detail", headers=auth_headers)
+    assert detail_response.status_code == 200, detail_response.text
+    detail = detail_response.json()
+
+    assert detail["id"] == project_id
+    assert detail["title"] == "Project Detail Aggregate"
+    assert isinstance(detail["tasks"], list)
+    assert isinstance(detail["runs"], list)
+    assert any(item["id"] == task_id for item in detail["tasks"])
+    assert any(item["id"] == run_id for item in detail["runs"])
+    assert "recentActivity" in detail
+    assert "deliverables" in detail
+
+
+def test_project_task_detail_endpoint_returns_execution_context(
+    api_client: TestClient, auth_headers: dict[str, str]
+):
+    task_id, run_id = _create_project_and_running_task_run(
+        api_client,
+        auth_headers,
+        project_name="Task Detail Aggregate",
+        task_title="Document Task Detail",
+    )
+
+    patch_task_response = api_client.patch(
+        f"/api/v1/project-tasks/{task_id}",
+        json={
+            "input_payload": {
+                "execution_mode": "project_sandbox",
+                "acceptance_criteria": "Publish a concise summary and completion note.",
+                "skill_names": ["Technical Writing"],
+                "planner_summary": "Summarize the task and publish the note.",
+                "planner_source": "fallback_heuristic",
+            }
+        },
+        headers=auth_headers,
+    )
+    assert patch_task_response.status_code == 200, patch_task_response.text
+
+    step_response = api_client.post(
+        "/api/v1/run-steps",
+        json={
+            "run_id": run_id,
+            "project_task_id": task_id,
+            "name": "Write summary",
+            "step_type": "task",
+            "status": "running",
+            "sequence_number": 0,
+            "input_payload": {
+                "project_task_id": task_id,
+                "suggested_agent_ids": ["agent-1"],
+                "parallel_group": "documentation",
+            },
+        },
+        headers=auth_headers,
+    )
+    assert step_response.status_code == 201, step_response.text
+
+    detail_response = api_client.get(
+        f"/api/v1/project-tasks/{task_id}/detail",
+        headers=auth_headers,
+    )
+    assert detail_response.status_code == 200, detail_response.text
+    detail = detail_response.json()
+
+    assert detail["id"] == task_id
+    assert detail["executionMode"] == "project_sandbox"
+    assert detail["acceptanceCriteria"] == "Publish a concise summary and completion note."
+    assert detail["assignedSkillNames"] == ["Technical Writing"]
+    assert detail["plannerSummary"] == "Summarize the task and publish the note."
+    assert detail["stepTotal"] >= 1
+    assert detail["events"]
+
+
+def test_project_task_contract_endpoint_compiles_from_markdown_description(
+    api_client: TestClient, auth_headers: dict[str, str]
+):
+    project_response = api_client.post(
+        "/api/v1/projects",
+        json={
+            "name": "Task Contract Project",
+            "description": "Compile task contract from description.",
+            "status": "draft",
+            "configuration": {},
+        },
+        headers=auth_headers,
+    )
+    assert project_response.status_code == 201, project_response.text
+    project_id = project_response.json()["project_id"]
+
+    task_response = api_client.post(
+        "/api/v1/project-tasks",
+        json={
+            "project_id": project_id,
+            "title": "Compile contract",
+            "description": (
+                "## 任务目标\n- 补齐任务合同接口\n\n"
+                "## 交付物\n- backend/project_execution/task_contracts.py\n- tests/unit/api_gateway/routers/test_project_execution_workflow.py\n\n"
+                "## 验收标准\n- [ ] 可以读取结构化合同\n- [ ] 合同包含交付物与验收条目\n"
+            ),
+            "status": "planning",
+            "priority": "normal",
+            "sort_order": 0,
+            "input_payload": {},
+        },
+        headers=auth_headers,
+    )
+    assert task_response.status_code == 201, task_response.text
+    task_id = task_response.json()["project_task_id"]
+
+    contract_response = api_client.get(
+        f"/api/v1/project-tasks/{task_id}/contract",
+        headers=auth_headers,
+    )
+    assert contract_response.status_code == 200, contract_response.text
+    contract = contract_response.json()
+
+    assert contract["taskId"] == task_id
+    assert contract["goal"] == "补齐任务合同接口"
+    assert "backend/project_execution/task_contracts.py" in contract["deliverables"]
+    assert "可以读取结构化合同" in contract["acceptanceCriteria"]
+
+
+def test_project_task_dependency_endpoints_update_readiness(
+    api_client: TestClient, auth_headers: dict[str, str]
+):
+    project_response = api_client.post(
+        "/api/v1/projects",
+        json={
+            "name": "Task Dependency Project",
+            "description": "Replace dependency edges.",
+            "status": "draft",
+            "configuration": {},
+        },
+        headers=auth_headers,
+    )
+    assert project_response.status_code == 201, project_response.text
+    project_id = project_response.json()["project_id"]
+
+    upstream_response = api_client.post(
+        "/api/v1/project-tasks",
+        json={
+            "project_id": project_id,
+            "title": "Upstream task",
+            "description": "Complete first.",
+            "status": "in_review",
+            "priority": "normal",
+            "sort_order": 0,
+            "input_payload": {},
+        },
+        headers=auth_headers,
+    )
+    assert upstream_response.status_code == 201, upstream_response.text
+    upstream_task_id = upstream_response.json()["project_task_id"]
+
+    blocked_response = api_client.post(
+        "/api/v1/project-tasks",
+        json={
+            "project_id": project_id,
+            "title": "Blocked task",
+            "description": "Wait on upstream.",
+            "status": "planning",
+            "priority": "normal",
+            "sort_order": 1,
+            "input_payload": {},
+        },
+        headers=auth_headers,
+    )
+    assert blocked_response.status_code == 201, blocked_response.text
+    blocked_task_id = blocked_response.json()["project_task_id"]
+
+    replace_response = api_client.put(
+        f"/api/v1/project-tasks/{blocked_task_id}/dependencies",
+        json={
+            "dependencies": [
+                {
+                    "dependsOnTaskId": upstream_task_id,
+                    "requiredState": "completed",
+                    "dependencyType": "hard",
+                }
+            ]
+        },
+        headers=auth_headers,
+    )
+    assert replace_response.status_code == 200, replace_response.text
+    dependencies = replace_response.json()
+    assert len(dependencies) == 1
+    assert dependencies[0]["dependsOnTaskId"] == upstream_task_id
+    assert dependencies[0]["satisfied"] is False
+
+    blocked_detail_response = api_client.get(
+        f"/api/v1/project-tasks/{blocked_task_id}/detail",
+        headers=auth_headers,
+    )
+    assert blocked_detail_response.status_code == 200, blocked_detail_response.text
+    blocked_detail = blocked_detail_response.json()
+    assert blocked_detail["ready"] is False
+    assert blocked_detail["blockingDependencyCount"] == 1
+    assert blocked_detail["dependencies"][0]["satisfied"] is False
+
+    upstream_complete_response = api_client.patch(
+        f"/api/v1/project-tasks/{upstream_task_id}",
+        json={"status": "completed"},
+        headers=auth_headers,
+    )
+    assert upstream_complete_response.status_code == 200, upstream_complete_response.text
+
+    refreshed_detail_response = api_client.get(
+        f"/api/v1/project-tasks/{blocked_task_id}/detail",
+        headers=auth_headers,
+    )
+    assert refreshed_detail_response.status_code == 200, refreshed_detail_response.text
+    refreshed_detail = refreshed_detail_response.json()
+    assert refreshed_detail["ready"] is True
+    assert refreshed_detail["blockingDependencyCount"] == 0
+    assert refreshed_detail["dependencies"][0]["satisfied"] is True
+
+
+def test_project_task_delivery_records_round_trip_into_detail(
+    api_client: TestClient, auth_headers: dict[str, str]
+):
+    project_response = api_client.post(
+        "/api/v1/projects",
+        json={
+            "name": "Delivery Records Project",
+            "description": "Store delivery records for one task.",
+            "status": "draft",
+            "configuration": {},
+        },
+        headers=auth_headers,
+    )
+    assert project_response.status_code == 201, project_response.text
+    project_id = project_response.json()["project_id"]
+
+    task_response = api_client.post(
+        "/api/v1/project-tasks",
+        json={
+            "project_id": project_id,
+            "title": "Review this delivery",
+            "description": "Task with structured delivery records.",
+            "status": "in_review",
+            "priority": "normal",
+            "sort_order": 0,
+            "input_payload": {},
+        },
+        headers=auth_headers,
+    )
+    assert task_response.status_code == 201, task_response.text
+    task_id = task_response.json()["project_task_id"]
+
+    bundle_response = api_client.post(
+        f"/api/v1/project-tasks/{task_id}/change-bundles",
+        json={
+            "bundleKind": "patchset",
+            "status": "submitted",
+            "baseRef": "abc1234",
+            "headRef": "def5678",
+            "summary": "Initial delivery bundle",
+            "commitCount": 2,
+            "changedFiles": [
+                {"path": "frontend/src/pages/ProjectTaskDetail.tsx", "status": "M"},
+                {"path": "backend/project_execution/read_models.py", "status": "M"},
+            ],
+            "artifactManifest": {"deliverables": ["frontend/src/pages/ProjectTaskDetail.tsx"]},
+        },
+        headers=auth_headers,
+    )
+    assert bundle_response.status_code == 201, bundle_response.text
+    bundle = bundle_response.json()
+
+    evidence_response = api_client.post(
+        f"/api/v1/project-tasks/{task_id}/evidence-bundles",
+        json={
+            "summary": "Smoke evidence attached",
+            "status": "collected",
+            "bundle": {
+                "acceptanceChecks": [{"item": "Task detail renders contract", "status": "pass"}],
+                "testResults": ["frontend npm run type-check"],
+            },
+        },
+        headers=auth_headers,
+    )
+    assert evidence_response.status_code == 201, evidence_response.text
+    evidence = evidence_response.json()
+
+    handoff_response = api_client.post(
+        f"/api/v1/project-tasks/{task_id}/handoffs",
+        json={
+            "stage": "dev_to_review",
+            "fromActor": "developer",
+            "toActor": "reviewer",
+            "statusFrom": "in_progress",
+            "statusTo": "in_review",
+            "title": "Ready for review",
+            "summary": "Please review the structured delivery",
+            "payload": {"bundleId": bundle["id"], "evidenceBundleId": evidence["id"]},
+        },
+        headers=auth_headers,
+    )
+    assert handoff_response.status_code == 201, handoff_response.text
+    handoff = handoff_response.json()
+
+    issue_response = api_client.post(
+        f"/api/v1/project-tasks/{task_id}/review-issues",
+        json={
+            "changeBundleId": bundle["id"],
+            "evidenceBundleId": evidence["id"],
+            "handoffId": handoff["id"],
+            "issueKey": "ISS-1",
+            "severity": "high",
+            "category": "coverage",
+            "acceptanceRef": "A1",
+            "summary": "Missing regression evidence for dependency blocking state",
+            "suggestion": "Add a regression assertion for blockingDependencyCount.",
+            "status": "open",
+        },
+        headers=auth_headers,
+    )
+    assert issue_response.status_code == 201, issue_response.text
+    issue = issue_response.json()
+
+    issue_update_response = api_client.patch(
+        f"/api/v1/project-tasks/{task_id}/review-issues/{issue['id']}",
+        json={"status": "resolved"},
+        headers=auth_headers,
+    )
+    assert issue_update_response.status_code == 200, issue_update_response.text
+    assert issue_update_response.json()["status"] == "resolved"
+
+    detail_response = api_client.get(
+        f"/api/v1/project-tasks/{task_id}/detail",
+        headers=auth_headers,
+    )
+    assert detail_response.status_code == 200, detail_response.text
+    detail = detail_response.json()
+
+    assert detail["latestChangeBundle"]["id"] == bundle["id"]
+    assert detail["latestEvidenceBundle"]["id"] == evidence["id"]
+    assert detail["handoffs"][0]["id"] == handoff["id"]
+    assert detail["reviewIssues"][0]["id"] == issue["id"]
+    assert detail["openIssueCount"] == 0
+
+
+def test_project_task_attempts_endpoint_lists_related_runs(
+    api_client: TestClient, auth_headers: dict[str, str]
+):
+    task_id, run_id = _create_project_and_running_task_run(
+        api_client,
+        auth_headers,
+        project_name="Task Attempts Project",
+        task_title="Attempted Task",
+    )
+
+    step_response = api_client.post(
+        "/api/v1/run-steps",
+        json={
+            "run_id": run_id,
+            "project_task_id": task_id,
+            "name": "Attempt node",
+            "step_type": "task",
+            "status": "running",
+            "sequence_number": 0,
+            "input_payload": {"project_task_id": task_id},
+        },
+        headers=auth_headers,
+    )
+    assert step_response.status_code == 201, step_response.text
+
+    attempts_response = api_client.get(
+        f"/api/v1/project-tasks/{task_id}/attempts",
+        headers=auth_headers,
+    )
+    assert attempts_response.status_code == 200, attempts_response.text
+    attempts = attempts_response.json()
+    assert len(attempts) >= 1
+    assert attempts[0]["id"] == run_id
+    assert attempts[0]["taskId"] == task_id
+    assert attempts[0]["totalNodes"] >= 1
+
+
+def test_run_nodes_and_runtime_sessions_endpoints(
+    api_client: TestClient, auth_headers: dict[str, str]
+):
+    task_id, run_id = _create_project_and_running_task_run(
+        api_client,
+        auth_headers,
+        project_name="Run Nodes Project",
+        task_title="Node Task",
+    )
+
+    patch_run_response = api_client.patch(
+        f"/api/v1/runs/{run_id}",
+        json={
+            "runtime_context": {
+                "run_workspace": {"root_path": "/workspace/runs/node-task"},
+                "execution_mode": "project_sandbox",
+            }
+        },
+        headers=auth_headers,
+    )
+    assert patch_run_response.status_code == 200, patch_run_response.text
+
+    step_response = api_client.post(
+        "/api/v1/run-steps",
+        json={
+            "run_id": run_id,
+            "project_task_id": task_id,
+            "name": "Node A",
+            "step_type": "task",
+            "status": "running",
+            "sequence_number": 0,
+            "input_payload": {
+              "project_task_id": task_id,
+              "execution_mode": "project_sandbox",
+              "executor_kind": "agent",
+              "runtime_type": "project_sandbox",
+              "suggested_agent_ids": ["agent-a"],
+            },
+        },
+        headers=auth_headers,
+    )
+    assert step_response.status_code == 201, step_response.text
+    run_step_id = step_response.json()["run_step_id"]
+
+    with get_db_session() as session:
+        task = session.query(ProjectTask).filter(ProjectTask.project_task_id == UUID(task_id)).first()
+        assert task is not None
+        registry = get_agent_registry()
+        agent_info = registry.register_agent(
+            name="Runtime Session Agent",
+            agent_type="host_action_agent",
+            owner_user_id=task.created_by_user_id,
+            capabilities=["ops", "shell", "host_execution"],
+            llm_provider=None,
+            llm_model=None,
+            access_level="private",
+        )
+        binding = ExternalAgentBinding(
+            agent_id=agent_info.agent_id,
+            machine_token_hash="hash",
+            machine_token_prefix="pref",
+            status="online",
+        )
+        session.add(binding)
+        session.flush()
+        dispatch = ExternalAgentDispatch(
+            agent_id=agent_info.agent_id,
+            binding_id=binding.binding_id,
+            project_id=task.project_id,
+            run_id=UUID(run_id),
+            run_step_id=UUID(run_step_id),
+            source_type="project_run_step",
+            source_id=run_step_id,
+            runtime_type="external_worktree",
+            request_payload={"run_workspace_root": "/workspace/runs/node-task"},
+            result_payload={},
+            status="running",
+        )
+        session.add(dispatch)
+        session.commit()
+
+    nodes_response = api_client.get(f"/api/v1/runs/{run_id}/nodes", headers=auth_headers)
+    assert nodes_response.status_code == 200, nodes_response.text
+    nodes = nodes_response.json()
+    assert len(nodes) >= 1
+    assert nodes[0]["runId"] == run_id
+    assert nodes[0]["name"] == "Node A"
+
+    sessions_response = api_client.get(
+        f"/api/v1/runs/{run_id}/runtime-sessions",
+        headers=auth_headers,
+    )
+    assert sessions_response.status_code == 200, sessions_response.text
+    sessions = sessions_response.json()
+    assert any(item["sessionType"] == "run_workspace" for item in sessions)
+    assert any(item["sessionType"] == "external_dispatch" for item in sessions)
+
+
+def test_run_detail_endpoint_returns_timeline_and_deliverables(
+    api_client: TestClient, auth_headers: dict[str, str]
+):
+    task_id, run_id = _create_project_and_running_task_run(
+        api_client,
+        auth_headers,
+        project_name="Run Detail Aggregate",
+        task_title="Publish Deliverable",
+    )
+
+    patch_run_response = api_client.patch(
+        f"/api/v1/runs/{run_id}",
+        json={
+            "runtime_context": {
+                "project_task_id": task_id,
+                "task_title": "Publish Deliverable",
+                "execution_mode": "project_sandbox",
+                "planner_summary": "Create and publish a release note.",
+                "planner_source": "fallback_heuristic",
+                "agent_assignment": {
+                    "executor_kind": "agent",
+                    "agent_id": str(uuid4()),
+                    "selection_reason": "Selected by test scheduler",
+                    "provisioned_agent": False,
+                    "runtime_type": "project_sandbox",
+                },
+                "run_workspace": {
+                    "root_path": "/workspace/runs/test-run",
+                },
+            }
+        },
+        headers=auth_headers,
+    )
+    assert patch_run_response.status_code == 200, patch_run_response.text
+
+    step_response = api_client.post(
+        "/api/v1/run-steps",
+        json={
+            "run_id": run_id,
+            "project_task_id": task_id,
+            "name": "Publish release note",
+            "step_type": "task",
+            "status": "running",
+            "sequence_number": 0,
+            "input_payload": {"project_task_id": task_id},
+        },
+        headers=auth_headers,
+    )
+    assert step_response.status_code == 201, step_response.text
+    step_id = step_response.json()["run_step_id"]
+
+    complete_step_response = api_client.post(
+        f"/api/v1/run-steps/{step_id}/complete",
+        json={
+            "status": "completed",
+            "output_payload": {
+                "artifacts": [
+                    {
+                        "path": "/workspace/output/release-note.md",
+                        "name": "release-note.md",
+                    }
+                ]
+            },
+        },
+        headers=auth_headers,
+    )
+    assert complete_step_response.status_code == 200, complete_step_response.text
+
+    detail_response = api_client.get(f"/api/v1/runs/{run_id}/detail", headers=auth_headers)
+    assert detail_response.status_code == 200, detail_response.text
+    detail = detail_response.json()
+
+    assert detail["id"] == run_id
+    assert detail["projectId"]
+    assert detail["plannerSummary"] == "Create and publish a release note."
+    assert detail["timeline"]
+    assert detail["deliverables"]
+    assert detail["deliverables"][0]["path"] == "/workspace/output/release-note.md"
+    assert detail["runWorkspaceRoot"] == "/workspace/runs/test-run"
+    assert detail["executorAssignment"]["selectionReason"] == "Selected by test scheduler"
+    assert detail["nodes"]
+    assert detail["runtimeSessions"]
 
 
 def test_create_project_task_and_launch_run_atomically(
@@ -696,7 +1290,7 @@ def _provision_bound_external_agent(
     project_id: str,
     owner_user_id: str,
     name: str,
-    launch_command_template: str | None = "echo launch",
+    current_version: str = CURRENT_EXTERNAL_RUNTIME_VERSION,
 ) -> tuple[str, str]:
     registry = get_agent_registry()
     agent_info = registry.register_agent(
@@ -711,12 +1305,6 @@ def _provision_bound_external_agent(
         project_scope_id=UUID(project_id),
     )
     registry.update_agent(agent_id=agent_info.agent_id, status="idle")
-    if launch_command_template is not None:
-        with get_db_session() as session:
-            ExternalRuntimeService(session).update_profile(
-                agent_id=agent_info.agent_id,
-                launch_command_template=launch_command_template,
-            )
 
     binding_response = api_client.post(
         f"/api/v1/projects/{project_id}/agent-bindings",
@@ -740,7 +1328,7 @@ def _provision_bound_external_agent(
     )
     assert install_command_response.status_code == 200, install_command_response.text
     command = install_command_response.json()["command"]
-    install_code = command.split("code=", 1)[1].split()[0].split("|")[0].strip()
+    install_code = command.split("code=", 1)[1].split()[0].split("|")[0].strip("'\"")
 
     bootstrap_response = api_client.post(
         "/api/v1/external-runtime/bootstrap",
@@ -751,13 +1339,161 @@ def _provision_bound_external_agent(
             "host_os": "linux",
             "host_arch": "amd64",
             "host_fingerprint": f"fingerprint-{agent_info.agent_id}",
-            "current_version": "0.1.0",
+            "current_version": current_version,
             "metadata": {},
         },
     )
     assert bootstrap_response.status_code == 200, bootstrap_response.text
     machine_token = bootstrap_response.json()["machine_token"]
     return str(agent_info.agent_id), machine_token
+
+
+def test_external_runtime_conversation_workspace_upload_and_download_roundtrip(
+    api_client: TestClient, auth_headers: dict[str, str]
+):
+    project_response = api_client.post(
+        "/api/v1/projects",
+        json={
+            "name": "Runtime Conversation Workspace Project",
+            "description": "Roundtrip Runtime Host workspace snapshots.",
+            "status": "draft",
+            "configuration": {},
+        },
+        headers=auth_headers,
+    )
+    assert project_response.status_code == 201, project_response.text
+    project = project_response.json()
+
+    agent_id, machine_token = _provision_bound_external_agent(
+        api_client,
+        auth_headers,
+        project_id=project["project_id"],
+        owner_user_id=project["created_by_user_id"],
+        name="Runtime Conversation Workspace Agent",
+    )
+
+    with get_db_session() as session:
+        conversation = AgentConversation(
+            agent_id=UUID(agent_id),
+            owner_user_id=UUID(project["created_by_user_id"]),
+            title="Runtime Host Conversation",
+            status="active",
+            source="web",
+        )
+        session.add(conversation)
+        session.commit()
+        session.refresh(conversation)
+        conversation_id = str(conversation.conversation_id)
+
+    archive_bytes = _build_workspace_archive({"output/result.txt": "hello from runtime"})
+    host_headers = {"Authorization": f"Bearer {machine_token}"}
+    upload_response = api_client.post(
+        f"/api/v1/external-runtime/conversations/{conversation_id}/workspace/upload",
+        json={
+            "archive_base64": base64.b64encode(archive_bytes).decode("utf-8"),
+            "workspace_bytes_estimate": 18,
+            "workspace_file_count_estimate": 1,
+            "snapshot_status": "ready",
+        },
+        headers=host_headers,
+    )
+    assert upload_response.status_code == 200, upload_response.text
+    assert upload_response.json()["generation"] == 1
+
+    download_response = api_client.get(
+        f"/api/v1/external-runtime/conversations/{conversation_id}/workspace/download",
+        headers=host_headers,
+    )
+    assert download_response.status_code == 200, download_response.text
+    payload = download_response.json()
+    assert payload["generation"] == 1
+    restored_bytes = base64.b64decode(payload["archive_base64"].encode("utf-8"))
+    assert restored_bytes
+
+
+def test_external_runtime_run_workspace_upload_and_download_roundtrip(
+    api_client: TestClient, auth_headers: dict[str, str]
+):
+    project_response = api_client.post(
+        "/api/v1/projects",
+        json={
+            "name": "Runtime Run Workspace Project",
+            "description": "Roundtrip project run workspace through Runtime Host.",
+            "status": "draft",
+            "configuration": {},
+        },
+        headers=auth_headers,
+    )
+    assert project_response.status_code == 201, project_response.text
+    project = project_response.json()
+    project_id = project["project_id"]
+    owner_user_id = project["created_by_user_id"]
+
+    _agent_id, machine_token = _provision_bound_external_agent(
+        api_client,
+        auth_headers,
+        project_id=project_id,
+        owner_user_id=owner_user_id,
+        name="Runtime Run Workspace Agent",
+    )
+
+    run_id = None
+    with get_db_session() as session:
+        run = ProjectRun(
+            project_id=UUID(project_id),
+            status="scheduled",
+            trigger_source="manual",
+            runtime_context={},
+            requested_by_user_id=UUID(owner_user_id),
+        )
+        session.add(run)
+        session.commit()
+        session.refresh(run)
+        get_run_workspace_manager().create_run_workspace(UUID(project_id), run.run_id)
+        ExternalRuntimeService(session).create_dispatch(
+            agent_id=UUID(_agent_id),
+            source_type="project_run_step",
+            source_id=str(run.run_id),
+            runtime_type="external_worktree",
+            project_id=UUID(project_id),
+            run_id=run.run_id,
+            request_payload={
+                "run_id": str(run.run_id),
+                "step_kind": "host_action",
+                "execution_prompt": "Prepare the host workspace.",
+            },
+        )
+        run_id = str(run.run_id)
+    assert run_id
+
+    host_headers = {"Authorization": f"Bearer {machine_token}"}
+    host_download_response = api_client.get(
+        f"/api/v1/external-runtime/runs/{run_id}/workspace/download",
+        headers=host_headers,
+    )
+    assert host_download_response.status_code == 200, host_download_response.text
+    assert host_download_response.json()["archive_base64"]
+
+    archive_bytes = _build_workspace_archive({"output/runtime-result.txt": "hello run workspace"})
+    host_upload_response = api_client.post(
+        f"/api/v1/external-runtime/runs/{run_id}/workspace/upload",
+        json={
+            "archive_base64": base64.b64encode(archive_bytes).decode("utf-8"),
+            "workspace_bytes_estimate": 19,
+            "workspace_file_count_estimate": 1,
+            "snapshot_status": "ready",
+        },
+        headers=host_headers,
+    )
+    assert host_upload_response.status_code == 200, host_upload_response.text
+
+    user_download_response = api_client.get(
+        f"/api/v1/runs/{run_id}/workspace/download",
+        params={"path": "output/runtime-result.txt"},
+        headers=auth_headers,
+    )
+    assert user_download_response.status_code == 200, user_download_response.text
+    assert "hello run workspace" in user_download_response.text
 
 
 def test_external_runtime_installer_scripts_render_real_service_setup(
@@ -792,7 +1528,6 @@ def test_external_runtime_installer_scripts_render_real_service_setup(
     with get_db_session() as session:
         ExternalRuntimeService(session).update_profile(
             agent_id=agent_info.agent_id,
-            launch_command_template="echo launch",
         )
 
     install_command_response = api_client.post(
@@ -803,7 +1538,7 @@ def test_external_runtime_installer_scripts_render_real_service_setup(
     assert install_command_response.status_code == 200, install_command_response.text
     install_command = install_command_response.json()["command"]
     install_url = urlsplit(
-        install_command.replace("curl -fsSL ", "", 1).split(" | ", 1)[0]
+        install_command.replace("curl -fsSL ", "", 1).split(" | ", 1)[0].strip("'")
     )
     install_script_response = api_client.get(f"{install_url.path}?{install_url.query}")
     assert install_script_response.status_code == 200, install_script_response.text
@@ -821,7 +1556,7 @@ def test_external_runtime_installer_scripts_render_real_service_setup(
     assert update_command_response.status_code == 200, update_command_response.text
     update_command = update_command_response.json()["command"]
     update_url = urlsplit(
-        update_command.replace("curl -fsSL ", "", 1).split(" | ", 1)[0]
+        update_command.replace("curl -fsSL ", "", 1).split(" | ", 1)[0].strip("'")
     )
     update_script_response = api_client.get(f"{update_url.path}?{update_url.query}")
     assert update_script_response.status_code == 200, update_script_response.text
@@ -848,7 +1583,7 @@ def test_external_runtime_installer_scripts_render_real_service_setup(
     assert uninstall_command_response.status_code == 200, uninstall_command_response.text
     uninstall_command = uninstall_command_response.json()["command"]
     uninstall_url = urlsplit(
-        uninstall_command.replace("curl -fsSL ", "", 1).split(" | ", 1)[0]
+        uninstall_command.replace("curl -fsSL ", "", 1).split(" | ", 1)[0].strip("'")
     )
     uninstall_script_response = api_client.get(f"{uninstall_url.path}?{uninstall_url.query}")
     assert uninstall_script_response.status_code == 200, uninstall_script_response.text
@@ -1102,15 +1837,14 @@ def test_request_runtime_uninstall_revokes_binding_and_rejects_future_heartbeats
     assert overview["state"]["bound"] is False
 
 
-def test_host_action_dispatch_uses_platform_default_launch_command(
+def test_host_action_dispatch_uses_native_executor_payload(
     api_client: TestClient, auth_headers: dict[str, str]
 ):
-    _set_platform_launch_command("echo platform launch")
     project_response = api_client.post(
         "/api/v1/projects",
         json={
-            "name": "Platform Default Launch Command",
-            "description": "Use platform default external runtime command.",
+            "name": "Native External Dispatch",
+            "description": "Use the native external runtime executor payload.",
             "status": "draft",
             "configuration": {},
         },
@@ -1127,7 +1861,6 @@ def test_host_action_dispatch_uses_platform_default_launch_command(
         project_id=project_id,
         owner_user_id=owner_user_id,
         name="Platform Default Agent",
-        launch_command_template=None,
     )
 
     create_and_launch_response = api_client.post(
@@ -1135,7 +1868,7 @@ def test_host_action_dispatch_uses_platform_default_launch_command(
         json={
             "project_id": project_id,
             "title": "Deploy app to host with platform default",
-            "description": "SSH to host and deploy the app with the platform default runtime command.",
+            "description": "SSH to host and deploy the app with the native runtime executor.",
             "priority": "normal",
             "input_payload": {},
         },
@@ -1150,19 +1883,21 @@ def test_host_action_dispatch_uses_platform_default_launch_command(
     assert dispatch_response.status_code == 200, dispatch_response.text
     dispatch = dispatch_response.json()
     assert dispatch["agent_id"] == agent_id
-    assert dispatch["request_payload"]["launch_command_template"] == "echo platform launch"
-    assert dispatch["request_payload"]["launch_command_source"] == "platform"
+    assert dispatch["source_type"] == "project_run_step"
+    assert dispatch["request_payload"]["step_kind"] == "host_action"
+    assert "launch_command_template" not in dispatch["request_payload"]
+    assert "launch_command_source" not in dispatch["request_payload"]
+    assert dispatch["request_payload"]["execution_prompt"]
 
 
-def test_host_action_dispatch_prefers_agent_launch_command_override(
+def test_host_action_dispatch_blocks_when_runtime_upgrade_is_required(
     api_client: TestClient, auth_headers: dict[str, str]
 ):
-    _set_platform_launch_command("echo platform launch")
     project_response = api_client.post(
         "/api/v1/projects",
         json={
-            "name": "Agent Override Launch Command",
-            "description": "Prefer agent-level external runtime command.",
+            "name": "Outdated Runtime Host",
+            "description": "Block host action dispatch when the Runtime Host is outdated.",
             "status": "draft",
             "configuration": {},
         },
@@ -1179,15 +1914,15 @@ def test_host_action_dispatch_prefers_agent_launch_command_override(
         project_id=project_id,
         owner_user_id=owner_user_id,
         name="Agent Override Agent",
-        launch_command_template="echo agent launch",
+        current_version="0.1.0",
     )
 
     create_and_launch_response = api_client.post(
         "/api/v1/project-tasks/create-and-launch",
         json={
             "project_id": project_id,
-            "title": "Deploy host assets with agent override",
-            "description": "Deploy files to the remote host using the agent override runtime command.",
+            "title": "Deploy host assets with outdated runtime",
+            "description": "Deploy files to the remote host even though the Runtime Host needs an upgrade.",
             "priority": "normal",
             "input_payload": {},
         },
@@ -1199,55 +1934,10 @@ def test_host_action_dispatch_prefers_agent_launch_command_override(
         "/api/v1/external-runtime/dispatches/next",
         headers={"Authorization": f"Bearer {machine_token}"},
     )
-    assert dispatch_response.status_code == 200, dispatch_response.text
-    dispatch = dispatch_response.json()
-    assert dispatch["request_payload"]["launch_command_template"] == "echo agent launch"
-    assert dispatch["request_payload"]["launch_command_source"] == "agent"
-
-
-def test_host_action_without_launch_command_blocks_clearly(
-    api_client: TestClient, auth_headers: dict[str, str]
-):
-    _set_platform_launch_command("")
-    project_response = api_client.post(
-        "/api/v1/projects",
-        json={
-            "name": "Missing Launch Command",
-            "description": "Block execution when launch command is missing.",
-            "status": "draft",
-            "configuration": {},
-        },
-        headers=auth_headers,
-    )
-    assert project_response.status_code == 201, project_response.text
-    project = project_response.json()
-    project_id = project["project_id"]
-    owner_user_id = project["created_by_user_id"]
-
-    _agent_id, _machine_token = _provision_bound_external_agent(
-        api_client,
-        auth_headers,
-        project_id=project_id,
-        owner_user_id=owner_user_id,
-        name="Missing Launch Command Agent",
-        launch_command_template=None,
-    )
-
-    create_and_launch_response = api_client.post(
-        "/api/v1/project-tasks/create-and-launch",
-        json={
-            "project_id": project_id,
-            "title": "Deploy host assets without runtime command",
-            "description": "Deploy files to the remote host even though the runtime launch command is missing.",
-            "priority": "normal",
-            "input_payload": {},
-        },
-        headers=auth_headers,
-    )
-    assert create_and_launch_response.status_code == 201, create_and_launch_response.text
+    assert dispatch_response.status_code == 404, dispatch_response.text
     payload = create_and_launch_response.json()
     assert payload["agent_assignment"]["dispatch_id"] is None
-    assert "launch command" in payload["agent_assignment"]["selection_reason"].lower()
+    assert "upgrade" in payload["agent_assignment"]["selection_reason"].lower()
     assert payload["step"]["status"] == "blocked"
     assert payload["run"]["status"] == "blocked"
 

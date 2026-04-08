@@ -140,7 +140,7 @@ class ProjectAgentProvisioner:
             if not bindings:
                 return None
             binding_map = {row.agent_id: row for row in bindings}
-            candidates = [
+            bound_runtime_candidates = [
                 agent
                 for agent in list_accessible_agents(
                     session,
@@ -150,7 +150,11 @@ class ProjectAgentProvisioner:
                 )
                 if agent.agent_id in binding_map
                 and self._is_runtime_compatible(agent, desired_runtime_types)
-                and (
+            ]
+            candidates = [
+                agent
+                for agent in bound_runtime_candidates
+                if (
                     not self._requires_external_runtime(desired_runtime_types)
                     or bool(
                         (
@@ -161,6 +165,25 @@ class ProjectAgentProvisioner:
                 )
             ]
             if not candidates:
+                if self._requires_external_runtime(desired_runtime_types) and bound_runtime_candidates:
+                    runtime_states = [
+                        runtime_service.summarize_state(agent=agent)
+                        for agent in bound_runtime_candidates
+                    ]
+                    if any(
+                        state is not None and not state.runtime_compatible
+                        for state in runtime_states
+                    ):
+                        raise ProjectExternalRuntimeUnavailableError(
+                            "External Runtime Host must be upgraded before this host-action step can run."
+                        )
+                    if any(
+                        state is not None and state.status in {"offline", "error", "uninstalled"}
+                        for state in runtime_states
+                    ):
+                        raise ProjectExternalRuntimeUnavailableError(
+                            "External Runtime Host is bound for this host-action step but is not currently available."
+                        )
                 return None
             normalized_suggested_agent_ids = {
                 str(agent_id).strip()
@@ -236,7 +259,7 @@ class ProjectAgentProvisioner:
         if runtime_type in EXTERNAL_RUNTIME_TYPES:
             raise ProjectExternalRuntimeUnavailableError(
                 "No external runtime is configured for this host-action step. "
-                "Bind an external agent in the Project Agent Pool and configure its launch command."
+                "Bind an external agent in the Project Agent Pool and install a Runtime Host."
             )
         capabilities = list(profile.default_skill_ids or []) if profile and profile.default_skill_ids else list(required_capabilities)
         scope_label = "external" if runtime_type in EXTERNAL_RUNTIME_TYPES else "internal"

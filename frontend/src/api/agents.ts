@@ -126,7 +126,6 @@ export interface SaveFeishuPublicationRequest {
 
 export interface ExternalRuntimeProfileUpdateRequest {
   pathAllowlist?: string[];
-  launchCommandTemplate?: string;
   installChannel?: string;
   desiredVersion?: string;
 }

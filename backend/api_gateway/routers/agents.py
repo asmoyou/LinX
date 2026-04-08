@@ -2305,8 +2305,8 @@ class ExternalRuntimeResponse(BaseModel):
     boundAt: Optional[datetime] = None
     lastErrorMessage: Optional[str] = None
     updateAvailable: bool = False
-    launchCommandSource: str = "unset"
-    resolvedLaunchCommandTemplate: Optional[str] = None
+    runtimeCompatible: bool = True
+    compatibilityMessage: Optional[str] = None
     localStatusUrl: Optional[str] = None
     localStatusPort: Optional[int] = None
     lastDispatchAction: Optional[str] = None
@@ -2448,8 +2448,8 @@ def _build_agent_response(
                     boundAt=runtime_state.bound_at,
                     lastErrorMessage=runtime_state.last_error_message,
                     updateAvailable=runtime_state.update_available,
-                    launchCommandSource=runtime_state.launch_command_source,
-                    resolvedLaunchCommandTemplate=runtime_state.resolved_launch_command_template,
+                    runtimeCompatible=runtime_state.runtime_compatible,
+                    compatibilityMessage=runtime_state.compatibility_message,
                     localStatusUrl=runtime_state.local_status_url,
                     localStatusPort=runtime_state.local_status_port,
                     lastDispatchAction=runtime_state.last_dispatch_action,

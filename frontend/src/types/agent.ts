@@ -12,8 +12,8 @@ export interface ExternalRuntimeState {
   boundAt?: string | null;
   lastErrorMessage?: string | null;
   updateAvailable: boolean;
-  launchCommandSource: 'platform' | 'agent' | 'unset' | string;
-  resolvedLaunchCommandTemplate?: string | null;
+  runtimeCompatible?: boolean;
+  compatibilityMessage?: string | null;
   localStatusUrl?: string | null;
   localStatusPort?: number | null;
   lastDispatchAction?: string | null;
@@ -25,7 +25,6 @@ export interface ExternalRuntimeProfile {
   profile_id?: string;
   agent_id?: string;
   path_allowlist: string[];
-  launch_command_template?: string | null;
   install_channel: string;
   desired_version: string;
   created_at?: string;

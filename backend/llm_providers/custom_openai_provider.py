@@ -16,6 +16,7 @@ from langchain_core.messages import (
     BaseMessage,
     HumanMessage,
     SystemMessage,
+    ToolMessage,
 )
 from langchain_core.messages.tool import ToolCallChunk
 from langchain_core.outputs import ChatGeneration, ChatGenerationChunk, ChatResult
@@ -283,9 +284,21 @@ class CustomOpenAIChat(BaseChatModel):
             if isinstance(msg, HumanMessage):
                 result.append({"role": "user", "content": msg.content})
             elif isinstance(msg, AIMessage):
-                result.append({"role": "assistant", "content": msg.content})
+                payload: Dict[str, Any] = {"role": "assistant", "content": msg.content}
+                tool_calls = getattr(msg, "tool_calls", None) or []
+                if tool_calls:
+                    payload["tool_calls"] = tool_calls
+                result.append(payload)
             elif isinstance(msg, SystemMessage):
                 result.append({"role": "system", "content": msg.content})
+            elif isinstance(msg, ToolMessage):
+                result.append(
+                    {
+                        "role": "tool",
+                        "content": msg.content,
+                        "tool_call_id": getattr(msg, "tool_call_id", None),
+                    }
+                )
             else:
                 result.append({"role": "user", "content": str(msg.content)})
         return result

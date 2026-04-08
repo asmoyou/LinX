@@ -2,16 +2,20 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import hashlib
 import html
+import io
 import json
 import os
 import platform
+import shutil
 import socket
 import subprocess
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -24,6 +28,7 @@ import zipfile
 
 
 MAX_CAPTURE_CHARS = 30000
+MAX_TOOL_ITERATIONS = 8
 
 
 class FatalRuntimeStop(RuntimeError):
@@ -46,6 +51,7 @@ def build_runtime_status_payload(config_path: Path, config: dict[str, Any]) -> d
         "host_os": config.get("host_os"),
         "host_arch": config.get("host_arch"),
         "runtime_home": config.get("runtime_home"),
+        "python_executable": config.get("python_executable"),
         "local_status_url": config.get("local_status_url"),
         "local_status_port": config.get("local_status_port"),
         "last_dispatch_action": state.get("last_dispatch_action"),
@@ -268,6 +274,535 @@ def write_prompt_file(workspace_root: Path, dispatch_id: str, prompt: str) -> Pa
     return prompt_file
 
 
+def clear_workspace_root(workspace_root: Path) -> None:
+    if workspace_root.exists():
+        shutil.rmtree(workspace_root, ignore_errors=True)
+    workspace_root.mkdir(parents=True, exist_ok=True)
+
+
+def safe_extract_archive_bytes(archive_bytes: bytes, workspace_root: Path) -> None:
+    target_root = workspace_root.resolve()
+    with tarfile.open(fileobj=io.BytesIO(archive_bytes), mode="r:gz") as archive:
+        for member in archive.getmembers():
+            candidate = (target_root / member.name).resolve()
+            if candidate != target_root and target_root not in candidate.parents:
+                raise ValueError(f"Blocked unsafe archive member: {member.name}")
+        archive.extractall(path=target_root)
+
+
+def build_workspace_archive_bytes(workspace_root: Path) -> tuple[bytes, str]:
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w:gz") as archive:
+        archive.add(workspace_root, arcname=".")
+    data = buffer.getvalue()
+    return data, hashlib.sha256(data).hexdigest()
+
+
+def summarize_workspace(workspace_root: Path) -> tuple[int, int]:
+    total_bytes = 0
+    total_files = 0
+    if not workspace_root.exists():
+        return total_bytes, total_files
+    for item in workspace_root.rglob("*"):
+        if not item.is_file():
+            continue
+        try:
+            total_bytes += int(item.stat().st_size)
+            total_files += 1
+        except OSError:
+            continue
+    return total_bytes, total_files
+
+
+def post_dispatch_event(
+    *,
+    config: dict[str, Any],
+    dispatch_id: str,
+    event_type: str,
+    payload: dict[str, Any],
+) -> dict[str, Any] | None:
+    url = f"{config['control_plane']}/api/v1/external-runtime/dispatches/{dispatch_id}/events"
+    _status, data = request_json(
+        url=url,
+        method="POST",
+        payload={"event_type": event_type, "payload": payload},
+        request_headers=headers(str(config["machine_token"])),
+        timeout=60,
+    )
+    return data
+
+
+def download_conversation_workspace_snapshot(
+    *,
+    config: dict[str, Any],
+    conversation_id: str,
+) -> dict[str, Any] | None:
+    status, data = request_json(
+        url=(
+            f"{config['control_plane']}/api/v1/external-runtime/conversations/"
+            f"{conversation_id}/workspace/download"
+        ),
+        request_headers=headers(str(config["machine_token"])),
+        timeout=180,
+        allow_statuses={404},
+    )
+    if status == 404:
+        return None
+    return data or None
+
+
+def upload_conversation_workspace_snapshot(
+    *,
+    config: dict[str, Any],
+    conversation_id: str,
+    workspace_root: Path,
+) -> dict[str, Any] | None:
+    archive_bytes, checksum = build_workspace_archive_bytes(workspace_root)
+    workspace_bytes, workspace_files = summarize_workspace(workspace_root)
+    _status, data = request_json(
+        url=(
+            f"{config['control_plane']}/api/v1/external-runtime/conversations/"
+            f"{conversation_id}/workspace/upload"
+        ),
+        method="POST",
+        payload={
+            "archive_base64": base64.b64encode(archive_bytes).decode("utf-8"),
+            "workspace_bytes_estimate": workspace_bytes,
+            "workspace_file_count_estimate": workspace_files,
+            "snapshot_status": "ready",
+        },
+        request_headers=headers(str(config["machine_token"])),
+        timeout=300,
+    )
+    response = data or {}
+    response.setdefault("checksum", checksum)
+    response.setdefault("size_bytes", len(archive_bytes))
+    return response
+
+
+def download_run_workspace_snapshot(
+    *,
+    config: dict[str, Any],
+    run_id: str,
+) -> dict[str, Any] | None:
+    status, data = request_json(
+        url=f"{config['control_plane']}/api/v1/external-runtime/runs/{run_id}/workspace/download",
+        request_headers=headers(str(config["machine_token"])),
+        timeout=180,
+        allow_statuses={404},
+    )
+    if status == 404:
+        return None
+    return data or None
+
+
+def upload_run_workspace_snapshot(
+    *,
+    config: dict[str, Any],
+    run_id: str,
+    workspace_root: Path,
+) -> dict[str, Any] | None:
+    archive_bytes, checksum = build_workspace_archive_bytes(workspace_root)
+    workspace_bytes, workspace_files = summarize_workspace(workspace_root)
+    _status, data = request_json(
+        url=f"{config['control_plane']}/api/v1/external-runtime/runs/{run_id}/workspace/upload",
+        method="POST",
+        payload={
+            "archive_base64": base64.b64encode(archive_bytes).decode("utf-8"),
+            "workspace_bytes_estimate": workspace_bytes,
+            "workspace_file_count_estimate": workspace_files,
+            "snapshot_status": "ready",
+        },
+        request_headers=headers(str(config["machine_token"])),
+        timeout=300,
+    )
+    response = data or {}
+    response.setdefault("checksum", checksum)
+    response.setdefault("size_bytes", len(archive_bytes))
+    return response
+
+
+def restore_conversation_workspace_if_needed(
+    *,
+    config: dict[str, Any],
+    conversation_id: str,
+    workspace_root: Path,
+) -> int | None:
+    if workspace_root.exists():
+        try:
+            if any(workspace_root.iterdir()):
+                return None
+        except OSError:
+            pass
+    snapshot_payload = download_conversation_workspace_snapshot(
+        config=config,
+        conversation_id=conversation_id,
+    )
+    if not snapshot_payload:
+        return None
+    archive_base64 = str(snapshot_payload.get("archive_base64") or "").strip()
+    if not archive_base64:
+        return None
+    archive_bytes = base64.b64decode(archive_base64.encode("utf-8"))
+    expected_checksum = str(snapshot_payload.get("checksum") or "").strip()
+    if expected_checksum:
+        digest = hashlib.sha256(archive_bytes).hexdigest()
+        if digest != expected_checksum:
+            raise ValueError("Conversation workspace snapshot checksum mismatch")
+    clear_workspace_root(workspace_root)
+    safe_extract_archive_bytes(archive_bytes, workspace_root)
+    return int(snapshot_payload.get("generation") or 0)
+
+
+def restore_run_workspace_if_needed(
+    *,
+    config: dict[str, Any],
+    run_id: str,
+    workspace_root: Path,
+) -> bool:
+    if workspace_root.exists():
+        try:
+            if any(workspace_root.iterdir()):
+                return False
+        except OSError:
+            pass
+    snapshot_payload = download_run_workspace_snapshot(config=config, run_id=run_id)
+    if not snapshot_payload:
+        return False
+    archive_base64 = str(snapshot_payload.get("archive_base64") or "").strip()
+    if not archive_base64:
+        return False
+    archive_bytes = base64.b64decode(archive_base64.encode("utf-8"))
+    clear_workspace_root(workspace_root)
+    safe_extract_archive_bytes(archive_bytes, workspace_root)
+    return True
+
+
+def normalize_workspace_attachment_path(value: Any) -> str | None:
+    normalized = str(value or "").replace("\\", "/").strip().lstrip("/")
+    normalized = normalized.strip("/")
+    if not normalized or ".." in normalized:
+        return None
+    return normalized
+
+
+def resolve_workspace_path(workspace_root: Path, relative_path: str) -> Path:
+    candidate = (workspace_root / relative_path).resolve()
+    root = workspace_root.resolve()
+    if candidate != root and root not in candidate.parents:
+        raise ValueError(f"Blocked unsafe workspace path: {relative_path}")
+    return candidate
+
+
+def download_runtime_attachment_bytes(*, config: dict[str, Any], storage_ref: str) -> bytes:
+    query = urllib.parse.urlencode({"storage_ref": storage_ref})
+    url = f"{config['control_plane']}/api/v1/external-runtime/attachments/download?{query}"
+    request = urllib.request.Request(url=url, method="GET")
+    for key, value in headers(str(config["machine_token"])).items():
+        if key.lower() == "content-type":
+            continue
+        request.add_header(key, value)
+    try:
+        with urllib.request.urlopen(request, timeout=120) as response:
+            return response.read()
+    except urllib.error.HTTPError as exc:
+        if exc.code == 401:
+            raise FatalRuntimeStop("external_agent_machine_token_invalid") from exc
+        raise
+
+
+def hydrate_conversation_attachments(
+    *,
+    config: dict[str, Any],
+    attachments: list[dict[str, Any]],
+    workspace_root: Path,
+) -> int:
+    written = 0
+    for attachment in attachments:
+        storage_ref = str(attachment.get("storage_ref") or "").strip()
+        workspace_path = normalize_workspace_attachment_path(attachment.get("workspace_path"))
+        if not storage_ref or not workspace_path:
+            continue
+        destination = resolve_workspace_path(workspace_root, workspace_path)
+        if destination.exists():
+            continue
+        payload = download_runtime_attachment_bytes(config=config, storage_ref=storage_ref)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(payload)
+        written += 1
+    return written
+
+
+def call_llm_proxy(
+    *,
+    config: dict[str, Any],
+    messages: list[dict[str, Any]],
+    tools: list[dict[str, Any]],
+    temperature: Any = None,
+    max_tokens: Any = None,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "messages": messages,
+        "tools": tools,
+    }
+    if temperature is not None:
+        payload["temperature"] = temperature
+    if max_tokens is not None:
+        payload["max_tokens"] = max_tokens
+    _status, data = request_json(
+        url=f"{config['control_plane']}/api/v1/external-runtime/llm/chat",
+        method="POST",
+        payload=payload,
+        request_headers=headers(str(config["machine_token"])),
+        timeout=180,
+    )
+    return data or {}
+
+
+def build_bash_tool_schema() -> list[dict[str, Any]]:
+    return [
+        {
+            "type": "function",
+            "function": {
+                "name": "bash",
+                "description": (
+                    "Execute one shell command on the bound Runtime Host inside the current "
+                    "workspace. Use this to inspect files, edit project contents, and run local checks."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "command": {
+                            "type": "string",
+                            "description": "The shell command to execute.",
+                        }
+                    },
+                    "required": ["command"],
+                },
+            },
+        }
+    ]
+
+
+def normalize_tool_call_arguments(raw_value: Any) -> dict[str, Any]:
+    if isinstance(raw_value, dict):
+        return raw_value
+    if isinstance(raw_value, str):
+        try:
+            parsed = json.loads(raw_value)
+        except json.JSONDecodeError:
+            return {}
+        if isinstance(parsed, dict):
+            return parsed
+    return {}
+
+
+def execute_bash_tool(*, workspace_root: Path, command: str) -> tuple[bool, str]:
+    env = os.environ.copy()
+    env["LINX_WORKSPACE_ROOT"] = str(workspace_root)
+    process = subprocess.run(
+        command,
+        cwd=str(workspace_root),
+        shell=True,
+        text=True,
+        capture_output=True,
+        timeout=300,
+        env=env,
+    )
+    stdout = str(process.stdout or "")[-MAX_CAPTURE_CHARS:]
+    stderr = str(process.stderr or "")[-MAX_CAPTURE_CHARS:]
+    summary_parts = [
+        f"command={command}",
+        f"returncode={process.returncode}",
+    ]
+    if stdout:
+        summary_parts.append(f"stdout:\n{stdout}")
+    if stderr:
+        summary_parts.append(f"stderr:\n{stderr}")
+    return process.returncode == 0, "\n\n".join(summary_parts).strip()
+
+
+def collect_workspace_artifacts(workspace_root: Path) -> list[dict[str, Any]]:
+    artifacts: list[dict[str, Any]] = []
+    candidates = []
+    for preferred in ("output", "workspace/output"):
+        candidate = workspace_root / preferred
+        if candidate.exists():
+            candidates.append(candidate)
+    root = candidates[0] if candidates else workspace_root
+    if not root.exists():
+        return artifacts
+    for item in sorted(root.rglob("*")):
+        if not item.is_file():
+            continue
+        try:
+            relative = item.relative_to(workspace_root)
+            artifacts.append(
+                {
+                    "name": item.name,
+                    "path": f"/workspace/{str(relative).replace(os.sep, '/')}",
+                    "size": int(item.stat().st_size),
+                    "is_dir": False,
+                }
+            )
+        except OSError:
+            continue
+        if len(artifacts) >= 50:
+            break
+    return artifacts
+
+
+def build_runtime_messages(
+    *,
+    system_prompt: str,
+    history: list[dict[str, Any]],
+    current_message: dict[str, Any],
+) -> list[dict[str, Any]]:
+    messages: list[dict[str, Any]] = []
+    if system_prompt.strip():
+        messages.append({"role": "system", "content": system_prompt})
+    messages.extend(history)
+    messages.append(current_message)
+    return messages
+
+
+def run_native_agent_loop(
+    *,
+    dispatch: dict[str, Any],
+    config: dict[str, Any],
+    workspace_root: Path,
+    system_prompt: str,
+    history: list[dict[str, Any]],
+    current_message: dict[str, Any],
+    temperature: Any = None,
+    max_tokens: Any = None,
+) -> tuple[bool, dict[str, Any], str | None, None]:
+    dispatch_id = str(dispatch.get("dispatch_id") or "dispatch")
+    workspace_root.mkdir(parents=True, exist_ok=True)
+    messages = build_runtime_messages(
+        system_prompt=system_prompt,
+        history=history,
+        current_message=current_message,
+    )
+    tools = build_bash_tool_schema()
+    rounds: list[dict[str, Any]] = []
+    post_dispatch_event(
+        config=config,
+        dispatch_id=dispatch_id,
+        event_type="start",
+        payload={"type": "start", "content": "Remote execution started on Runtime Host."},
+    )
+    for iteration in range(1, MAX_TOOL_ITERATIONS + 1):
+        post_dispatch_event(
+            config=config,
+            dispatch_id=dispatch_id,
+            event_type="thinking",
+            payload={"type": "thinking", "content": f"Runtime Host reasoning round {iteration}."},
+        )
+        llm_result = call_llm_proxy(
+            config=config,
+            messages=messages,
+            tools=tools,
+            temperature=temperature,
+            max_tokens=max_tokens,
+        )
+        content = str(llm_result.get("content") or "")
+        tool_calls = list(llm_result.get("tool_calls") or [])
+        usage = dict(llm_result.get("usage") or {})
+        finish_reason = str(llm_result.get("finish_reason") or "").strip() or None
+        if tool_calls:
+            messages.append(
+                {
+                    "role": "assistant",
+                    "content": content,
+                    "tool_calls": tool_calls,
+                }
+            )
+            round_record = {
+                "roundNumber": iteration,
+                "thinking": content,
+                "content": "",
+                "statusMessages": [],
+                "toolCalls": [],
+            }
+            for tool_call in tool_calls:
+                args = normalize_tool_call_arguments(
+                    tool_call.get("args")
+                    or tool_call.get("arguments")
+                    or ((tool_call.get("function") or {}).get("arguments"))
+                )
+                command = str(args.get("command") or "").strip()
+                if not command:
+                    continue
+                tool_label = f"bash: {command}"
+                post_dispatch_event(
+                    config=config,
+                    dispatch_id=dispatch_id,
+                    event_type="tool_call",
+                    payload={"type": "tool_call", "content": tool_label},
+                )
+                ok, tool_output = execute_bash_tool(
+                    workspace_root=workspace_root,
+                    command=command,
+                )
+                event_type = "tool_result" if ok else "tool_error"
+                post_dispatch_event(
+                    config=config,
+                    dispatch_id=dispatch_id,
+                    event_type=event_type,
+                    payload={"type": event_type, "content": tool_output},
+                )
+                round_record["toolCalls"].append(
+                    {
+                        "name": "bash",
+                        "arguments": {"command": command},
+                        "success": ok,
+                        "result": tool_output,
+                    }
+                )
+                messages.append(
+                    {
+                        "role": "tool",
+                        "content": tool_output,
+                        "tool_call_id": str(tool_call.get("id") or ""),
+                    }
+                )
+            if usage:
+                round_record["stats"] = usage
+            rounds.append(round_record)
+            continue
+
+        final_output = content.strip()
+        if final_output:
+            post_dispatch_event(
+                config=config,
+                dispatch_id=dispatch_id,
+                event_type="content",
+                payload={"type": "content", "content": final_output},
+            )
+        result_payload = {
+            "assistant_message": final_output,
+            "final_output": final_output,
+            "usage": usage,
+            "finish_reason": finish_reason,
+            "rounds": rounds,
+            "workspace_root": str(workspace_root),
+            "artifacts": collect_workspace_artifacts(workspace_root),
+        }
+        return True, result_payload, None, None
+
+    return (
+        False,
+        {
+            "assistant_message": "",
+            "rounds": rounds,
+            "workspace_root": str(workspace_root),
+        },
+        "Runtime Host exceeded the maximum native tool iterations.",
+        None,
+    )
+
+
 def execute_dispatch(
     dispatch: dict[str, Any],
     config: dict[str, Any],
@@ -298,16 +833,169 @@ def execute_dispatch(
             None,
             "unregister_and_shutdown",
         )
+    source_type = str(dispatch.get("source_type") or "").strip().lower()
+    dispatch_id = str(dispatch.get("dispatch_id") or "dispatch")
+    if source_type == "conversation_turn":
+        conversation_id = str(request_payload.get("conversation_id") or "").strip() or dispatch_id
+        workspace_root = (
+            Path(str(config.get("runtime_home") or Path(gettempdir()) / "linx-external-runtime"))
+            / "workspaces"
+            / "conversations"
+            / conversation_id
+            / "workspace"
+        )
+        restored_generation = restore_conversation_workspace_if_needed(
+            config=config,
+            conversation_id=conversation_id,
+            workspace_root=workspace_root,
+        )
+        if restored_generation is not None:
+            post_dispatch_event(
+                config=config,
+                dispatch_id=dispatch_id,
+                event_type="info",
+                payload={
+                    "type": "info",
+                    "content": (
+                        f"Restored conversation workspace snapshot generation {restored_generation} "
+                        "from the control plane."
+                    ),
+                },
+            )
+        hydrated_attachments = hydrate_conversation_attachments(
+            config=config,
+            attachments=list(request_payload.get("attachments") or []),
+            workspace_root=workspace_root,
+        )
+        if hydrated_attachments:
+            post_dispatch_event(
+                config=config,
+                dispatch_id=dispatch_id,
+                event_type="info",
+                payload={
+                    "type": "info",
+                    "content": (
+                        f"Downloaded {hydrated_attachments} attachment file(s) into "
+                        "/workspace/input/ on the Runtime Host."
+                    ),
+                },
+            )
+        system_prompt = str(request_payload.get("system_prompt") or "").strip()
+        if system_prompt:
+            system_prompt = (
+                f"{system_prompt}\n\n"
+                "You are executing on the user's bound Runtime Host. "
+                "Use the bash tool whenever you need to inspect or modify files on this machine. "
+                "Do not claim file changes unless you executed the necessary commands."
+            )
+        else:
+            system_prompt = (
+                "You are LinX's native external agent executor running on the user's Runtime Host. "
+                "Use the bash tool whenever local host access is needed. "
+                "Do not claim file changes unless you executed the necessary commands."
+            )
+        ok, result_payload, error_message, followup_action = run_native_agent_loop(
+            dispatch=dispatch,
+            config=config,
+            workspace_root=workspace_root,
+            system_prompt=system_prompt,
+            history=list(request_payload.get("conversation_history") or []),
+            current_message=dict(request_payload.get("current_message") or {"role": "user", "content": ""}),
+            temperature=request_payload.get("temperature"),
+            max_tokens=request_payload.get("max_tokens"),
+        )
+        if ok:
+            snapshot_payload = upload_conversation_workspace_snapshot(
+                config=config,
+                conversation_id=conversation_id,
+                workspace_root=workspace_root,
+            )
+            snapshot_generation = int((snapshot_payload or {}).get("generation") or 0)
+            result_payload["snapshot_generation"] = snapshot_generation
+            if snapshot_generation:
+                post_dispatch_event(
+                    config=config,
+                    dispatch_id=dispatch_id,
+                    event_type="info",
+                    payload={
+                        "type": "info",
+                        "content": (
+                            f"Uploaded conversation workspace snapshot generation {snapshot_generation} "
+                            "to the control plane."
+                        ),
+                    },
+                )
+        return ok, result_payload, error_message, followup_action
+    if source_type == "project_run_step":
+        prompt = str(request_payload.get("execution_prompt") or "").strip()
+        run_id = str(request_payload.get("run_id") or dispatch_id).strip() or dispatch_id
+        workspace_root = (
+            Path(str(config.get("runtime_home") or Path(gettempdir()) / "linx-external-runtime"))
+            / "workspaces"
+            / "runs"
+            / run_id
+            / "workspace"
+        )
+        restored_run_workspace = restore_run_workspace_if_needed(
+            config=config,
+            run_id=run_id,
+            workspace_root=workspace_root,
+        )
+        if restored_run_workspace:
+            post_dispatch_event(
+                config=config,
+                dispatch_id=dispatch_id,
+                event_type="info",
+                payload={
+                    "type": "info",
+                    "content": "Restored project run workspace from the control plane.",
+                },
+            )
+        write_prompt_file(workspace_root, dispatch_id, prompt)
+        system_prompt = (
+            "You are LinX's native external project executor running on the target Runtime Host. "
+            "Work inside the provided workspace root. Use the bash tool for file inspection, edits, "
+            "and local validation. Produce the requested project step result directly on this machine."
+        )
+        ok, result_payload, error_message, followup_action = run_native_agent_loop(
+            dispatch=dispatch,
+            config=config,
+            workspace_root=workspace_root,
+            system_prompt=system_prompt,
+            history=[],
+            current_message={"role": "user", "content": prompt},
+            temperature=request_payload.get("temperature"),
+            max_tokens=request_payload.get("max_tokens"),
+        )
+        if ok:
+            upload_run_workspace_snapshot(
+                config=config,
+                run_id=run_id,
+                workspace_root=workspace_root,
+            )
+            post_dispatch_event(
+                config=config,
+                dispatch_id=dispatch_id,
+                event_type="info",
+                payload={
+                    "type": "info",
+                    "content": "Uploaded updated project run workspace to the control plane.",
+                },
+            )
+        return ok, result_payload, error_message, followup_action
+
     launch_command_template = str(request_payload.get("launch_command_template") or "").strip()
     if not launch_command_template:
         return (
             False,
-            {"mode": "launch_command_template", "lease_note": "Launch command template is not configured."},
-            "Launch command template is not configured.",
+            {
+                "mode": "native_executor",
+                "lease_note": "Dispatch source type is not supported by this Runtime Host.",
+            },
+            "Dispatch source type is not supported by this Runtime Host.",
             None,
         )
 
-    dispatch_id = str(dispatch.get("dispatch_id") or "dispatch")
     prompt = str(request_payload.get("execution_prompt") or "").strip()
     workspace_root = Path(
         str(request_payload.get("run_workspace_root") or Path(gettempdir()) / "linx-external-runtime")
@@ -529,6 +1217,8 @@ def run() -> int:
     args = parse_args()
     config_path = Path(args.config).expanduser().resolve()
     config = load_config(config_path)
+    if not config.get("python_executable"):
+        config["python_executable"] = sys.executable
     server, local_status_url, local_status_port = start_local_status_server(config_path, config)
     save_json(config_path, config)
     write_state(
@@ -649,8 +1339,13 @@ def run() -> int:
                 config["last_dispatch_error_message"] = None
                 if followup_action == "reexec":
                     os.execv(
-                        sys.executable,
-                        [sys.executable, str(Path(sys.argv[0]).resolve()), "--config", str(config_path)],
+                        str(config.get("python_executable") or sys.executable),
+                        [
+                            str(config.get("python_executable") or sys.executable),
+                            str(Path(sys.argv[0]).resolve()),
+                            "--config",
+                            str(config_path),
+                        ],
                     )
                 if followup_action == "unregister_and_shutdown":
                     unregister_binding(config)

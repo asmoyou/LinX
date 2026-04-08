@@ -1,18 +1,24 @@
 from __future__ import annotations
 
+import contextlib
 from dataclasses import dataclass
+import base64
 from typing import Optional
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from fastapi.responses import PlainTextResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 
 from access_control.agent_access import load_accessible_agent_or_raise
 from access_control.permissions import CurrentUser, get_current_user
+from agent_framework.agent_conversation_runner import _build_llm_for_agent
 from api_gateway.feishu_publication_helpers import resolve_public_web_base_url
 from database.connection import get_db_session
+from database.models import AgentConversation
 from database.project_execution_models import ExternalAgentBinding
+from object_storage.minio_client import get_minio_client
 from project_execution.external_runtime_installer import (
     build_artifact_bytes,
     build_manifest,
@@ -25,7 +31,11 @@ from project_execution.external_runtime_installer import (
 )
 from project_execution.external_runtime_schemas import (
     ExternalAgentDispatchResponse,
+    ExternalDispatchEventCreateRequest,
+    ExternalDispatchEventResponse,
     ExternalAgentProfileResponse,
+    ExternalConversationWorkspaceDownloadResponse,
+    ExternalConversationWorkspaceUploadRequest,
     ExternalAgentProfileUpdateRequest,
     ExternalDispatchProgressRequest,
     ExternalInstallCommandRequest,
@@ -35,6 +45,8 @@ from project_execution.external_runtime_schemas import (
     ExternalRuntimeBootstrapResponse,
     ExternalRuntimeHeartbeatRequest,
     ExternalRuntimeHeartbeatResponse,
+    ExternalRuntimeLlmChatRequest,
+    ExternalRuntimeLlmChatResponse,
     ExternalRuntimeOverviewResponse,
     ExternalRuntimeStateResponse,
     ExternalUninstallCommandRequest,
@@ -85,8 +97,8 @@ def _to_state_response(state) -> ExternalRuntimeStateResponse:
         boundAt=state.bound_at,
         lastErrorMessage=state.last_error_message,
         updateAvailable=state.update_available,
-        launchCommandSource=state.launch_command_source,
-        resolvedLaunchCommandTemplate=state.resolved_launch_command_template,
+        runtimeCompatible=state.runtime_compatible,
+        compatibilityMessage=state.compatibility_message,
         localStatusUrl=state.local_status_url,
         localStatusPort=state.local_status_port,
         lastDispatchAction=state.last_dispatch_action,
@@ -160,7 +172,6 @@ async def update_external_runtime_profile(
         profile = service.update_profile(
             agent_id=agent.agent_id,
             path_allowlist=payload.pathAllowlist,
-            launch_command_template=payload.launchCommandTemplate,
             install_channel=payload.installChannel,
             desired_version=payload.desiredVersion,
         )
@@ -412,6 +423,191 @@ async def heartbeat_external_runtime(
         )
 
 
+def _to_langchain_message(message_payload):
+    role = str(message_payload.role or "").strip().lower()
+    content = message_payload.content
+    if role == "system":
+        return SystemMessage(content=content)
+    if role == "assistant":
+        return AIMessage(
+            content=content,
+            tool_calls=list(message_payload.tool_calls or []),
+        )
+    if role == "tool":
+        return ToolMessage(
+            content=str(content or ""),
+            tool_call_id=str(message_payload.tool_call_id or ""),
+        )
+    return HumanMessage(content=content)
+
+
+@host_router.post("/external-runtime/llm/chat", response_model=ExternalRuntimeLlmChatResponse)
+async def proxy_external_runtime_llm_chat(
+    payload: ExternalRuntimeLlmChatRequest,
+    principal: ExternalBindingPrincipal = Depends(get_current_external_agent_binding),
+):
+    with get_db_session() as session:
+        service = ExternalRuntimeService(session)
+        agent = service.get_agent(principal.agent_id)
+        llm = _build_llm_for_agent(
+            agent,
+            streaming=False,
+            temperature=payload.temperature,
+            max_tokens=payload.max_tokens,
+        )
+        runnable = (
+            llm.bind_tools(payload.tools, tool_choice="any")
+            if payload.tools
+            else llm
+        )
+        result = await runnable.ainvoke(
+            [_to_langchain_message(message_payload) for message_payload in payload.messages]
+        )
+        usage = dict(getattr(result, "response_metadata", {}).get("usage") or {})
+        finish_reason = getattr(result, "response_metadata", {}).get("finish_reason")
+        return ExternalRuntimeLlmChatResponse(
+            content=str(getattr(result, "content", "") or ""),
+            tool_calls=list(getattr(result, "tool_calls", None) or []),
+            usage=usage,
+            finish_reason=str(finish_reason or "") or None,
+        )
+
+
+@host_router.get(
+    "/external-runtime/conversations/{conversation_id}/workspace/download",
+    response_model=ExternalConversationWorkspaceDownloadResponse,
+)
+async def download_external_conversation_workspace(
+    conversation_id: str,
+    principal: ExternalBindingPrincipal = Depends(get_current_external_agent_binding),
+):
+    from project_execution.external_runtime_chat_bridge import (
+        get_external_conversation_workspace_snapshot,
+    )
+
+    conversation_uuid = parse_uuid(conversation_id, "conversation_id")
+    payload = get_external_conversation_workspace_snapshot(
+        conversation_id=conversation_uuid,
+        agent_id=principal.agent_id,
+    )
+    if payload is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Conversation snapshot not found")
+    return ExternalConversationWorkspaceDownloadResponse(**payload)
+
+
+@host_router.get(
+    "/external-runtime/runs/{run_id}/workspace/download",
+    response_model=ExternalConversationWorkspaceDownloadResponse,
+)
+async def download_external_run_workspace(
+    run_id: str,
+    principal: ExternalBindingPrincipal = Depends(get_current_external_agent_binding),
+):
+    from project_execution.external_runtime_run_bridge import get_external_run_workspace_archive
+
+    run_uuid = parse_uuid(run_id, "run_id")
+    payload = get_external_run_workspace_archive(run_id=run_uuid, agent_id=principal.agent_id)
+    if payload is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Run workspace not found")
+    return ExternalConversationWorkspaceDownloadResponse(
+        archive_base64=str(payload.get("archive_base64") or ""),
+        checksum=None,
+        generation=0,
+        size_bytes=int(payload.get("size_bytes") or 0),
+    )
+
+
+@host_router.post(
+    "/external-runtime/conversations/{conversation_id}/workspace/upload",
+    response_model=ExternalConversationWorkspaceDownloadResponse,
+)
+async def upload_external_conversation_workspace(
+    conversation_id: str,
+    payload: ExternalConversationWorkspaceUploadRequest,
+    principal: ExternalBindingPrincipal = Depends(get_current_external_agent_binding),
+):
+    from project_execution.external_runtime_chat_bridge import (
+        persist_external_conversation_workspace_snapshot,
+    )
+
+    conversation_uuid = parse_uuid(conversation_id, "conversation_id")
+    with get_db_session() as session:
+        conversation = (
+            session.query(AgentConversation)
+            .filter(AgentConversation.conversation_id == conversation_uuid)
+            .filter(AgentConversation.agent_id == principal.agent_id)
+            .first()
+        )
+        if conversation is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Conversation not found")
+
+    try:
+        archive_bytes = base64.b64decode(payload.archive_base64.encode("utf-8"))
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid workspace archive") from exc
+    snapshot = persist_external_conversation_workspace_snapshot(
+        conversation_id=conversation_uuid,
+        archive_bytes=archive_bytes,
+        workspace_bytes_estimate=payload.workspace_bytes_estimate,
+        workspace_file_count_estimate=payload.workspace_file_count_estimate,
+        snapshot_status=payload.snapshot_status,
+    )
+    if snapshot is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Conversation not found")
+    return ExternalConversationWorkspaceDownloadResponse(
+        archive_base64="",
+        checksum=snapshot.checksum,
+        generation=int(snapshot.generation or 0),
+        size_bytes=int(snapshot.size_bytes or 0),
+    )
+
+
+@host_router.post(
+    "/external-runtime/runs/{run_id}/workspace/upload",
+    response_model=ExternalConversationWorkspaceDownloadResponse,
+)
+async def upload_external_run_workspace(
+    run_id: str,
+    payload: ExternalConversationWorkspaceUploadRequest,
+    principal: ExternalBindingPrincipal = Depends(get_current_external_agent_binding),
+):
+    from project_execution.external_runtime_run_bridge import apply_external_run_workspace_archive
+
+    run_uuid = parse_uuid(run_id, "run_id")
+    try:
+        archive_bytes = base64.b64decode(payload.archive_base64.encode("utf-8"))
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid workspace archive") from exc
+    result = apply_external_run_workspace_archive(
+        run_id=run_uuid,
+        agent_id=principal.agent_id,
+        archive_bytes=archive_bytes,
+    )
+    if result is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Run workspace not found")
+    return ExternalConversationWorkspaceDownloadResponse(
+        archive_base64="",
+        checksum=None,
+        generation=0,
+        size_bytes=int(result.get("size_bytes") or 0),
+    )
+
+
+@host_router.get("/external-runtime/attachments/download")
+async def download_external_runtime_attachment(
+    storage_ref: str = Query(..., min_length=1),
+    _principal: ExternalBindingPrincipal = Depends(get_current_external_agent_binding),
+):
+    minio = get_minio_client()
+    parsed = minio.parse_object_reference(storage_ref)
+    if not parsed:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Attachment not found")
+    bucket_name, object_key = parsed
+    file_stream, metadata = minio.download_file(bucket_name, object_key)
+    media_type = str((metadata or {}).get("content_type") or "application/octet-stream")
+    return Response(content=file_stream.read(), media_type=media_type)
+
+
 @host_router.post("/external-runtime/update-check", response_model=ExternalRuntimeUpdateCheckResponse)
 async def update_check_external_runtime(
     principal: ExternalBindingPrincipal = Depends(get_current_external_agent_binding),
@@ -457,6 +653,34 @@ async def ack_external_dispatch(
         return ExternalAgentDispatchResponse.model_validate(dispatch)
 
 
+@host_router.post(
+    "/external-runtime/dispatches/{dispatch_id}/events",
+    response_model=ExternalDispatchEventResponse,
+)
+async def append_external_dispatch_event(
+    dispatch_id: str,
+    payload: ExternalDispatchEventCreateRequest,
+    principal: ExternalBindingPrincipal = Depends(get_current_external_agent_binding),
+):
+    with get_db_session() as session:
+        service = ExternalRuntimeService(session)
+        binding = (
+            session.query(ExternalAgentBinding)
+            .filter(ExternalAgentBinding.binding_id == principal.binding_id)
+            .first()
+        )
+        dispatch = service.get_dispatch_for_binding(
+            binding=binding,
+            dispatch_id=parse_uuid(dispatch_id, "dispatch_id"),
+        )
+        event = service.append_dispatch_event(
+            dispatch=dispatch,
+            event_type=payload.event_type,
+            payload=payload.payload,
+        )
+        return ExternalDispatchEventResponse.model_validate(event)
+
+
 @host_router.post("/external-runtime/dispatches/{dispatch_id}/progress", response_model=ExternalAgentDispatchResponse)
 async def progress_external_dispatch(
     dispatch_id: str,
@@ -487,6 +711,18 @@ async def complete_external_dispatch(
         binding = session.query(ExternalAgentBinding).filter(ExternalAgentBinding.binding_id == principal.binding_id).first()
         dispatch = service.get_dispatch_for_binding(binding=binding, dispatch_id=parse_uuid(dispatch_id, "dispatch_id"))
         dispatch = service.complete_dispatch(dispatch=dispatch, result_payload=payload.result_payload)
+        if dispatch.source_type == "conversation_turn":
+            from project_execution.external_runtime_chat_bridge import (
+                persist_external_conversation_completion,
+            )
+
+            raw_conversation_id = str((dispatch.request_payload or {}).get("conversation_id") or "").strip()
+            if raw_conversation_id:
+                with contextlib.suppress(ValueError):
+                    persist_external_conversation_completion(
+                        conversation_id=UUID(raw_conversation_id),
+                        result_payload=dispatch.result_payload,
+                    )
         return ExternalAgentDispatchResponse.model_validate(dispatch)
 
 

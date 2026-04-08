@@ -25,8 +25,8 @@ class ExternalRuntimeStateResponse(BaseModel):
     boundAt: Optional[datetime] = None
     lastErrorMessage: Optional[str] = None
     updateAvailable: bool = False
-    launchCommandSource: str = "unset"
-    resolvedLaunchCommandTemplate: Optional[str] = None
+    runtimeCompatible: bool = True
+    compatibilityMessage: Optional[str] = None
     localStatusUrl: Optional[str] = None
     localStatusPort: Optional[int] = None
     lastDispatchAction: Optional[str] = None
@@ -36,7 +36,6 @@ class ExternalRuntimeStateResponse(BaseModel):
 
 class ExternalAgentProfileUpdateRequest(BaseModel):
     pathAllowlist: Optional[list[str]] = None
-    launchCommandTemplate: Optional[str] = None
     installChannel: Optional[str] = None
     desiredVersion: Optional[str] = None
 
@@ -45,7 +44,6 @@ class ExternalAgentProfileResponse(ORMModel):
     profile_id: UUID
     agent_id: UUID
     path_allowlist: list[str]
-    launch_command_template: Optional[str]
     install_channel: str
     desired_version: str
     created_at: datetime
@@ -143,6 +141,55 @@ class ExternalDispatchProgressRequest(BaseModel):
     status: str = Field(default="running", min_length=1, max_length=32)
     result_payload: dict[str, Any] = Field(default_factory=dict)
     error_message: Optional[str] = None
+
+
+class ExternalDispatchEventCreateRequest(BaseModel):
+    event_type: str = Field(..., min_length=1, max_length=64)
+    payload: dict[str, Any] = Field(default_factory=dict)
+
+
+class ExternalDispatchEventResponse(ORMModel):
+    event_id: UUID
+    dispatch_id: UUID
+    sequence_number: int
+    event_type: str
+    payload: dict[str, Any]
+    created_at: datetime
+
+
+class ExternalRuntimeLlmMessage(BaseModel):
+    role: str = Field(..., min_length=1, max_length=32)
+    content: Any
+    tool_call_id: Optional[str] = None
+    tool_calls: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class ExternalRuntimeLlmChatRequest(BaseModel):
+    messages: list[ExternalRuntimeLlmMessage] = Field(default_factory=list)
+    tools: list[dict[str, Any]] = Field(default_factory=list)
+    temperature: Optional[float] = None
+    max_tokens: Optional[int] = None
+
+
+class ExternalRuntimeLlmChatResponse(BaseModel):
+    content: str = ""
+    tool_calls: list[dict[str, Any]] = Field(default_factory=list)
+    usage: dict[str, Any] = Field(default_factory=dict)
+    finish_reason: Optional[str] = None
+
+
+class ExternalConversationWorkspaceDownloadResponse(BaseModel):
+    archive_base64: str
+    checksum: Optional[str] = None
+    generation: int = 0
+    size_bytes: int = 0
+
+
+class ExternalConversationWorkspaceUploadRequest(BaseModel):
+    archive_base64: str = Field(..., min_length=1)
+    workspace_bytes_estimate: int = Field(default=0, ge=0)
+    workspace_file_count_estimate: int = Field(default=0, ge=0)
+    snapshot_status: str = Field(default="ready", min_length=1, max_length=32)
 
 
 class ExternalAgentDispatchResponse(ORMModel):

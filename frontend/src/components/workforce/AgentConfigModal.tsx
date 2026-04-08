@@ -136,7 +136,6 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
   const [isLoadingExternalRuntime, setIsLoadingExternalRuntime] = useState(false);
   const [externalRuntimeTarget, setExternalRuntimeTarget] = useState<"linux" | "darwin" | "windows">("linux");
   const [externalPathAllowlist, setExternalPathAllowlist] = useState("");
-  const [externalLaunchCommandTemplate, setExternalLaunchCommandTemplate] = useState("");
   const [installCommand, setInstallCommand] = useState("");
   const [installCommandExpiresAt, setInstallCommandExpiresAt] = useState<string | null>(null);
   const [maintenanceCommand, setMaintenanceCommand] = useState("");
@@ -585,7 +584,6 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
             .split(/\n+/)
             .map((item) => item.trim())
             .filter(Boolean),
-          launchCommandTemplate: externalLaunchCommandTemplate.trim() || undefined,
           desiredVersion: externalRuntimeOverview?.profile?.desired_version || undefined,
         });
       }
@@ -719,7 +717,6 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
       const overview = await agentsApi.getExternalRuntime(agent.id);
       setExternalRuntimeOverview(overview);
       setExternalPathAllowlist((overview.profile.path_allowlist || []).join("\n"));
-      setExternalLaunchCommandTemplate(overview.profile.launch_command_template || "");
     } catch (error) {
       console.error("Failed to load external runtime overview:", error);
     } finally {
@@ -844,12 +841,10 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
           .split(/\n+/)
           .map((item) => item.trim())
           .filter(Boolean),
-        launchCommandTemplate: externalLaunchCommandTemplate.trim() || undefined,
         desiredVersion: externalRuntimeOverview?.profile?.desired_version || undefined,
       });
       setExternalRuntimeOverview(overview);
       setExternalPathAllowlist((overview.profile.path_allowlist || []).join("\n"));
-      setExternalLaunchCommandTemplate(overview.profile.launch_command_template || "");
       toast.success(
         t("agent.externalRuntimeProfileSaved", "Runtime Host settings saved"),
       );
@@ -871,18 +866,6 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
       defaultValue: status || "uninstalled",
     });
 
-  const formatLaunchCommandSourceLabel = (source?: string | null) => {
-    switch (source) {
-      case "agent":
-        return t("agent.launchCommandSource.agent", "Agent override");
-      case "platform":
-        return t("agent.launchCommandSource.platform", "Platform default");
-      case "unset":
-      default:
-        return t("agent.launchCommandSource.unset", "Not configured");
-    }
-  };
-
   const formatDispatchStatusLabel = (status?: string | null) => {
     if (!status) {
       return t("agent.externalRuntimeLastActionUnknown", "Unknown");
@@ -895,10 +878,10 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
     if (!state) {
       return t("agent.externalRuntimeSetupUnknown", "Runtime Host status is unavailable.");
     }
-    if (state.launchCommandSource === "unset") {
+    if (state.runtimeCompatible === false || state.status === "upgrade_required") {
       return t(
-        "agent.externalRuntimeSetupNeedsCommand",
-        "Runtime Host is installed, but no launch command is configured yet.",
+        "agent.externalRuntimeSetupUpgradeRequired",
+        "This Runtime Host must be upgraded before it can run LinX native remote execution.",
       );
     }
     switch (state.status) {
@@ -1495,16 +1478,16 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
 
                     <div className="rounded-xl border border-zinc-200/80 bg-white/70 p-4 dark:border-zinc-800 dark:bg-zinc-950/40">
                       <p className="text-xs font-semibold uppercase tracking-[0.18em] text-indigo-500">
-                        {t("agent.externalRuntimeStep3", "Step 3")}
+                        {t("agent.externalRuntimeStep3", "Optional")}
                       </p>
                       <p className="mt-2 text-sm font-semibold text-zinc-800 dark:text-zinc-100">
-                        {t("agent.externalRuntimeCommandTitle", "Confirm how this host launches the agent")}
+                        {t("agent.externalRuntimeCommandTitle", "Optional Runtime Host access settings")}
                       </p>
                       <p className="mt-1 text-sm text-zinc-600 dark:text-zinc-400">
-                        {t("agent.externalRuntimeCommandSource", {
-                          value: formatLaunchCommandSourceLabel(externalRuntimeOverview?.state.launchCommandSource),
-                          defaultValue: `Current source: ${formatLaunchCommandSourceLabel(externalRuntimeOverview?.state.launchCommandSource)}`,
-                        })}
+                        {t(
+                          "agent.externalRuntimeAccessSettingsHint",
+                          "Use these settings to constrain what paths the Runtime Host should touch. Native execution no longer requires a launch command template.",
+                        )}
                       </p>
                       <label className="mt-4 block text-sm font-semibold text-zinc-700 dark:text-zinc-300">
                         {t("agent.externalPathAllowlist", "Path Allowlist")}
@@ -1516,24 +1499,6 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
                           placeholder={t("agent.externalPathAllowlistPlaceholder", "One path per line")}
                         />
                       </label>
-                      <label className="mt-4 block text-sm font-semibold text-zinc-700 dark:text-zinc-300">
-                        {t("agent.externalLaunchCommandTemplate", "Launch Command Template")}
-                        <textarea
-                          value={externalLaunchCommandTemplate}
-                          onChange={(event) => setExternalLaunchCommandTemplate(event.target.value)}
-                          rows={4}
-                          className="mt-2 w-full rounded-xl border border-zinc-200 bg-white px-4 py-3 text-sm text-zinc-900 outline-none transition focus:border-indigo-400 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100"
-                          placeholder={t("agent.externalLaunchCommandTemplatePlaceholder", "Leave blank to inherit the platform default launch command")}
-                        />
-                      </label>
-                      {externalRuntimeOverview?.state.resolvedLaunchCommandTemplate ? (
-                        <textarea
-                          readOnly
-                          value={externalRuntimeOverview.state.resolvedLaunchCommandTemplate}
-                          rows={3}
-                          className="mt-4 w-full rounded-xl border border-zinc-200 bg-zinc-50 px-4 py-3 text-sm text-zinc-900 outline-none dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100"
-                        />
-                      ) : null}
                       <div className="mt-4 flex justify-end">
                         <button
                           type="button"

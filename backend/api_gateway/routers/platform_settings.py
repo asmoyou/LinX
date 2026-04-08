@@ -12,7 +12,6 @@ router = APIRouter()
 
 
 class ProjectExecutionSettings(BaseModel):
-    default_launch_command_template: str = Field(default="")
     planner_provider: str = Field(default="")
     planner_model: str = Field(default="")
     planner_temperature: float = Field(default=0.2, ge=0.0, le=2.0)
@@ -55,7 +54,13 @@ async def update_ui_experience(
 async def get_project_execution(current_user: CurrentUser = Depends(get_current_user)):
     _ensure_platform_settings_access(current_user)
     with get_db_session() as session:
-        return ProjectExecutionSettings(**get_project_execution_settings(session))
+        settings = get_project_execution_settings(session)
+        return ProjectExecutionSettings(
+            planner_provider=str(settings.get("planner_provider") or ""),
+            planner_model=str(settings.get("planner_model") or ""),
+            planner_temperature=float(settings.get("planner_temperature") or 0.2),
+            planner_max_tokens=int(settings.get("planner_max_tokens") or 4000),
+        )
 
 
 @router.put("/settings/project-execution", response_model=ProjectExecutionSettings)
@@ -65,6 +70,13 @@ async def update_project_execution(
 ):
     _ensure_platform_settings_access(current_user)
     with get_db_session() as session:
-        upsert_project_execution_settings(session, request.model_dump())
+        existing = get_project_execution_settings(session)
+        upsert_project_execution_settings(
+            session,
+            {
+                **existing,
+                **request.model_dump(),
+            },
+        )
         session.commit()
     return request

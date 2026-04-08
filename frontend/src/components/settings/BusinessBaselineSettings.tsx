@@ -102,7 +102,8 @@ export const BusinessBaselineSettings = ({ onOpenTab }: BusinessBaselineSettings
 
         if (projectExecutionResult.status === 'fulfilled') {
           nextSummary.hasProjectExecutionPolicy = Boolean(
-            projectExecutionResult.value.default_launch_command_template?.trim(),
+            projectExecutionResult.value.planner_provider?.trim() ||
+              projectExecutionResult.value.planner_model?.trim(),
           );
         }
 

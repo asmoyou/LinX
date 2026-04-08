@@ -121,7 +121,10 @@ def upsert_ui_experience_settings(
 
 
 DEFAULT_PROJECT_EXECUTION_SETTINGS: dict[str, Any] = {
-    "default_launch_command_template": "",
+    "default_launch_command_template": (
+        'codex exec --skip-git-repo-check --sandbox danger-full-access '
+        '--cd "$LINX_WORKSPACE_ROOT" "$LINX_AGENT_PROMPT"'
+    ),
     "planner_provider": "",
     "planner_model": "",
     "planner_temperature": 0.2,
@@ -132,6 +135,15 @@ DEFAULT_PROJECT_EXECUTION_SETTINGS: dict[str, Any] = {
 def merge_project_execution_settings(value: dict[str, Any] | None) -> dict[str, Any]:
     payload = value if isinstance(value, dict) else {}
     legacy_template = str(payload.get("external_agent_command_template") or "").strip()
+    if "default_launch_command_template" in payload:
+        default_launch_command_template = str(
+            payload.get("default_launch_command_template") or ""
+        ).strip()
+    else:
+        default_launch_command_template = (
+            legacy_template
+            or str(DEFAULT_PROJECT_EXECUTION_SETTINGS["default_launch_command_template"])
+        )
     try:
         planner_temperature = float(payload.get("planner_temperature", 0.2))
     except (TypeError, ValueError):
@@ -141,9 +153,7 @@ def merge_project_execution_settings(value: dict[str, Any] | None) -> dict[str, 
     except (TypeError, ValueError):
         planner_max_tokens = 4000
     return {
-        "default_launch_command_template": str(
-            payload.get("default_launch_command_template") or legacy_template
-        ).strip(),
+        "default_launch_command_template": default_launch_command_template,
         "planner_provider": str(payload.get("planner_provider") or "").strip(),
         "planner_model": str(payload.get("planner_model") or "").strip(),
         "planner_temperature": max(0.0, min(planner_temperature, 2.0)),

@@ -13,6 +13,7 @@ from database.models import Agent
 from database.project_execution_models import (
     ExternalAgentBinding,
     ExternalAgentDispatch,
+    ExternalAgentDispatchEvent,
     ExternalAgentInstallToken,
     ExternalAgentProfile,
     ProjectRun,
@@ -20,10 +21,9 @@ from database.project_execution_models import (
     ProjectTask,
 )
 from project_execution.service import flush_and_refresh, reconcile_run_state, retire_ephemeral_run_agents
-from shared.platform_settings import get_project_execution_settings
 from shared.secret_crypto import sha256_text
 
-CURRENT_EXTERNAL_RUNTIME_VERSION = "0.1.0"
+CURRENT_EXTERNAL_RUNTIME_VERSION = "0.2.0"
 EXTERNAL_RUNTIME_OFFLINE_SECONDS = 90
 EXTERNAL_INSTALL_CODE_TTL_MINUTES = 15
 EXTERNAL_DISPATCH_ACK_TIMEOUT_SECONDS = 60
@@ -46,12 +46,12 @@ class ExternalRuntimeState:
     host_arch: Optional[str]
     current_version: Optional[str]
     desired_version: Optional[str]
+    runtime_compatible: bool
+    compatibility_message: Optional[str]
     last_seen_at: Optional[datetime]
     bound_at: Optional[datetime]
     last_error_message: Optional[str]
     update_available: bool
-    launch_command_source: str
-    resolved_launch_command_template: Optional[str]
     local_status_url: Optional[str]
     local_status_port: Optional[int]
     last_dispatch_action: Optional[str]
@@ -124,6 +124,20 @@ class ExternalRuntimeService:
         self.session.add(profile)
         return flush_and_refresh(self.session, profile)
 
+    @staticmethod
+    def is_runtime_compatible(*, current_version: Optional[str]) -> bool:
+        return str(current_version or "").strip() == CURRENT_EXTERNAL_RUNTIME_VERSION
+
+    def build_compatibility_message(self, *, current_version: Optional[str]) -> Optional[str]:
+        if self.is_runtime_compatible(current_version=current_version):
+            return None
+        if not str(current_version or "").strip():
+            return "Runtime Host must be reinstalled to enable native remote execution."
+        return (
+            "Runtime Host upgrade required for native remote execution "
+            f"(current: {current_version}, required: {CURRENT_EXTERNAL_RUNTIME_VERSION})."
+        )
+
     def get_profile(self, *, agent_id: UUID) -> Optional[ExternalAgentProfile]:
         return (
             self.session.query(ExternalAgentProfile)
@@ -131,41 +145,17 @@ class ExternalRuntimeService:
             .first()
         )
 
-    def get_platform_launch_command_template(self) -> str:
-        settings = get_project_execution_settings(self.session)
-        return str(settings.get("default_launch_command_template") or "").strip()
-
-    def resolve_launch_command_template(
-        self,
-        *,
-        agent_id: UUID,
-        profile: Optional[ExternalAgentProfile] = None,
-    ) -> tuple[Optional[str], str]:
-        resolved_profile = profile if profile is not None else self.get_profile(agent_id=agent_id)
-        profile_template = str(
-            getattr(resolved_profile, "launch_command_template", "") or ""
-        ).strip()
-        if profile_template:
-            return profile_template, "agent"
-        platform_template = self.get_platform_launch_command_template()
-        if platform_template:
-            return platform_template, "platform"
-        return None, "unset"
-
     def update_profile(
         self,
         *,
         agent_id: UUID,
         path_allowlist: Optional[list[str]] = None,
-        launch_command_template: Optional[str] = None,
         install_channel: Optional[str] = None,
         desired_version: Optional[str] = None,
     ) -> ExternalAgentProfile:
         profile = self.get_or_create_profile(agent_id=agent_id)
         if path_allowlist is not None:
             profile.path_allowlist = path_allowlist
-        if launch_command_template is not None:
-            profile.launch_command_template = launch_command_template or None
         if install_channel is not None:
             profile.install_channel = install_channel or "stable"
         if desired_version is not None:
@@ -199,10 +189,6 @@ class ExternalRuntimeService:
         if not self.is_external_runtime_type(getattr(agent, "runtime_preference", None)):
             return None
         profile = self.get_profile(agent_id=agent.agent_id)
-        resolved_launch_command_template, launch_command_source = self.resolve_launch_command_template(
-            agent_id=agent.agent_id,
-            profile=profile,
-        )
         binding = self.get_active_binding(agent_id=agent.agent_id)
         if binding is None:
             desired_version = profile.desired_version if profile else CURRENT_EXTERNAL_RUNTIME_VERSION
@@ -216,12 +202,14 @@ class ExternalRuntimeService:
                 host_arch=None,
                 current_version=None,
                 desired_version=desired_version,
+                runtime_compatible=False,
+                compatibility_message=(
+                    "Install Runtime Host to enable native remote execution."
+                ),
                 last_seen_at=None,
                 bound_at=None,
                 last_error_message=None,
                 update_available=False,
-                launch_command_source=launch_command_source,
-                resolved_launch_command_template=resolved_launch_command_template,
                 local_status_url=None,
                 local_status_port=None,
                 last_dispatch_action=None,
@@ -238,12 +226,13 @@ class ExternalRuntimeService:
                 effective_status = "offline"
             else:
                 effective_status = "online"
-        launch_command_configured = bool(resolved_launch_command_template)
+        runtime_compatible = self.is_runtime_compatible(current_version=binding.current_version)
+        compatibility_message = self.build_compatibility_message(current_version=binding.current_version)
+        if effective_status == "online" and not runtime_compatible:
+            effective_status = "upgrade_required"
         last_error_message = binding.last_error_message
-        if effective_status == "online" and not launch_command_configured:
-            last_error_message = (
-                last_error_message or "Launch command template is not configured"
-            )
+        if effective_status == "upgrade_required":
+            last_error_message = last_error_message or compatibility_message
         update_available = bool(binding.current_version and desired_version and binding.current_version != desired_version)
         local_status_url = None
         local_status_port = None
@@ -265,19 +254,19 @@ class ExternalRuntimeService:
         return ExternalRuntimeState(
             status=effective_status,
             bound=True,
-            available_for_conversation=effective_status == "online" and launch_command_configured,
-            available_for_execution=effective_status == "online" and launch_command_configured,
+            available_for_conversation=effective_status == "online" and runtime_compatible,
+            available_for_execution=effective_status == "online" and runtime_compatible,
             host_name=binding.host_name,
             host_os=binding.host_os,
             host_arch=binding.host_arch,
             current_version=binding.current_version,
             desired_version=desired_version,
+            runtime_compatible=runtime_compatible,
+            compatibility_message=compatibility_message,
             last_seen_at=binding.last_seen_at,
             bound_at=binding.bound_at,
             last_error_message=last_error_message,
             update_available=update_available,
-            launch_command_source=launch_command_source,
-            resolved_launch_command_template=resolved_launch_command_template,
             local_status_url=local_status_url,
             local_status_port=local_status_port,
             last_dispatch_action=last_dispatch_action,
@@ -289,9 +278,9 @@ class ExternalRuntimeService:
         state = self.summarize_state(agent=agent)
         if state is None:
             return None
-        if state.status == "online" and not state.resolved_launch_command_template:
-            raise ExternalRuntimeUnavailableError("external_agent_launch_command_not_configured")
         if not state.available_for_execution:
+            if not state.runtime_compatible:
+                raise ExternalRuntimeUnavailableError("external_agent_upgrade_required")
             raise ExternalRuntimeUnavailableError(error_detail)
         return state
 
@@ -350,7 +339,7 @@ class ExternalRuntimeService:
                 "-UseBasicParsing | iex\""
             )
         return (
-            f"curl -fsSL {base_url}/api/v1/agents/{agent_id}/external-runtime/install.sh?target={target_os}&code={code} | bash"
+            f"curl -fsSL '{base_url}/api/v1/agents/{agent_id}/external-runtime/install.sh?target={target_os}&code={code}' | bash"
         )
 
     def build_update_command(self, *, agent_id: UUID, target_os: str, base_url: str) -> str:
@@ -360,7 +349,7 @@ class ExternalRuntimeService:
                 "powershell -NoProfile -ExecutionPolicy Bypass -Command "
                 f"\"iwr '{base_url}/api/v1/agents/{agent_id}/external-runtime/update.ps1?target=windows' -UseBasicParsing | iex\""
             )
-        return f"curl -fsSL {base_url}/api/v1/agents/{agent_id}/external-runtime/update.sh?target={target_os} | bash"
+        return f"curl -fsSL '{base_url}/api/v1/agents/{agent_id}/external-runtime/update.sh?target={target_os}' | bash"
 
     def build_uninstall_command(self, *, agent_id: UUID, target_os: str, base_url: str) -> str:
         target_os = self.validate_target_os(target_os)
@@ -369,7 +358,7 @@ class ExternalRuntimeService:
                 "powershell -NoProfile -ExecutionPolicy Bypass -Command "
                 f"\"iwr '{base_url}/api/v1/agents/{agent_id}/external-runtime/uninstall.ps1?target=windows' -UseBasicParsing | iex\""
             )
-        return f"curl -fsSL {base_url}/api/v1/agents/{agent_id}/external-runtime/uninstall.sh?target={target_os} | bash"
+        return f"curl -fsSL '{base_url}/api/v1/agents/{agent_id}/external-runtime/uninstall.sh?target={target_os}' | bash"
 
     def bootstrap_binding(
         self,
@@ -471,15 +460,10 @@ class ExternalRuntimeService:
         if binding is None:
             raise ExternalRuntimeUnavailableError("external_agent_not_online")
         state = self.summarize_state(agent=self.get_agent(agent_id))
-        if state is not None and not state.resolved_launch_command_template:
-            raise ExternalRuntimeUnavailableError("external_agent_launch_command_not_configured")
         if state is None or not state.available_for_execution:
+            if state is not None and not state.runtime_compatible:
+                raise ExternalRuntimeUnavailableError("external_agent_upgrade_required")
             raise ExternalRuntimeUnavailableError("external_agent_not_online")
-        dispatch_payload = {
-            **(request_payload or {}),
-            "launch_command_template": state.resolved_launch_command_template,
-            "launch_command_source": state.launch_command_source,
-        }
         dispatch = ExternalAgentDispatch(
             agent_id=agent_id,
             binding_id=binding.binding_id,
@@ -489,7 +473,7 @@ class ExternalRuntimeService:
             source_type=source_type,
             source_id=source_id,
             runtime_type=runtime_type,
-            request_payload=dispatch_payload,
+            request_payload=request_payload or {},
             status="pending",
             expires_at=self.utc_now() + timedelta(seconds=EXTERNAL_DISPATCH_ACK_TIMEOUT_SECONDS),
         )
@@ -508,7 +492,10 @@ class ExternalRuntimeService:
             raise ExternalRuntimeUnavailableError("external_agent_not_online")
         agent = self.get_agent(agent_id)
         state = self.summarize_state(agent=agent)
-        if state is None or state.status != "online":
+        if state is None or state.status not in {"online", "upgrade_required"}:
+            if state is not None and not state.runtime_compatible:
+                if state.status != "upgrade_required":
+                    raise ExternalRuntimeUnavailableError("external_agent_upgrade_required")
             raise ExternalRuntimeUnavailableError("external_agent_not_online")
         dispatch = ExternalAgentDispatch(
             agent_id=agent_id,
@@ -548,6 +535,42 @@ class ExternalRuntimeService:
         if dispatch is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Dispatch not found")
         return dispatch
+
+    def append_dispatch_event(
+        self,
+        *,
+        dispatch: ExternalAgentDispatch,
+        event_type: str,
+        payload: Optional[dict[str, Any]] = None,
+    ) -> ExternalAgentDispatchEvent:
+        next_sequence = (
+            self.session.query(ExternalAgentDispatchEvent)
+            .filter(ExternalAgentDispatchEvent.dispatch_id == dispatch.dispatch_id)
+            .count()
+            + 1
+        )
+        event = ExternalAgentDispatchEvent(
+            dispatch_id=dispatch.dispatch_id,
+            sequence_number=next_sequence,
+            event_type=str(event_type or "info").strip() or "info",
+            payload=payload or {},
+        )
+        self.session.add(event)
+        return flush_and_refresh(self.session, event)
+
+    def list_dispatch_events(
+        self,
+        *,
+        dispatch_id: UUID,
+        after_sequence: int = 0,
+    ) -> list[ExternalAgentDispatchEvent]:
+        return (
+            self.session.query(ExternalAgentDispatchEvent)
+            .filter(ExternalAgentDispatchEvent.dispatch_id == dispatch_id)
+            .filter(ExternalAgentDispatchEvent.sequence_number > max(int(after_sequence or 0), 0))
+            .order_by(ExternalAgentDispatchEvent.sequence_number.asc())
+            .all()
+        )
 
     def _sync_dispatch_targets(self, *, dispatch: ExternalAgentDispatch) -> tuple[Optional[ProjectRunStep], Optional[ProjectTask], Optional[ProjectRun]]:
         step = None

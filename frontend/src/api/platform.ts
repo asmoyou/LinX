@@ -2,7 +2,6 @@ import apiClient from './client';
 import type { UiExperienceSettings } from '@/motion';
 
 export interface ProjectExecutionPlatformSettings {
-  default_launch_command_template: string;
   planner_provider: string;
   planner_model: string;
   planner_temperature: number;

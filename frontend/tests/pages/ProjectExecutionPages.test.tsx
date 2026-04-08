@@ -206,8 +206,6 @@ describe('project execution pages', () => {
           availableForConversation: false,
           availableForExecution: false,
           updateAvailable: false,
-          launchCommandSource: 'unset',
-          resolvedLaunchCommandTemplate: null,
         },
       } as any,
     ]);

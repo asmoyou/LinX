@@ -9,7 +9,6 @@ import { GlassPanel } from '@/components/GlassPanel';
 import { useAuthStore, useUserStore } from '@/stores';
 
 const EMPTY_SETTINGS: ProjectExecutionPlatformSettings = {
-  default_launch_command_template: '',
   planner_provider: '',
   planner_model: '',
   planner_temperature: 0.2,
@@ -123,8 +122,6 @@ export const ProjectExecutionSettings = () => {
     setIsSaving(true);
     try {
       const saved = await platformApi.updateProjectExecutionSettings({
-        default_launch_command_template:
-          settings.default_launch_command_template.trim(),
         planner_provider: settings.planner_provider.trim(),
         planner_model: settings.planner_model.trim(),
         planner_temperature: settings.planner_temperature,
@@ -180,7 +177,7 @@ export const ProjectExecutionSettings = () => {
         <p className="mt-1 text-sm text-zinc-600 dark:text-zinc-400">
           {t(
             'settings.projectExecution.subtitle',
-            'Define the platform default launch command for external runtimes. External agents inherit this value unless they set an agent-level override.',
+            'Manage project planning defaults. External Runtime Hosts now use LinX native remote execution instead of a user-configured launch command template.',
           )}
         </p>
       </div>
@@ -204,34 +201,18 @@ export const ProjectExecutionSettings = () => {
             <div>
               <p className="text-sm font-semibold text-zinc-900 dark:text-zinc-100">
                 {t(
-                  'settings.projectExecution.defaultLaunchCommand',
-                  'Default Launch Command Template',
+                  'settings.projectExecution.nativeRuntimeExecution',
+                  'Native Runtime Execution',
                 )}
               </p>
               <p className="mt-1 text-xs text-zinc-600 dark:text-zinc-400">
                 {t(
-                  'settings.projectExecution.defaultLaunchCommandHelp',
-                  'Leave blank only if every external agent will define its own override. When both levels are empty, the runtime stays installed but cannot accept work.',
+                  'settings.projectExecution.nativeRuntimeExecutionHelp',
+                  'Runtime Hosts no longer require a user-managed launch command. The native remote executor is bundled with the Runtime Host and updated from the control plane.',
                 )}
               </p>
             </div>
           </div>
-
-          <textarea
-            value={settings.default_launch_command_template}
-            onChange={(event) =>
-              setSettings((current) => ({
-                ...current,
-                default_launch_command_template: event.target.value,
-              }))
-            }
-            rows={6}
-            className="w-full rounded-2xl border border-zinc-200 bg-white px-4 py-3 text-sm text-zinc-900 outline-none transition focus:border-indigo-400 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100"
-            placeholder={t(
-              'settings.projectExecution.defaultLaunchCommandPlaceholder',
-              'Example: codex exec --skip-git-repo-check --sandbox danger-full-access --cd "$LINX_WORKSPACE_ROOT" "$LINX_AGENT_PROMPT"',
-            )}
-          />
 
           <div className="grid gap-4 md:grid-cols-2">
             <label className="space-y-2 block">

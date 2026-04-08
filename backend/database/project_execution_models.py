@@ -238,10 +238,374 @@ class ProjectTask(Base):
     assigned_agent = relationship("Agent")
     creator = relationship("User")
     steps = relationship("ProjectRunStep", back_populates="project_task")
+    contracts = relationship(
+        "ProjectTaskContract",
+        back_populates="project_task",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+        order_by="ProjectTaskContract.version.desc()",
+    )
+    dependencies = relationship(
+        "ProjectTaskDependency",
+        back_populates="project_task",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+        foreign_keys="ProjectTaskDependency.project_task_id",
+    )
+    reverse_dependencies = relationship(
+        "ProjectTaskDependency",
+        back_populates="depends_on_task",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+        foreign_keys="ProjectTaskDependency.depends_on_project_task_id",
+    )
+    handoffs = relationship(
+        "ProjectTaskHandoff",
+        back_populates="project_task",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+        order_by="ProjectTaskHandoff.created_at.desc()",
+    )
+    change_bundles = relationship(
+        "ProjectTaskChangeBundle",
+        back_populates="project_task",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+        order_by="ProjectTaskChangeBundle.created_at.desc()",
+    )
+    evidence_bundles = relationship(
+        "ProjectTaskEvidenceBundle",
+        back_populates="project_task",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+        order_by="ProjectTaskEvidenceBundle.created_at.desc()",
+    )
+    review_issues = relationship(
+        "ProjectTaskReviewIssue",
+        back_populates="project_task",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+        order_by="ProjectTaskReviewIssue.created_at.desc()",
+    )
 
     __table_args__ = (
         Index("idx_project_task_project_status", "project_id", "status"),
         Index("idx_project_task_project_sort", "project_id", "sort_order"),
+    )
+
+
+class ProjectTaskContract(Base):
+    """Compiled contract for one project task."""
+
+    __tablename__ = "project_task_contracts"
+
+    contract_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    project_task_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("project_tasks.project_task_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    version = Column(Integer, nullable=False, default=1)
+    goal = Column(Text, nullable=True)
+    scope = Column(JSONB, nullable=False, default=list)
+    constraints = Column(JSONB, nullable=False, default=list)
+    deliverables = Column(JSONB, nullable=False, default=list)
+    acceptance_criteria = Column(JSONB, nullable=False, default=list)
+    assumptions = Column(JSONB, nullable=False, default=list)
+    evidence_required = Column(JSONB, nullable=False, default=list)
+    allowed_surface = Column(JSONB, nullable=False, default=dict)
+    source_description_hash = Column(String(64), nullable=True, index=True)
+    created_by_user_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("users.user_id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+    project_task = relationship("ProjectTask", back_populates="contracts")
+    creator = relationship("User")
+
+    __table_args__ = (
+        Index("idx_project_task_contract_task_version", "project_task_id", "version", unique=True),
+        Index("idx_project_task_contract_task_created", "project_task_id", "created_at"),
+    )
+
+
+class ProjectTaskDependency(Base):
+    """Explicit dependency edge between project tasks."""
+
+    __tablename__ = "project_task_dependencies"
+
+    dependency_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    project_task_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("project_tasks.project_task_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    depends_on_project_task_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("project_tasks.project_task_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    required_state = Column(String(32), nullable=False, default="approved", index=True)
+    dependency_type = Column(String(32), nullable=False, default="hard", index=True)
+    artifact_selector = Column(JSONB, nullable=False, default=dict)
+    created_by_user_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("users.user_id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+    project_task = relationship(
+        "ProjectTask",
+        back_populates="dependencies",
+        foreign_keys=[project_task_id],
+    )
+    depends_on_task = relationship(
+        "ProjectTask",
+        back_populates="reverse_dependencies",
+        foreign_keys=[depends_on_project_task_id],
+    )
+    creator = relationship("User")
+
+    __table_args__ = (
+        Index(
+            "idx_project_task_dependency_edge",
+            "project_task_id",
+            "depends_on_project_task_id",
+            unique=True,
+        ),
+        Index("idx_project_task_dependency_task", "project_task_id", "required_state"),
+    )
+
+
+class ProjectTaskHandoff(Base):
+    """Structured handoff between stages and owners for one task."""
+
+    __tablename__ = "project_task_handoffs"
+
+    handoff_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    project_task_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("project_tasks.project_task_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    run_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("project_runs.run_id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    run_step_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("project_run_steps.run_step_id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    stage = Column(String(64), nullable=False, index=True)
+    from_actor = Column(String(128), nullable=False, index=True)
+    to_actor = Column(String(128), nullable=True, index=True)
+    status_from = Column(String(50), nullable=True, index=True)
+    status_to = Column(String(50), nullable=True, index=True)
+    title = Column(String(255), nullable=True)
+    summary = Column(Text, nullable=False)
+    payload = Column(JSONB, nullable=False, default=dict)
+    created_by_user_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("users.user_id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+    project_task = relationship("ProjectTask", back_populates="handoffs")
+    run = relationship("ProjectRun")
+    run_step = relationship("ProjectRunStep")
+    creator = relationship("User")
+
+    __table_args__ = (
+        Index("idx_project_task_handoff_task_created", "project_task_id", "created_at"),
+        Index("idx_project_task_handoff_task_stage", "project_task_id", "stage"),
+    )
+
+
+class ProjectTaskChangeBundle(Base):
+    """Structured change bundle representing one task delivery snapshot."""
+
+    __tablename__ = "project_task_change_bundles"
+
+    change_bundle_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    project_task_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("project_tasks.project_task_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    run_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("project_runs.run_id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    run_step_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("project_run_steps.run_step_id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    bundle_kind = Column(String(32), nullable=False, default="patchset", index=True)
+    status = Column(String(32), nullable=False, default="draft", index=True)
+    base_ref = Column(String(255), nullable=True)
+    head_ref = Column(String(255), nullable=True)
+    summary = Column(Text, nullable=True)
+    commit_count = Column(Integer, nullable=False, default=0)
+    changed_files = Column(JSONB, nullable=False, default=list)
+    artifact_manifest = Column(JSONB, nullable=False, default=dict)
+    created_by_user_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("users.user_id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+    project_task = relationship("ProjectTask", back_populates="change_bundles")
+    run = relationship("ProjectRun")
+    run_step = relationship("ProjectRunStep")
+    creator = relationship("User")
+
+    __table_args__ = (
+        Index("idx_project_task_change_bundle_task_created", "project_task_id", "created_at"),
+        Index("idx_project_task_change_bundle_task_status", "project_task_id", "status"),
+    )
+
+
+class ProjectTaskEvidenceBundle(Base):
+    """Structured evidence collected for one task delivery/review cycle."""
+
+    __tablename__ = "project_task_evidence_bundles"
+
+    evidence_bundle_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    project_task_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("project_tasks.project_task_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    run_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("project_runs.run_id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    run_step_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("project_run_steps.run_step_id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    summary = Column(Text, nullable=False)
+    status = Column(String(32), nullable=False, default="collected", index=True)
+    bundle = Column(JSONB, nullable=False, default=dict)
+    created_by_user_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("users.user_id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+    project_task = relationship("ProjectTask", back_populates="evidence_bundles")
+    run = relationship("ProjectRun")
+    run_step = relationship("ProjectRunStep")
+    creator = relationship("User")
+
+    __table_args__ = (
+        Index("idx_project_task_evidence_task_created", "project_task_id", "created_at"),
+        Index("idx_project_task_evidence_task_status", "project_task_id", "status"),
+    )
+
+
+class ProjectTaskReviewIssue(Base):
+    """Structured review issue linked to one task."""
+
+    __tablename__ = "project_task_review_issues"
+
+    review_issue_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    project_task_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("project_tasks.project_task_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    change_bundle_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("project_task_change_bundles.change_bundle_id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    evidence_bundle_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("project_task_evidence_bundles.evidence_bundle_id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    handoff_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("project_task_handoffs.handoff_id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    issue_key = Column(String(128), nullable=True, index=True)
+    severity = Column(String(32), nullable=False, default="medium", index=True)
+    category = Column(String(32), nullable=False, default="other", index=True)
+    acceptance_ref = Column(String(128), nullable=True)
+    summary = Column(Text, nullable=False)
+    suggestion = Column(Text, nullable=True)
+    status = Column(String(32), nullable=False, default="open", index=True)
+    created_by_user_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("users.user_id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    resolved_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+    project_task = relationship("ProjectTask", back_populates="review_issues")
+    change_bundle = relationship("ProjectTaskChangeBundle")
+    evidence_bundle = relationship("ProjectTaskEvidenceBundle")
+    handoff = relationship("ProjectTaskHandoff")
+    creator = relationship("User")
+
+    __table_args__ = (
+        Index("idx_project_task_review_issue_task_created", "project_task_id", "created_at"),
+        Index("idx_project_task_review_issue_task_status", "project_task_id", "status"),
     )
 
 
@@ -539,6 +903,36 @@ class ExternalAgentDispatch(Base):
     __table_args__ = (
         Index("idx_external_agent_dispatch_binding_status", "binding_id", "status"),
         Index("idx_external_agent_dispatch_agent_status", "agent_id", "status"),
+    )
+
+
+class ExternalAgentDispatchEvent(Base):
+    """Ordered event stream for one external runtime dispatch."""
+
+    __tablename__ = "external_agent_dispatch_events"
+
+    event_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    dispatch_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("external_agent_dispatches.dispatch_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    sequence_number = Column(Integer, nullable=False)
+    event_type = Column(String(64), nullable=False, index=True)
+    payload = Column(JSONB, nullable=False, default=dict)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    dispatch = relationship("ExternalAgentDispatch")
+
+    __table_args__ = (
+        Index(
+            "ux_external_agent_dispatch_events_sequence",
+            "dispatch_id",
+            "sequence_number",
+            unique=True,
+        ),
+        Index("idx_external_agent_dispatch_events_dispatch_created", "dispatch_id", "created_at"),
     )
 
 
