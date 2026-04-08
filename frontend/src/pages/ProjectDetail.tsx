@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import toast from 'react-hot-toast';
@@ -14,6 +14,8 @@ import {
   SectionCard,
   StatusBadge,
 } from '@/components/platform/PlatformUi';
+import { SessionWorkspacePanel } from '@/components/workforce/SessionWorkspacePanel';
+import { useProjectExecutionPolling } from '@/hooks/useProjectExecutionPolling';
 import { useAuthStore } from '@/stores/authStore';
 import { useProjectExecutionStore } from '@/stores/projectExecutionStore';
 import type { Agent } from '@/types/agent';
@@ -26,12 +28,22 @@ import {
 } from '@/utils/platformFormatting';
 
 const ATTENTION_RUN_STATUSES = new Set(['blocked', 'failed', 'reviewing']);
+const POLLING_PROJECT_STATUSES = new Set(['running', 'queued', 'assigned', 'scheduled', 'planning', 'reviewing']);
 
 const isRunHandled = (run: {
   handledAt?: string | null;
   handledSignature?: string | null;
   alertSignature?: string | null;
 }): boolean => Boolean(run.handledAt && run.handledSignature && run.handledSignature === run.alertSignature);
+
+const canOpenInWorkspace = (path?: string | null): boolean => {
+  const normalized = String(path || '').trim().replace(/\\/g, '/');
+  return (
+    normalized.startsWith('/workspace/') ||
+    normalized.startsWith('workspace/') ||
+    normalized.startsWith('output/')
+  );
+};
 
 export const ProjectDetail = () => {
   const navigate = useNavigate();
@@ -46,6 +58,8 @@ export const ProjectDetail = () => {
   const [bindingError, setBindingError] = useState<string | null>(null);
   const [showAllRuns, setShowAllRuns] = useState(false);
   const [handlingRunId, setHandlingRunId] = useState<string | null>(null);
+  const [showWorkspacePanel, setShowWorkspacePanel] = useState(false);
+  const [workspaceFocusPath, setWorkspaceFocusPath] = useState<string | null>(null);
   const { projectId } = useParams<{ projectId: string }>();
   const currentUser = useAuthStore((state) => state.user);
   const project = useProjectExecutionStore((state) =>
@@ -62,7 +76,7 @@ export const ProjectDetail = () => {
 
   useEffect(() => {
     if (projectId) {
-      void loadProjectDetail(projectId);
+      void loadProjectDetail(projectId, { force: true });
       void agentsApi.getAll()
         .then((items) => {
           setAvailableAgents(items);
@@ -72,6 +86,21 @@ export const ProjectDetail = () => {
         });
     }
   }, [loadProjectDetail, projectId]);
+
+  useProjectExecutionPolling(
+    Boolean(
+      project &&
+        (POLLING_PROJECT_STATUSES.has(project.status.toLowerCase()) ||
+          project.runs.some((run) => POLLING_PROJECT_STATUSES.has(run.status.toLowerCase())) ||
+          project.tasks.some((task) => POLLING_PROJECT_STATUSES.has(task.status.toLowerCase()))),
+    ),
+    () => {
+      if (!projectId) {
+        return Promise.resolve();
+      }
+      return loadProjectDetail(projectId, { force: true });
+    },
+  );
 
   const isFallback = fallbackSections.includes('projectDetail');
   const assignedCapabilityCount =
@@ -91,6 +120,23 @@ export const ProjectDetail = () => {
   );
   const buildRuntimeHostHref = (agentId: string) =>
     `/workforce?configureAgent=${encodeURIComponent(agentId)}&tab=runtime`;
+
+  const handleOpenWorkspace = (path?: string | null) => {
+    setWorkspaceFocusPath(path || null);
+    setShowWorkspacePanel(true);
+  };
+
+  const loadProjectWorkspaceFiles = useCallback(
+    (path?: string, recursive?: boolean, options?: { suppressErrorToast?: boolean }) =>
+      projectExecutionApi.listProjectWorkspaceFiles(projectId || '', path, recursive, options),
+    [projectId],
+  );
+
+  const downloadProjectWorkspaceFile = useCallback(
+    (path: string, options?: { suppressErrorToast?: boolean }) =>
+      projectExecutionApi.downloadProjectWorkspaceFile(projectId || '', path, options),
+    [projectId],
+  );
 
   const handleMarkRunHandled = async (runId: string) => {
     const targetRun = project?.runs.find((candidate) => candidate.id === runId);
@@ -125,7 +171,7 @@ export const ProjectDetail = () => {
         agentId: selectedAgentId,
         preferredRuntimeTypes: selectedRuntimeType ? [selectedRuntimeType] : [],
       });
-      await loadProjectDetail(projectId);
+      await loadProjectDetail(projectId, { force: true });
       setSelectedAgentId('');
       setSelectedRuntimeType('');
       toast.success(t('projectExecution.projectDetail.bindAgentSuccess', 'Agent added to project pool'));
@@ -146,7 +192,7 @@ export const ProjectDetail = () => {
     try {
       setBindingError(null);
       await projectExecutionApi.deleteProjectAgentBinding(projectId, bindingId);
-      await loadProjectDetail(projectId);
+      await loadProjectDetail(projectId, { force: true });
       toast.success(t('projectExecution.projectDetail.removeBindingSuccess', 'Agent removed from project pool'));
     } catch (removeError) {
       const message = removeError instanceof Error ? removeError.message : t('projectExecution.projectDetail.removeBindingFailed', 'Failed to remove agent from project pool');
@@ -204,14 +250,24 @@ export const ProjectDetail = () => {
       }
 
       try {
-        const { runId } = await createProjectTaskAndLaunchRun({
+        const { runId, taskId, needsClarification } = await createProjectTaskAndLaunchRun({
           projectId,
           title: payload.title,
           description: payload.description,
           executionMode: payload.executionMode,
         });
-        toast.success(t('projectExecution.modals.autoStartedTask', 'Task created and run started'));
         setIsTaskModalOpen(false);
+        if (needsClarification || !runId) {
+          toast.success(
+            t(
+              'projectExecution.modals.taskNeedsClarification',
+              'Task created, but more clarification is required before execution can start',
+            ),
+          );
+          navigate(`/projects/${projectId}/tasks/${taskId}`);
+          return;
+        }
+        toast.success(t('projectExecution.modals.autoStartedTask', 'Task created and run started'));
         navigate(`/runs/${runId}`);
       } catch (launchError) {
         const message = launchError instanceof Error
@@ -289,6 +345,15 @@ export const ProjectDetail = () => {
               className="rounded-full border border-zinc-300 px-4 py-2 text-sm font-medium text-zinc-700 transition hover:border-zinc-400 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-200 dark:hover:border-zinc-600 dark:hover:bg-zinc-900"
             >{t('projectExecution.projectDetail.viewProjectRunsAction', 'View Project Runs')}
             </a>
+            {project.projectWorkspaceRoot ? (
+              <button
+                type="button"
+                onClick={() => handleOpenWorkspace(workspaceFocusPath)}
+                className="rounded-full border border-zinc-300 px-4 py-2 text-sm font-medium text-zinc-700 transition hover:border-zinc-400 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-200 dark:hover:border-zinc-600 dark:hover:bg-zinc-900"
+              >
+                {t('projectExecution.projectDetail.openWorkspaceAction', 'Open Workspace')}
+              </button>
+            ) : null}
             <StatusBadge status={project.status} />
           </div>
         </section>
@@ -452,6 +517,22 @@ export const ProjectDetail = () => {
                         }`,
                       })}
                     </p>
+                    <div className="mt-3 flex flex-wrap gap-4 text-sm text-zinc-600 dark:text-zinc-400">
+                      <span>
+                        {t('projectExecution.projectDetail.stepCountPrefix', {
+                          value: `${run.completedStepCount || 0}/${run.stepTotal || 0}`,
+                          defaultValue: `Steps: ${run.completedStepCount || 0}/${run.stepTotal || 0}`,
+                        })}
+                      </span>
+                      {run.currentStepTitle ? (
+                        <span>
+                          {t('projectExecution.projectDetail.currentStepPrefix', {
+                            value: run.currentStepTitle,
+                            defaultValue: `Current step: ${run.currentStepTitle}`,
+                          })}
+                        </span>
+                      ) : null}
+                    </div>
                     <div className="mt-4 flex flex-wrap gap-3">
                       {(ATTENTION_RUN_STATUSES.has(run.status.toLowerCase()) || run.failedTasks > 0) &&
                       !isRunHandled(run) ? (
@@ -624,6 +705,70 @@ export const ProjectDetail = () => {
         </SectionCard>
 
         <SectionCard
+          title={t('projectExecution.projectDetail.workspaceTitle', 'Project Workspace')}
+          description={t('projectExecution.projectDetail.workspaceDescription', 'Browse the shared project workspace and inspect delivered files.')}
+        >
+          <div className="flex flex-col gap-4 rounded-2xl border border-zinc-200/70 bg-white/70 p-4 dark:border-zinc-800 dark:bg-zinc-950/50 lg:flex-row lg:items-center lg:justify-between">
+            <div>
+              <p className="text-sm font-medium text-zinc-950 dark:text-zinc-50">
+                {project.projectWorkspaceRoot || t('projectExecution.projectDetail.workspaceUnavailable', 'Workspace not provisioned yet')}
+              </p>
+              <p className="mt-1 text-sm text-zinc-600 dark:text-zinc-400">
+                {project.projectWorkspaceRoot
+                  ? t('projectExecution.projectDetail.workspaceReady', 'Open the project workspace to inspect shared files and final deliverables.')
+                  : t('projectExecution.projectDetail.workspacePending', 'The workspace will appear after the first run materializes project state.')}
+              </p>
+            </div>
+            {project.projectWorkspaceRoot ? (
+              <button
+                type="button"
+                onClick={() => handleOpenWorkspace(workspaceFocusPath)}
+                className="rounded-full bg-zinc-950 px-4 py-2 text-sm font-medium text-white transition hover:bg-zinc-800 dark:bg-zinc-50 dark:text-zinc-950 dark:hover:bg-zinc-200"
+              >
+                {t('projectExecution.projectDetail.openWorkspaceAction', 'Open Workspace')}
+              </button>
+            ) : null}
+          </div>
+        </SectionCard>
+
+        <SectionCard
+          title={t('projectExecution.projectDetail.deliverablesTitle', 'Deliverables')}
+          description={t('projectExecution.projectDetail.deliverablesDescription', 'Files surfaced from project and run outputs.')}
+        >
+          {project.deliverables.length > 0 ? (
+            <div className="space-y-3">
+              {project.deliverables.map((item) => (
+                <div
+                  key={item.path}
+                  className="rounded-2xl border border-zinc-200/70 bg-white/70 p-4 dark:border-zinc-800 dark:bg-zinc-950/50"
+                >
+                  <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                    <div>
+                      <p className="font-medium text-zinc-950 dark:text-zinc-50">{item.filename}</p>
+                      <p className="mt-1 text-sm text-zinc-600 dark:text-zinc-400">{item.path}</p>
+                    </div>
+                    {canOpenInWorkspace(item.path) ? (
+                      <button
+                        type="button"
+                        onClick={() => handleOpenWorkspace(item.path)}
+                        className="rounded-full border border-zinc-300 px-4 py-2 text-sm font-medium text-zinc-700 transition hover:border-zinc-400 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-200 dark:hover:border-zinc-600 dark:hover:bg-zinc-900"
+                      >
+                        {t('projectExecution.shared.openInWorkspace', 'Open in workspace')}
+                      </button>
+                    ) : null}
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <EmptyState
+              title={t('projectExecution.projectDetail.emptyDeliverablesTitle', 'No deliverables yet')}
+              description={t('projectExecution.projectDetail.emptyDeliverablesDescription', 'Delivered files will appear here after runs produce user-visible output.')}
+            />
+          )}
+        </SectionCard>
+
+        <SectionCard
           title={t('projectExecution.projectDetail.capabilitiesTitle', 'Capabilities & Integrations')}
           description={t('projectExecution.projectDetail.capabilitiesDescription', 'Project pages show only capability summaries. Manage skills and extensions centrally in the Skills Library.')}
         >
@@ -692,6 +837,14 @@ export const ProjectDetail = () => {
         isSubmitting={isCreatingTask}
         onClose={() => setIsTaskModalOpen(false)}
         onSubmit={handleCreateTask}
+      />
+      <SessionWorkspacePanel
+        isOpen={showWorkspacePanel}
+        onClose={() => setShowWorkspacePanel(false)}
+        workspaceKey={projectId ? `project-space:${projectId}` : undefined}
+        focusPath={workspaceFocusPath}
+        loadWorkspaceFiles={loadProjectWorkspaceFiles}
+        downloadWorkspaceFile={downloadProjectWorkspaceFile}
       />
     </>
   );

@@ -1,14 +1,19 @@
 """Minimal CRUD/workflow routers for the project execution platform skeleton."""
 
+import mimetypes
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Optional
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
+from fastapi.responses import FileResponse
 from sqlalchemy.exc import IntegrityError
 
 from access_control.permissions import CurrentUser, get_current_user
+from api_gateway.routers import agents as agents_router
 from database.connection import get_db_session
+from database.models import Agent
 from database.project_execution_models import (
     AgentProvisioningProfile,
     ExternalAgentDispatch,
@@ -22,6 +27,8 @@ from database.project_execution_models import (
     ProjectSpace,
     ProjectTask,
 )
+from project_execution.model_planner import ProjectExecutionPlanner
+from project_execution.run_workspace_manager import get_run_workspace_manager
 from project_execution.schemas import (
     AgentProvisioningProfileCreate,
     AgentProvisioningProfileResponse,
@@ -70,7 +77,9 @@ from project_execution.service import (
     flush_and_refresh,
     get_current_user_uuid,
     get_or_404,
+    launch_existing_project_task_run,
     parse_uuid,
+    reconcile_project_state,
     reconcile_run_state,
 )
 from shared.logging import get_logger
@@ -94,6 +103,94 @@ def _utc_now() -> datetime:
 def _handle_integrity_error(exc: IntegrityError, *, duplicate_detail: str) -> None:
     logger.warning("Project execution integrity error: %s", exc)
     raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=duplicate_detail) from exc
+
+
+def _load_owned_project_or_404(session, *, project_id: UUID, current_user: CurrentUser) -> Project:
+    project = get_or_404(session, Project, Project.project_id, project_id, "Project not found")
+    if str(project.created_by_user_id) != str(current_user.user_id):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
+    return project
+
+
+def _load_owned_run_or_404(session, *, run_id: UUID, current_user: CurrentUser) -> ProjectRun:
+    run = get_or_404(session, ProjectRun, ProjectRun.run_id, run_id, "Run not found")
+    project = get_or_404(session, Project, Project.project_id, run.project_id, "Project not found")
+    if str(project.created_by_user_id) != str(current_user.user_id):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Run not found")
+    return run
+
+
+def _resolve_project_space_root(project_id: UUID, project_space: Optional[ProjectSpace]) -> Path:
+    root_path = (
+        getattr(project_space, "root_path", None)
+        or str(get_run_workspace_manager().get_project_space_root(project_id))
+    )
+    return Path(root_path)
+
+
+def _resolve_run_workspace_root(run: ProjectRun) -> Path:
+    runtime_context = run.runtime_context if isinstance(run.runtime_context, dict) else {}
+    run_workspace = (
+        runtime_context.get("run_workspace")
+        if isinstance(runtime_context.get("run_workspace"), dict)
+        else {}
+    )
+    root_path = run_workspace.get("root_path") or str(
+        get_run_workspace_manager().get_run_workspace_root(run.project_id, run.run_id)
+    )
+    return Path(str(root_path))
+
+
+def _build_planner_context(
+    session,
+    *,
+    project_id: UUID,
+) -> tuple[dict[str, object], list[dict[str, object]]]:
+    project = get_or_404(session, Project, Project.project_id, project_id, "Project not found")
+    bindings = (
+        session.query(ProjectAgentBinding)
+        .filter(ProjectAgentBinding.project_id == project_id)
+        .filter(ProjectAgentBinding.status == "active")
+        .all()
+    )
+    binding_agent_ids = [binding.agent_id for binding in bindings]
+    agents_by_id = {
+        agent.agent_id: agent
+        for agent in (
+            session.query(Agent)
+            .filter(Agent.agent_id.in_(binding_agent_ids))
+            .all()
+            if binding_agent_ids
+            else []
+        )
+    }
+    available_agents: list[dict[str, object]] = []
+    for binding in bindings:
+        agent = agents_by_id.get(binding.agent_id)
+        available_agents.append(
+            {
+                "id": str(binding.agent_id),
+                "name": getattr(agent, "name", str(binding.agent_id)),
+                "type": getattr(agent, "agent_type", None),
+                "runtime_preference": getattr(agent, "runtime_preference", None),
+                "preferred_runtime_types": list(binding.preferred_runtime_types or []),
+                "allowed_step_kinds": list(binding.allowed_step_kinds or []),
+                "preferred_skills": list(binding.preferred_skills or []),
+            }
+        )
+
+    return (
+        {
+            "project_id": str(project.project_id),
+            "project_name": project.name,
+            "project_description": project.description,
+        },
+        available_agents,
+    )
+
+
+def _planner_questions_to_response(planner_result) -> list[dict[str, str]]:
+    return [question.model_dump() for question in planner_result.clarification_questions]
 
 
 @runs_router.get(
@@ -152,23 +249,25 @@ async def create_project(
 async def list_projects(current_user: CurrentUser = Depends(get_current_user)):
     with get_db_session() as session:
         actor_user_id = get_current_user_uuid(current_user)
-        return (
+        projects = (
             session.query(Project)
             .filter(Project.created_by_user_id == actor_user_id)
             .order_by(Project.created_at.desc())
             .all()
         )
+        for project in projects:
+            reconcile_project_state(session, project=project)
+        return projects
 
 
 @projects_router.get("/{project_id}", response_model=ProjectResponse)
 async def get_project(project_id: str, current_user: CurrentUser = Depends(get_current_user)):
     parsed_project_id = parse_uuid(project_id, "project_id")
     with get_db_session() as session:
-        project = get_or_404(
-            session, Project, Project.project_id, parsed_project_id, "Project not found"
+        project = _load_owned_project_or_404(
+            session, project_id=parsed_project_id, current_user=current_user
         )
-        if str(project.created_by_user_id) != str(current_user.user_id):
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
+        reconcile_project_state(session, project=project)
         return project
 
 
@@ -180,14 +279,13 @@ async def update_project(
 ):
     parsed_project_id = parse_uuid(project_id, "project_id")
     with get_db_session() as session:
-        project = get_or_404(
-            session, Project, Project.project_id, parsed_project_id, "Project not found"
+        project = _load_owned_project_or_404(
+            session, project_id=parsed_project_id, current_user=current_user
         )
-        if str(project.created_by_user_id) != str(current_user.user_id):
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
 
         apply_updates(project, request, ["name", "description", "status", "configuration"])
         flush_and_refresh(session, project)
+        reconcile_project_state(session, project=project)
         append_audit_event(
             session,
             action="project.updated",
@@ -207,11 +305,9 @@ async def archive_project(
 ):
     parsed_project_id = parse_uuid(project_id, "project_id")
     with get_db_session() as session:
-        project = get_or_404(
-            session, Project, Project.project_id, parsed_project_id, "Project not found"
+        project = _load_owned_project_or_404(
+            session, project_id=parsed_project_id, current_user=current_user
         )
-        if str(project.created_by_user_id) != str(current_user.user_id):
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
 
         project.status = "archived"
         flush_and_refresh(session, project)
@@ -230,11 +326,9 @@ async def archive_project(
 async def delete_project(project_id: str, current_user: CurrentUser = Depends(get_current_user)):
     parsed_project_id = parse_uuid(project_id, "project_id")
     with get_db_session() as session:
-        project = get_or_404(
-            session, Project, Project.project_id, parsed_project_id, "Project not found"
+        project = _load_owned_project_or_404(
+            session, project_id=parsed_project_id, current_user=current_user
         )
-        if str(project.created_by_user_id) != str(current_user.user_id):
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
 
         append_audit_event(
             session,
@@ -257,11 +351,9 @@ async def list_project_agent_bindings(
 ):
     parsed_project_id = parse_uuid(project_id, "project_id")
     with get_db_session() as session:
-        project = get_or_404(
-            session, Project, Project.project_id, parsed_project_id, "Project not found"
+        project = _load_owned_project_or_404(
+            session, project_id=parsed_project_id, current_user=current_user
         )
-        if str(project.created_by_user_id) != str(current_user.user_id):
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
         return (
             session.query(ProjectAgentBinding)
             .filter(ProjectAgentBinding.project_id == parsed_project_id)
@@ -282,11 +374,9 @@ async def create_project_agent_binding(
 ):
     parsed_project_id = parse_uuid(project_id, "project_id")
     with get_db_session() as session:
-        project = get_or_404(
-            session, Project, Project.project_id, parsed_project_id, "Project not found"
+        project = _load_owned_project_or_404(
+            session, project_id=parsed_project_id, current_user=current_user
         )
-        if str(project.created_by_user_id) != str(current_user.user_id):
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
         binding = ProjectAgentBinding(
             project_id=parsed_project_id,
             agent_id=request.agent_id,
@@ -552,6 +642,23 @@ async def create_project_task_and_launch(
     current_user: CurrentUser = Depends(get_current_user),
 ):
     with get_db_session() as session:
+        _ = _load_owned_project_or_404(
+            session, project_id=request.project_id, current_user=current_user
+        )
+        project_context, available_agents = _build_planner_context(
+            session, project_id=request.project_id
+        )
+
+    planner_result = await ProjectExecutionPlanner().plan(
+        title=request.title,
+        description=request.description,
+        execution_mode=request.execution_mode
+        or str((request.input_payload or {}).get("execution_mode") or "auto"),
+        project_context=project_context,
+        available_agents=available_agents,
+    )
+
+    with get_db_session() as session:
         try:
             task, plan, run, step = create_project_task_and_launch_run(
                 session,
@@ -564,31 +671,48 @@ async def create_project_task_and_launch(
                     **(request.input_payload or {}),
                     **({"execution_mode": request.execution_mode} if request.execution_mode else {}),
                 },
+                planner_result=planner_result,
                 current_user=current_user,
             )
         except IntegrityError as exc:
             _handle_integrity_error(exc, duplicate_detail="Project task could not be created")
         task_id = task.project_task_id
-        plan_id = plan.plan_id
-        run_id = run.run_id
-        step_id = step.run_step_id
+        plan_id = plan.plan_id if plan is not None else None
+        run_id = run.run_id if run is not None else None
+        step_id = step.run_step_id if step is not None else None
 
-    scheduling_result = await schedule_run_after_launch(run_id=run_id, current_user=current_user)
+    scheduling_result = (
+        await schedule_run_after_launch(run_id=run_id, current_user=current_user)
+        if run_id is not None
+        else {}
+    )
 
     with get_db_session() as session:
         task = get_or_404(
             session, ProjectTask, ProjectTask.project_task_id, task_id, "Project task not found"
         )
-        plan = get_or_404(session, ProjectPlan, ProjectPlan.plan_id, plan_id, "Plan not found")
-        run = get_or_404(session, ProjectRun, ProjectRun.run_id, run_id, "Run not found")
-        step = get_or_404(
-            session, ProjectRunStep, ProjectRunStep.run_step_id, step_id, "Run step not found"
+        plan = (
+            get_or_404(session, ProjectPlan, ProjectPlan.plan_id, plan_id, "Plan not found")
+            if plan_id is not None
+            else None
+        )
+        run = (
+            get_or_404(session, ProjectRun, ProjectRun.run_id, run_id, "Run not found")
+            if run_id is not None
+            else None
+        )
+        step = (
+            get_or_404(session, ProjectRunStep, ProjectRunStep.run_step_id, step_id, "Run step not found")
+            if step_id is not None
+            else None
         )
         return ProjectTaskLaunchBundleResponse(
             task=ProjectTaskResponse.model_validate(task),
-            plan=ProjectPlanResponse.model_validate(plan),
-            run=ProjectRunResponse.model_validate(run),
-            step=ProjectRunStepResponse.model_validate(step),
+            plan=ProjectPlanResponse.model_validate(plan) if plan is not None else None,
+            run=ProjectRunResponse.model_validate(run) if run is not None else None,
+            step=ProjectRunStepResponse.model_validate(step) if step is not None else None,
+            needs_clarification=planner_result.needs_clarification,
+            clarification_questions=_planner_questions_to_response(planner_result),
             agent_assignment=scheduling_result.get("agent_assignment"),
             external_dispatch=scheduling_result.get("external_dispatch"),
             executor_assignment=scheduling_result.get("executor_assignment"),
@@ -640,7 +764,103 @@ async def create_project_task(
             run_id=task.run_id,
             current_user=current_user,
         )
+        reconcile_project_state(session, project_id=task.project_id)
         return task
+
+
+@project_tasks_router.post(
+    "/{project_task_id}/launch",
+    response_model=ProjectTaskLaunchBundleResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def launch_existing_project_task(
+    project_task_id: str,
+    request: ProjectTaskCreateAndLaunchRequest,
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    parsed_task_id = parse_uuid(project_task_id, "project_task_id")
+
+    with get_db_session() as session:
+        task = get_or_404(
+            session,
+            ProjectTask,
+            ProjectTask.project_task_id,
+            parsed_task_id,
+            "Project task not found",
+        )
+        if str(task.created_by_user_id) != str(current_user.user_id):
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="Project task not found"
+            )
+        project_context, available_agents = _build_planner_context(
+            session, project_id=task.project_id
+        )
+
+    planner_result = await ProjectExecutionPlanner().plan(
+        title=task.title,
+        description=task.description,
+        execution_mode=request.execution_mode
+        or str((task.input_payload or {}).get("execution_mode") or "auto"),
+        project_context=project_context,
+        available_agents=available_agents,
+    )
+
+    with get_db_session() as session:
+        task = get_or_404(
+            session,
+            ProjectTask,
+            ProjectTask.project_task_id,
+            parsed_task_id,
+            "Project task not found",
+        )
+        task, plan, run, step = launch_existing_project_task_run(
+            session,
+            task=task,
+            planner_result=planner_result,
+            current_user=current_user,
+        )
+        task_id = task.project_task_id
+        plan_id = plan.plan_id if plan is not None else None
+        run_id = run.run_id if run is not None else None
+        step_id = step.run_step_id if step is not None else None
+
+    scheduling_result = (
+        await schedule_run_after_launch(run_id=run_id, current_user=current_user)
+        if run_id is not None
+        else {}
+    )
+
+    with get_db_session() as session:
+        task = get_or_404(
+            session, ProjectTask, ProjectTask.project_task_id, task_id, "Project task not found"
+        )
+        plan = (
+            get_or_404(session, ProjectPlan, ProjectPlan.plan_id, plan_id, "Plan not found")
+            if plan_id is not None
+            else None
+        )
+        run = (
+            get_or_404(session, ProjectRun, ProjectRun.run_id, run_id, "Run not found")
+            if run_id is not None
+            else None
+        )
+        step = (
+            get_or_404(session, ProjectRunStep, ProjectRunStep.run_step_id, step_id, "Run step not found")
+            if step_id is not None
+            else None
+        )
+        return ProjectTaskLaunchBundleResponse(
+            task=ProjectTaskResponse.model_validate(task),
+            plan=ProjectPlanResponse.model_validate(plan) if plan is not None else None,
+            run=ProjectRunResponse.model_validate(run) if run is not None else None,
+            step=ProjectRunStepResponse.model_validate(step) if step is not None else None,
+            needs_clarification=planner_result.needs_clarification,
+            clarification_questions=_planner_questions_to_response(planner_result),
+            agent_assignment=scheduling_result.get("agent_assignment"),
+            external_dispatch=scheduling_result.get("external_dispatch"),
+            executor_assignment=scheduling_result.get("executor_assignment"),
+            run_workspace=scheduling_result.get("run_workspace"),
+        )
 
 
 @project_tasks_router.get("", response_model=list[ProjectTaskResponse])
@@ -736,6 +956,8 @@ async def update_project_task(
         reconcile_run_state(session, run_id=previous_run_id)
         if task.run_id and task.run_id != previous_run_id:
             reconcile_run_state(session, run_id=task.run_id)
+        elif task.run_id is None:
+            reconcile_project_state(session, project_id=task.project_id)
         return task
 
 
@@ -774,6 +996,8 @@ async def transition_project_task(
             payload=request.model_dump(),
         )
         reconcile_run_state(session, run_id=task.run_id)
+        if task.run_id is None:
+            reconcile_project_state(session, project_id=task.project_id)
         return task
 
 
@@ -806,9 +1030,12 @@ async def delete_project_task(
             current_user=current_user,
         )
         run_id = task.run_id
+        project_id = task.project_id
         session.delete(task)
         session.flush()
         reconcile_run_state(session, run_id=run_id)
+        if run_id is None:
+            reconcile_project_state(session, project_id=project_id)
         return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
@@ -1058,6 +1285,7 @@ async def start_run(run_id: str, current_user: CurrentUser = Depends(get_current
             run_id=run.run_id,
             current_user=current_user,
         )
+        reconcile_project_state(session, project_id=run.project_id)
         return run
 
 
@@ -1086,6 +1314,7 @@ async def complete_run(
             current_user=current_user,
             payload=request.model_dump(),
         )
+        reconcile_project_state(session, project_id=run.project_id)
         return run
 
 
@@ -1106,6 +1335,7 @@ async def cancel_run(run_id: str, current_user: CurrentUser = Depends(get_curren
             run_id=run.run_id,
             current_user=current_user,
         )
+        reconcile_project_state(session, project_id=run.project_id)
         return run
 
 
@@ -1312,7 +1542,7 @@ async def upsert_project_space(
 ):
     parsed_project_id = parse_uuid(project_id, "project_id")
     with get_db_session() as session:
-        ensure_related_records(session, project_id=parsed_project_id, require_project=True)
+        _load_owned_project_or_404(session, project_id=parsed_project_id, current_user=current_user)
         project_space = (
             session.query(ProjectSpace).filter(ProjectSpace.project_id == parsed_project_id).first()
         )
@@ -1339,9 +1569,12 @@ async def upsert_project_space(
 
 
 @project_space_router.get("/{project_id}", response_model=ProjectSpaceResponse)
-async def get_project_space(project_id: str, _: CurrentUser = Depends(get_current_user)):
+async def get_project_space(
+    project_id: str, current_user: CurrentUser = Depends(get_current_user)
+):
     parsed_project_id = parse_uuid(project_id, "project_id")
     with get_db_session() as session:
+        _load_owned_project_or_404(session, project_id=parsed_project_id, current_user=current_user)
         return get_or_404(
             session,
             ProjectSpace,
@@ -1358,6 +1591,7 @@ async def sync_project_space(
 ):
     parsed_project_id = parse_uuid(project_id, "project_id")
     with get_db_session() as session:
+        _load_owned_project_or_404(session, project_id=parsed_project_id, current_user=current_user)
         project_space = get_or_404(
             session,
             ProjectSpace,
@@ -1377,6 +1611,100 @@ async def sync_project_space(
             current_user=current_user,
         )
         return project_space
+
+
+@project_space_router.get("/{project_id}/files")
+async def list_project_space_files(
+    project_id: str,
+    path: str = "",
+    recursive: bool = False,
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    parsed_project_id = parse_uuid(project_id, "project_id")
+    with get_db_session() as session:
+        _load_owned_project_or_404(session, project_id=parsed_project_id, current_user=current_user)
+        project_space = (
+            session.query(ProjectSpace).filter(ProjectSpace.project_id == parsed_project_id).first()
+        )
+        if project_space is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project space not found")
+        workspace_root = _resolve_project_space_root(parsed_project_id, project_space)
+    return agents_router._list_session_workspace_entries(workspace_root, path, recursive)
+
+
+@project_space_router.get("/{project_id}/download")
+async def download_project_space_file(
+    project_id: str,
+    path: str,
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    parsed_project_id = parse_uuid(project_id, "project_id")
+    with get_db_session() as session:
+        _load_owned_project_or_404(session, project_id=parsed_project_id, current_user=current_user)
+        project_space = (
+            session.query(ProjectSpace).filter(ProjectSpace.project_id == parsed_project_id).first()
+        )
+        if project_space is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project space not found")
+        workspace_root = _resolve_project_space_root(parsed_project_id, project_space)
+
+    file_path, relative_path = agents_router._resolve_safe_workspace_path(workspace_root, path)
+    if agents_router._is_internal_workspace_path(relative_path):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Workspace file not found")
+    if not file_path.exists() or not file_path.is_file():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Workspace file not found")
+
+    filename = file_path.name or (relative_path.rsplit("/", 1)[-1] if relative_path else "download")
+    media_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
+    headers = {
+        "Content-Disposition": agents_router._build_download_content_disposition(
+            filename,
+            disposition="attachment",
+        )
+    }
+    return FileResponse(path=file_path, media_type=media_type, filename=filename, headers=headers)
+
+
+@runs_router.get("/{run_id}/workspace/files")
+async def list_run_workspace_files(
+    run_id: str,
+    path: str = "",
+    recursive: bool = False,
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    parsed_run_id = parse_uuid(run_id, "run_id")
+    with get_db_session() as session:
+        run = _load_owned_run_or_404(session, run_id=parsed_run_id, current_user=current_user)
+        workspace_root = _resolve_run_workspace_root(run)
+    return agents_router._list_session_workspace_entries(workspace_root, path, recursive)
+
+
+@runs_router.get("/{run_id}/workspace/download")
+async def download_run_workspace_file(
+    run_id: str,
+    path: str,
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    parsed_run_id = parse_uuid(run_id, "run_id")
+    with get_db_session() as session:
+        run = _load_owned_run_or_404(session, run_id=parsed_run_id, current_user=current_user)
+        workspace_root = _resolve_run_workspace_root(run)
+
+    file_path, relative_path = agents_router._resolve_safe_workspace_path(workspace_root, path)
+    if agents_router._is_internal_workspace_path(relative_path):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Workspace file not found")
+    if not file_path.exists() or not file_path.is_file():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Workspace file not found")
+
+    filename = file_path.name or (relative_path.rsplit("/", 1)[-1] if relative_path else "download")
+    media_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
+    headers = {
+        "Content-Disposition": agents_router._build_download_content_disposition(
+            filename,
+            disposition="attachment",
+        )
+    }
+    return FileResponse(path=file_path, media_type=media_type, filename=filename, headers=headers)
 
 
 @extensions_router.post(

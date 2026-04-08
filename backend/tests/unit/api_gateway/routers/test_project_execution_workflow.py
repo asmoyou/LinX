@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from pathlib import Path
 from urllib.parse import urlsplit
 from uuid import UUID, uuid4
 
@@ -26,8 +27,7 @@ def api_client():
         yield client
 
 
-@pytest.fixture
-def auth_headers(api_client: TestClient):
+def _register_auth_headers(api_client: TestClient) -> dict[str, str]:
     unique_id = str(uuid4())[:8]
     user_data = {
         "username": f"testuser_{unique_id}",
@@ -46,6 +46,11 @@ def auth_headers(api_client: TestClient):
     assert login_response.status_code == 200, login_response.text
     access_token = login_response.json()["access_token"]
     return {"Authorization": f"Bearer {access_token}"}
+
+
+@pytest.fixture
+def auth_headers(api_client: TestClient):
+    return _register_auth_headers(api_client)
 
 
 @pytest.fixture(autouse=True)
@@ -425,6 +430,126 @@ def test_delete_project_task_reconciles_associated_run(
         assert stored_run is not None
         assert stored_run.status == "completed"
         assert stored_run.completed_at is not None
+
+
+def test_complete_run_step_reconciles_task_run_and_project(
+    api_client: TestClient, auth_headers: dict[str, str]
+):
+    task_id, run_id = _create_project_and_running_task_run(
+        api_client,
+        auth_headers,
+        project_name="Single Step Completion Project",
+        task_title="Finalize Release Notes",
+    )
+
+    task_response = api_client.get(f"/api/v1/project-tasks/{task_id}", headers=auth_headers)
+    assert task_response.status_code == 200, task_response.text
+    project_id = task_response.json()["project_id"]
+
+    step_response = api_client.post(
+        "/api/v1/run-steps",
+        json={
+            "run_id": run_id,
+            "project_task_id": task_id,
+            "name": "Finalize Release Notes",
+            "step_type": "task",
+            "status": "running",
+            "sequence_number": 0,
+            "input_payload": {"project_task_id": task_id},
+        },
+        headers=auth_headers,
+    )
+    assert step_response.status_code == 201, step_response.text
+    step_id = step_response.json()["run_step_id"]
+
+    complete_response = api_client.post(
+        f"/api/v1/run-steps/{step_id}/complete",
+        json={
+            "status": "completed",
+            "output_payload": {
+                "artifacts": [{"path": "/workspace/output/release-notes.md", "name": "release-notes.md"}]
+            },
+        },
+        headers=auth_headers,
+    )
+    assert complete_response.status_code == 200, complete_response.text
+
+    task_response = api_client.get(f"/api/v1/project-tasks/{task_id}", headers=auth_headers)
+    assert task_response.status_code == 200, task_response.text
+    assert task_response.json()["status"] == "completed"
+
+    run_response = api_client.get(f"/api/v1/runs/{run_id}", headers=auth_headers)
+    assert run_response.status_code == 200, run_response.text
+    assert run_response.json()["status"] == "completed"
+
+    project_response = api_client.get(f"/api/v1/projects/{project_id}", headers=auth_headers)
+    assert project_response.status_code == 200, project_response.text
+    assert project_response.json()["status"] == "completed"
+
+
+def test_complete_first_run_step_keeps_task_open_until_all_steps_finish(
+    api_client: TestClient, auth_headers: dict[str, str]
+):
+    task_id, run_id = _create_project_and_running_task_run(
+        api_client,
+        auth_headers,
+        project_name="Multi Step Internal Project",
+        task_title="Ship Launch Checklist",
+    )
+
+    task_response = api_client.get(f"/api/v1/project-tasks/{task_id}", headers=auth_headers)
+    assert task_response.status_code == 200, task_response.text
+    project_id = task_response.json()["project_id"]
+
+    first_step_response = api_client.post(
+        "/api/v1/run-steps",
+        json={
+            "run_id": run_id,
+            "project_task_id": task_id,
+            "name": "Research: Ship Launch Checklist",
+            "step_type": "task",
+            "status": "running",
+            "sequence_number": 0,
+            "input_payload": {"project_task_id": task_id, "step_kind": "research"},
+        },
+        headers=auth_headers,
+    )
+    assert first_step_response.status_code == 201, first_step_response.text
+    first_step_id = first_step_response.json()["run_step_id"]
+
+    second_step_response = api_client.post(
+        "/api/v1/run-steps",
+        json={
+            "run_id": run_id,
+            "project_task_id": task_id,
+            "name": "Review: Ship Launch Checklist",
+            "step_type": "task",
+            "status": "pending",
+            "sequence_number": 1,
+            "input_payload": {"project_task_id": task_id, "step_kind": "review"},
+        },
+        headers=auth_headers,
+    )
+    assert second_step_response.status_code == 201, second_step_response.text
+
+    complete_response = api_client.post(
+        f"/api/v1/run-steps/{first_step_id}/complete",
+        json={"status": "completed", "output_payload": {}},
+        headers=auth_headers,
+    )
+    assert complete_response.status_code == 200, complete_response.text
+
+    task_response = api_client.get(f"/api/v1/project-tasks/{task_id}", headers=auth_headers)
+    assert task_response.status_code == 200, task_response.text
+    assert task_response.json()["status"] == "queued"
+
+    run_response = api_client.get(f"/api/v1/runs/{run_id}", headers=auth_headers)
+    assert run_response.status_code == 200, run_response.text
+    assert run_response.json()["status"] == "running"
+
+    project_response = api_client.get(f"/api/v1/projects/{project_id}", headers=auth_headers)
+    assert project_response.status_code == 200, project_response.text
+    assert project_response.json()["status"] == "running"
 
 
 def test_terminal_run_retires_ephemeral_current_run_agents(
@@ -1282,3 +1407,240 @@ def test_external_dispatch_completion_updates_run_state(
     step_response = api_client.get(f"/api/v1/run-steps/{step_id}", headers=auth_headers)
     assert step_response.status_code == 200, step_response.text
     assert step_response.json()["status"] == "completed"
+
+
+def test_external_dispatch_completion_keeps_task_open_with_pending_followup_step(
+    api_client: TestClient, auth_headers: dict[str, str]
+):
+    project_response = api_client.post(
+        "/api/v1/projects",
+        json={
+            "name": "Dispatch Multi Step Project",
+            "description": "Ensure external completion does not close multi-step tasks early.",
+            "status": "draft",
+            "configuration": {},
+        },
+        headers=auth_headers,
+    )
+    assert project_response.status_code == 201, project_response.text
+    project = project_response.json()
+    project_id = project["project_id"]
+    owner_user_id = project["created_by_user_id"]
+
+    _, machine_token = _provision_bound_external_agent(
+        api_client,
+        auth_headers,
+        project_id=project_id,
+        owner_user_id=owner_user_id,
+        name="Bound External Agent Multi Step",
+    )
+
+    task_response = api_client.post(
+        "/api/v1/project-tasks",
+        json={
+            "project_id": project_id,
+            "title": "Deploy host assets",
+            "description": "Ship assets in multiple external phases.",
+            "status": "queued",
+            "priority": "normal",
+            "sort_order": 0,
+            "input_payload": {"execution_mode": "external_runtime"},
+            "execution_mode": "external_runtime",
+        },
+        headers=auth_headers,
+    )
+    assert task_response.status_code == 201, task_response.text
+    task_id = task_response.json()["project_task_id"]
+
+    run_response = api_client.post(
+        "/api/v1/runs",
+        json={
+            "project_id": project_id,
+            "status": "queued",
+            "trigger_source": "manual",
+            "runtime_context": {
+                "project_task_id": task_id,
+                "task_title": "Deploy host assets",
+                "execution_mode": "external_runtime",
+            },
+        },
+        headers=auth_headers,
+    )
+    assert run_response.status_code == 201, run_response.text
+    run_id = run_response.json()["run_id"]
+
+    patch_task_response = api_client.patch(
+        f"/api/v1/project-tasks/{task_id}",
+        json={
+            "run_id": run_id,
+            "status": "queued",
+            "input_payload": {"execution_mode": "external_runtime"},
+        },
+        headers=auth_headers,
+    )
+    assert patch_task_response.status_code == 200, patch_task_response.text
+
+    for sequence_number, step_name in enumerate(
+        ["Upload host assets", "Verify host assets"],
+    ):
+        step_response = api_client.post(
+            "/api/v1/run-steps",
+            json={
+                "run_id": run_id,
+                "project_task_id": task_id,
+                "name": step_name,
+                "step_type": "task",
+                "status": "pending",
+                "sequence_number": sequence_number,
+                "input_payload": {
+                    "project_task_id": task_id,
+                    "step_kind": "host_action",
+                    "executor_kind": "execution_node",
+                    "execution_mode": "external_runtime",
+                },
+            },
+            headers=auth_headers,
+        )
+        assert step_response.status_code == 201, step_response.text
+
+    schedule_response = api_client.post(
+        f"/api/v1/runs/{run_id}/schedule",
+        headers=auth_headers,
+    )
+    assert schedule_response.status_code == 200, schedule_response.text
+    dispatch_id = schedule_response.json()["external_dispatch"]["dispatch_id"]
+    host_headers = {"Authorization": f"Bearer {machine_token}"}
+
+    complete_response = api_client.post(
+        f"/api/v1/external-runtime/dispatches/{dispatch_id}/complete",
+        json={"status": "completed", "result_payload": {"stdout": "phase one done"}},
+        headers=host_headers,
+    )
+    assert complete_response.status_code == 200, complete_response.text
+
+    task_response = api_client.get(f"/api/v1/project-tasks/{task_id}", headers=auth_headers)
+    assert task_response.status_code == 200, task_response.text
+    assert task_response.json()["status"] == "queued"
+
+    run_response = api_client.get(f"/api/v1/runs/{run_id}", headers=auth_headers)
+    assert run_response.status_code == 200, run_response.text
+    assert run_response.json()["status"] == "scheduled"
+
+
+def test_project_and_run_workspace_endpoints_list_download_and_reject_invalid_access(
+    api_client: TestClient, auth_headers: dict[str, str]
+):
+    project_response = api_client.post(
+        "/api/v1/projects",
+        json={
+            "name": "Workspace Browser Project",
+            "description": "Expose project and run workspace files.",
+            "status": "draft",
+            "configuration": {},
+        },
+        headers=auth_headers,
+    )
+    assert project_response.status_code == 201, project_response.text
+    project_id = project_response.json()["project_id"]
+
+    create_and_launch_response = api_client.post(
+        "/api/v1/project-tasks/create-and-launch",
+        json={
+            "project_id": project_id,
+            "title": "Prepare workspace output",
+            "description": "Generate files for workspace browsing.",
+            "priority": "normal",
+            "input_payload": {},
+        },
+        headers=auth_headers,
+    )
+    assert create_and_launch_response.status_code == 201, create_and_launch_response.text
+    payload = create_and_launch_response.json()
+    run_id = payload["run"]["run_id"]
+    run_workspace_root = Path(payload["run_workspace"]["root_path"])
+
+    project_space_response = api_client.get(
+        f"/api/v1/project-space/{project_id}",
+        headers=auth_headers,
+    )
+    assert project_space_response.status_code == 200, project_space_response.text
+    project_workspace_root = Path(project_space_response.json()["root_path"])
+
+    (project_workspace_root / "output").mkdir(parents=True, exist_ok=True)
+    (project_workspace_root / "output" / "final-report.md").write_text(
+        "# Final report\n", encoding="utf-8"
+    )
+    (project_workspace_root / ".linx").mkdir(parents=True, exist_ok=True)
+    (project_workspace_root / ".linx" / "secret.txt").write_text("hidden", encoding="utf-8")
+
+    (run_workspace_root / "output").mkdir(parents=True, exist_ok=True)
+    (run_workspace_root / "output" / "draft-report.md").write_text(
+        "# Draft report\n", encoding="utf-8"
+    )
+    (run_workspace_root / ".linx").mkdir(parents=True, exist_ok=True)
+    (run_workspace_root / ".linx" / "secret.txt").write_text("hidden", encoding="utf-8")
+
+    list_project_files_response = api_client.get(
+        f"/api/v1/project-space/{project_id}/files",
+        params={"recursive": True},
+        headers=auth_headers,
+    )
+    assert list_project_files_response.status_code == 200, list_project_files_response.text
+    project_paths = {item["path"] for item in list_project_files_response.json()}
+    assert "output/final-report.md" in project_paths
+    assert ".linx/secret.txt" not in project_paths
+
+    download_project_file_response = api_client.get(
+        f"/api/v1/project-space/{project_id}/download",
+        params={"path": "output/final-report.md"},
+        headers=auth_headers,
+    )
+    assert download_project_file_response.status_code == 200, download_project_file_response.text
+    assert "# Final report" in download_project_file_response.text
+
+    invalid_project_download_response = api_client.get(
+        f"/api/v1/project-space/{project_id}/download",
+        params={"path": "../outside.txt"},
+        headers=auth_headers,
+    )
+    assert invalid_project_download_response.status_code == 400
+
+    list_run_files_response = api_client.get(
+        f"/api/v1/runs/{run_id}/workspace/files",
+        params={"recursive": True},
+        headers=auth_headers,
+    )
+    assert list_run_files_response.status_code == 200, list_run_files_response.text
+    run_paths = {item["path"] for item in list_run_files_response.json()}
+    assert "output/draft-report.md" in run_paths
+    assert ".linx/secret.txt" not in run_paths
+
+    download_run_file_response = api_client.get(
+        f"/api/v1/runs/{run_id}/workspace/download",
+        params={"path": "output/draft-report.md"},
+        headers=auth_headers,
+    )
+    assert download_run_file_response.status_code == 200, download_run_file_response.text
+    assert "# Draft report" in download_run_file_response.text
+
+    invalid_run_download_response = api_client.get(
+        f"/api/v1/runs/{run_id}/workspace/download",
+        params={"path": "../outside.txt"},
+        headers=auth_headers,
+    )
+    assert invalid_run_download_response.status_code == 400
+
+    other_headers = _register_auth_headers(api_client)
+    forbidden_project_response = api_client.get(
+        f"/api/v1/project-space/{project_id}/files",
+        params={"recursive": True},
+        headers=other_headers,
+    )
+    assert forbidden_project_response.status_code == 404
+
+    forbidden_run_response = api_client.get(
+        f"/api/v1/runs/{run_id}/workspace/files",
+        params={"recursive": True},
+        headers=other_headers,
+    )
+    assert forbidden_run_response.status_code == 404

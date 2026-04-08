@@ -1,6 +1,6 @@
 import React from 'react';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
-import { cleanup, render, screen } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { agentsApi } from '@/api/agents';
@@ -32,6 +32,16 @@ vi.mock('@/components/platform/ProjectExecutionFormModal', () => ({
   ProjectCreateModal: () => null,
   ProjectTaskCreateModal: () => null,
   LaunchRunModal: () => null,
+}));
+
+const { sessionWorkspacePanelSpy } = vi.hoisted(() => ({
+  sessionWorkspacePanelSpy: vi.fn(({ isOpen, focusPath, workspaceKey }: any) =>
+    isOpen ? <div data-testid="workspace-panel">{`${workspaceKey || 'workspace'}|${focusPath || ''}`}</div> : null,
+  ),
+}));
+
+vi.mock('@/components/workforce/SessionWorkspacePanel', () => ({
+  SessionWorkspacePanel: sessionWorkspacePanelSpy,
 }));
 
 vi.mock('@/api/agents', () => ({
@@ -89,6 +99,7 @@ describe('project execution pages', () => {
   });
 
   afterEach(() => {
+    vi.useRealTimers();
     vi.clearAllMocks();
     cleanup();
   });
@@ -332,10 +343,123 @@ describe('project execution pages', () => {
       </MemoryRouter>,
     );
 
-    expect(await screen.findByRole('heading', { name: 'Run #abcd1234', level: 1 })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Run #abcd1234', level: 1 })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Project One' })).toBeInTheDocument();
     expect(screen.getByText('Trigger Manual')).toBeInTheDocument();
     expect(screen.getByText('External agent is not online')).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Open Task' })).toHaveAttribute('href', '/projects/project-1/tasks/task-1');
+  });
+
+  it('opens the project workspace panel and focuses deliverables inside the workspace', async () => {
+    storeState.projectDetails = {
+      'project-1': {
+        id: 'project-1',
+        title: 'Project One',
+        summary: 'Project summary',
+        instructions: 'Ship the work',
+        status: 'completed',
+        progress: 100,
+        createdAt: '2026-04-07T10:00:00.000Z',
+        updatedAt: '2026-04-07T11:00:00.000Z',
+        totalTasks: 1,
+        completedTasks: 1,
+        failedTasks: 0,
+        needsClarification: false,
+        projectWorkspaceRoot: '/tmp/linx/project-space',
+        tasks: [],
+        runs: [],
+        agents: [],
+        agentBindings: [],
+        deliverables: [
+          {
+            filename: 'report.md',
+            path: '/workspace/output/report.md',
+            size: 12,
+            isTarget: true,
+          },
+        ],
+        recentActivity: [],
+      },
+    };
+
+    render(
+      <MemoryRouter initialEntries={['/projects/project-1']}>
+        <Routes>
+          <Route path="/projects/:projectId" element={<ProjectDetail />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByText('Project Workspace')).toBeInTheDocument();
+    fireEvent.click(screen.getAllByRole('button', { name: 'Open Workspace' })[0]);
+    expect(await screen.findByTestId('workspace-panel')).toHaveTextContent('project-space:project-1|');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Open in workspace' }));
+    expect(await screen.findByTestId('workspace-panel')).toHaveTextContent(
+      'project-space:project-1|/workspace/output/report.md',
+    );
+  });
+
+  it('polls active run detail with force refresh and stops after terminal state', async () => {
+    vi.useFakeTimers();
+    storeState.runDetails = {
+      'abcd1234-alert': {
+        id: 'abcd1234-alert',
+        projectId: 'project-1',
+        projectTitle: 'Project One',
+        projectSummary: 'Project summary',
+        status: 'running',
+        createdAt: '2026-04-07T10:55:00.000Z',
+        triggerSource: 'manual',
+        startedAt: '2026-04-07T11:00:00.000Z',
+        completedAt: null,
+        updatedAt: '2026-04-07T11:05:00.000Z',
+        totalTasks: 1,
+        completedTasks: 0,
+        failedTasks: 0,
+        timeline: [],
+        deliverables: [],
+        externalDispatches: [],
+      },
+    };
+
+    const loadRunDetail = vi.fn().mockResolvedValue(undefined);
+    storeState.loadRunDetail = loadRunDetail;
+
+    const view = render(
+      <MemoryRouter initialEntries={['/runs/abcd1234-alert']}>
+        <Routes>
+          <Route path="/runs/:runId" element={<RunDetail />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    await act(async () => {});
+    expect(screen.getByRole('heading', { name: 'Run #abcd1234', level: 1 })).toBeInTheDocument();
+    expect(loadRunDetail).toHaveBeenCalledWith('abcd1234-alert', { force: true });
+
+    await act(async () => {
+      vi.advanceTimersByTime(5_000);
+    });
+    expect(loadRunDetail).toHaveBeenCalledTimes(2);
+
+    storeState.runDetails['abcd1234-alert'] = {
+      ...storeState.runDetails['abcd1234-alert'],
+      status: 'completed',
+      completedAt: '2026-04-07T11:10:00.000Z',
+    };
+
+    view.rerender(
+      <MemoryRouter initialEntries={['/runs/abcd1234-alert']}>
+        <Routes>
+          <Route path="/runs/:runId" element={<RunDetail />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    await act(async () => {
+      vi.advanceTimersByTime(5_000);
+    });
+    expect(loadRunDetail).toHaveBeenCalledTimes(2);
   });
 });

@@ -15,6 +15,7 @@ import type {
 
 type LoadingMap = Record<ProjectExecutionSection, boolean>;
 type ErrorMap = Record<ProjectExecutionSection, string | null>;
+type LoadOptions = { force?: boolean };
 
 interface ProjectExecutionState {
   projects: ProjectSummary[];
@@ -28,11 +29,11 @@ interface ProjectExecutionState {
   errors: ErrorMap;
   fallbackSections: ProjectExecutionSection[];
   lastUpdatedAt: string | null;
-  loadProjects: () => Promise<ProjectSummary[]>;
-  loadProjectDetail: (projectId: string) => Promise<ProjectDetail>;
+  loadProjects: (options?: LoadOptions) => Promise<ProjectSummary[]>;
+  loadProjectDetail: (projectId: string, options?: LoadOptions) => Promise<ProjectDetail>;
   loadProjectTaskDetail: (projectId: string, taskId: string) => Promise<ProjectTaskDetail>;
-  loadRuns: () => Promise<RunSummary[]>;
-  loadRunDetail: (runId: string) => Promise<RunDetail>;
+  loadRuns: (options?: LoadOptions) => Promise<RunSummary[]>;
+  loadRunDetail: (runId: string, options?: LoadOptions) => Promise<RunDetail>;
   loadSkillHub: () => Promise<SkillHubSnapshot>;
   loadExtensions: () => Promise<PlatformExtension[]>;
   createProject: (input: { name: string; description?: string | null }) => Promise<string>;
@@ -50,14 +51,14 @@ interface ProjectExecutionState {
     title: string;
     description?: string | null;
     executionMode?: ProjectExecutionMode;
-  }) => Promise<{ taskId: string; runId: string }>;
+  }) => Promise<{ taskId: string; runId: string | null; needsClarification: boolean }>;
   launchTaskRun: (input: {
     projectId: string;
     taskId: string;
     title: string;
     description?: string | null;
     executionMode?: ProjectExecutionMode;
-  }) => Promise<string>;
+  }) => Promise<{ runId: string | null; needsClarification: boolean }>;
   markRunHandled: (
     runId: string,
     handledAt: string,
@@ -109,7 +110,15 @@ const REQUEST_STALE_MS = 15_000;
 
 const requestCache = new Map<string, { at: number; promise: Promise<any> }>();
 
-const withRequestCache = <T>(key: string, factory: () => Promise<T>): Promise<T> => {
+const withRequestCache = <T>(
+  key: string,
+  factory: () => Promise<T>,
+  options?: LoadOptions,
+): Promise<T> => {
+  if (options?.force) {
+    return factory();
+  }
+
   const now = Date.now();
   const existing = requestCache.get(key);
   if (existing && now - existing.at < REQUEST_STALE_MS) {
@@ -144,14 +153,18 @@ const initialState = () => ({
 export const useProjectExecutionStore = create<ProjectExecutionState>((set, get) => ({
   ...initialState(),
 
-  loadProjects: async () => {
+  loadProjects: async (options) => {
     set((state) => ({
       loading: { ...state.loading, projects: true },
       errors: { ...state.errors, projects: null },
     }));
 
     try {
-      const result = await withRequestCache('projects', () => projectExecutionApi.listProjects());
+      const result = await withRequestCache(
+        'projects',
+        () => projectExecutionApi.listProjects(),
+        options,
+      );
       set((state) => ({
         projects: result.fallback && state.projects.length > 0 ? state.projects : result.data,
         loading: { ...state.loading, projects: false },
@@ -170,14 +183,18 @@ export const useProjectExecutionStore = create<ProjectExecutionState>((set, get)
     }
   },
 
-  loadProjectDetail: async (projectId) => {
+  loadProjectDetail: async (projectId, options) => {
     set((state) => ({
       loading: { ...state.loading, projectDetail: true },
       errors: { ...state.errors, projectDetail: null },
     }));
 
     try {
-      const result = await withRequestCache(`projectDetail:${projectId}`, () => projectExecutionApi.getProjectDetail(projectId));
+      const result = await withRequestCache(
+        `projectDetail:${projectId}`,
+        () => projectExecutionApi.getProjectDetail(projectId),
+        options,
+      );
       set((state) => {
         const nextDetail = result.fallback && state.projectDetails[projectId]
           ? state.projectDetails[projectId]
@@ -251,14 +268,14 @@ export const useProjectExecutionStore = create<ProjectExecutionState>((set, get)
     }
   },
 
-  loadRuns: async () => {
+  loadRuns: async (options) => {
     set((state) => ({
       loading: { ...state.loading, runs: true },
       errors: { ...state.errors, runs: null },
     }));
 
     try {
-      const result = await withRequestCache('runs', () => projectExecutionApi.listRuns());
+      const result = await withRequestCache('runs', () => projectExecutionApi.listRuns(), options);
       set((state) => ({
         runs: result.fallback && state.runs.length > 0 ? state.runs : result.data,
         loading: { ...state.loading, runs: false },
@@ -277,14 +294,18 @@ export const useProjectExecutionStore = create<ProjectExecutionState>((set, get)
     }
   },
 
-  loadRunDetail: async (runId) => {
+  loadRunDetail: async (runId, options) => {
     set((state) => ({
       loading: { ...state.loading, runDetail: true },
       errors: { ...state.errors, runDetail: null },
     }));
 
     try {
-      const result = await projectExecutionApi.getRunDetail(runId);
+      const result = await withRequestCache(
+        `runDetail:${runId}`,
+        () => projectExecutionApi.getRunDetail(runId),
+        options,
+      );
       set((state) => ({
         runDetails: { ...state.runDetails, [runId]: result.data },
         loading: { ...state.loading, runDetail: false },
@@ -370,13 +391,19 @@ export const useProjectExecutionStore = create<ProjectExecutionState>((set, get)
 
   createProject: async (input) => {
     const projectId = await projectExecutionApi.createProject(input);
-    await Promise.all([get().loadProjects(), get().loadProjectDetail(projectId)]);
+    await Promise.all([
+      get().loadProjects({ force: true }),
+      get().loadProjectDetail(projectId, { force: true }),
+    ]);
     return projectId;
   },
 
   updateProject: async (projectId, payload) => {
     const updatedId = await projectExecutionApi.updateProject(projectId, payload);
-    await Promise.all([get().loadProjects(), get().loadProjectDetail(projectId)]);
+    await Promise.all([
+      get().loadProjects({ force: true }),
+      get().loadProjectDetail(projectId, { force: true }),
+    ]);
     return updatedId;
   },
 
@@ -399,8 +426,8 @@ export const useProjectExecutionStore = create<ProjectExecutionState>((set, get)
   createProjectTask: async (input) => {
     const taskId = await projectExecutionApi.createProjectTask(input);
     await Promise.all([
-      get().loadProjects(),
-      get().loadProjectDetail(input.projectId),
+      get().loadProjects({ force: true }),
+      get().loadProjectDetail(input.projectId, { force: true }),
       get().loadProjectTaskDetail(input.projectId, taskId),
     ]);
     return taskId;
@@ -428,30 +455,36 @@ export const useProjectExecutionStore = create<ProjectExecutionState>((set, get)
           : state.projectDetails,
       };
     });
-    await Promise.allSettled([get().loadProjects(), get().loadProjectDetail(projectId)]);
+    await Promise.allSettled([
+      get().loadProjects({ force: true }),
+      get().loadProjectDetail(projectId, { force: true }),
+    ]);
   },
 
   createProjectTaskAndLaunchRun: async (input) => {
-    const { taskId, runId } = await projectExecutionApi.createProjectTaskAndLaunchRun(input);
+    const { taskId, runId, needsClarification } =
+      await projectExecutionApi.createProjectTaskAndLaunchRun(input);
     await Promise.allSettled([
-      get().loadProjects(),
-      get().loadProjectDetail(input.projectId),
+      get().loadProjects({ force: true }),
+      get().loadProjectDetail(input.projectId, { force: true }),
       get().loadProjectTaskDetail(input.projectId, taskId),
-      get().loadRuns(),
-      get().loadRunDetail(runId),
+      ...(runId
+        ? [get().loadRuns({ force: true }), get().loadRunDetail(runId, { force: true })]
+        : []),
     ]);
-    return { taskId, runId };
+    return { taskId, runId, needsClarification: Boolean(needsClarification || !runId) };
   },
 
   launchTaskRun: async (input) => {
-    const runId = await projectExecutionApi.launchTaskRun(input);
+    const { runId, needsClarification } = await projectExecutionApi.launchTaskRun(input);
     await Promise.all([
       get().loadProjectTaskDetail(input.projectId, input.taskId),
-      get().loadProjectDetail(input.projectId),
-      get().loadRuns(),
-      get().loadRunDetail(runId),
+      get().loadProjectDetail(input.projectId, { force: true }),
+      ...(runId
+        ? [get().loadRuns({ force: true }), get().loadRunDetail(runId, { force: true })]
+        : []),
     ]);
-    return runId;
+    return { runId, needsClarification: Boolean(needsClarification || !runId) };
   },
 
   markRunHandled: async (runId, handledAt, handledSignature, handledByUserId) => {
@@ -463,9 +496,9 @@ export const useProjectExecutionStore = create<ProjectExecutionState>((set, get)
     const projectId =
       get().runDetails[runId]?.projectId || get().runs.find((run) => run.id === runId)?.projectId;
     await Promise.allSettled([
-      get().loadRuns(),
-      get().loadRunDetail(runId),
-      projectId ? get().loadProjectDetail(projectId) : Promise.resolve(),
+      get().loadRuns({ force: true }),
+      get().loadRunDetail(runId, { force: true }),
+      projectId ? get().loadProjectDetail(projectId, { force: true }) : Promise.resolve(),
     ]);
   },
 
@@ -474,7 +507,13 @@ export const useProjectExecutionStore = create<ProjectExecutionState>((set, get)
     set((state) => ({
       runDetails: { ...state.runDetails, [runId]: detail },
     }));
-    await Promise.allSettled([get().loadRuns(), get().loadRunDetail(runId), detail.projectId ? get().loadProjectDetail(detail.projectId) : Promise.resolve(detail.projectSummary)]);
+    await Promise.allSettled([
+      get().loadRuns({ force: true }),
+      get().loadRunDetail(runId, { force: true }),
+      detail.projectId
+        ? get().loadProjectDetail(detail.projectId, { force: true })
+        : Promise.resolve(detail.projectSummary),
+    ]);
     return detail;
   },
 

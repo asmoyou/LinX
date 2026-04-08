@@ -10,18 +10,25 @@ from sqlalchemy.orm import Session
 from access_control.permissions import CurrentUser
 from database.models import Agent
 from database.project_execution_models import (
+    Project,
     ProjectAuditEvent,
     ProjectPlan,
     ProjectRun,
     ProjectRunStep,
     ProjectTask,
 )
-from project_execution.planning import build_step_definitions
+from project_execution.model_planner import PlannerResult, build_plan_definition
 
 _COMPLETED_STATUSES = {"completed", "done", "success", "succeeded", "approved"}
 _FAILED_STATUSES = {"failed", "error", "cancelled", "canceled"}
 _TERMINAL_RUN_STATUSES = _COMPLETED_STATUSES | _FAILED_STATUSES
 _EPHEMERAL_AGENT_CLEANUP_RUN_STATUSES = _TERMINAL_RUN_STATUSES | {"blocked"}
+_TASK_ACTIVE_STEP_STATUSES = {"running", "acked", "leased"}
+_TASK_ASSIGNED_STEP_STATUSES = {"assigned"}
+_TASK_PENDING_STEP_STATUSES = {"pending", "queued"}
+_RUN_ACTIVE_STATUSES = {"running", "executing", "in_progress"}
+_RUN_BLOCKED_STATUSES = {"blocked"}
+_RUN_QUEUED_STATUSES = {"queued", "assigned", "scheduled", "pending"}
 
 
 def parse_uuid(value: Any, field_name: str) -> uuid.UUID:
@@ -161,9 +168,114 @@ def _is_terminal_task_status(status: Any) -> bool:
     return _is_completed_status(status) or _is_failed_status(status)
 
 
+def _is_blocked_status(status: Any) -> bool:
+    return _normalize_status(status) == "blocked"
+
+
 def _latest_timestamp(values: Iterable[Optional[datetime]]) -> Optional[datetime]:
     filtered = [value for value in values if value is not None]
     return max(filtered) if filtered else None
+
+
+def _resolve_task_status(current_status: Any, steps: Iterable[ProjectRunStep]) -> str:
+    step_statuses = [_normalize_status(step.status) for step in steps]
+    if not step_statuses:
+        return str(current_status or "")
+
+    if any(_is_failed_status(status) for status in step_statuses):
+        return "failed"
+    if any(status in _TASK_ACTIVE_STEP_STATUSES for status in step_statuses):
+        return "running"
+    if any(status in _TASK_ASSIGNED_STEP_STATUSES for status in step_statuses):
+        return "assigned"
+    if any(status in _TASK_PENDING_STEP_STATUSES for status in step_statuses):
+        return "queued"
+    if all(_is_completed_status(status) for status in step_statuses):
+        return "completed"
+    if any(_is_blocked_status(status) for status in step_statuses):
+        return "blocked"
+    return str(current_status or "")
+
+
+def reconcile_task_state(
+    session: Session,
+    *,
+    task: Optional[ProjectTask] = None,
+    task_id: Optional[uuid.UUID] = None,
+) -> Optional[ProjectTask]:
+    target_task = task
+    if target_task is None and task_id is not None:
+        target_task = (
+            session.query(ProjectTask).filter(ProjectTask.project_task_id == task_id).first()
+        )
+
+    if target_task is None:
+        return None
+
+    steps = (
+        session.query(ProjectRunStep)
+        .filter(ProjectRunStep.project_task_id == target_task.project_task_id)
+        .order_by(ProjectRunStep.sequence_number.asc(), ProjectRunStep.created_at.asc())
+        .all()
+    )
+    next_status = _resolve_task_status(target_task.status, steps)
+    if next_status and target_task.status != next_status:
+        target_task.status = next_status
+        session.flush()
+    return target_task
+
+
+def _resolve_project_status(
+    current_status: Any,
+    tasks: Iterable[ProjectTask],
+    runs: Iterable[ProjectRun],
+) -> str:
+    task_statuses = [_normalize_status(task.status) for task in tasks]
+    run_statuses = [_normalize_status(run.status) for run in runs]
+
+    if not task_statuses and not run_statuses:
+        return str(current_status or "")
+
+    if any(status in _RUN_ACTIVE_STATUSES for status in (*task_statuses, *run_statuses)):
+        return "running"
+    if any(status in _RUN_BLOCKED_STATUSES for status in (*task_statuses, *run_statuses)):
+        return "blocked"
+    if any(_is_failed_status(status) for status in (*task_statuses, *run_statuses)):
+        return "failed"
+
+    if task_statuses:
+        if all(_is_completed_status(status) for status in task_statuses):
+            return "completed"
+        return "queued"
+
+    if any(status in _RUN_QUEUED_STATUSES for status in run_statuses):
+        return "queued"
+    if all(status in _TERMINAL_RUN_STATUSES for status in run_statuses):
+        return "completed"
+
+    return str(current_status or "")
+
+
+def reconcile_project_state(
+    session: Session,
+    *,
+    project: Optional[Project] = None,
+    project_id: Optional[uuid.UUID] = None,
+) -> Optional[Project]:
+    target_project = project
+    if target_project is None and project_id is not None:
+        target_project = session.query(Project).filter(Project.project_id == project_id).first()
+
+    if target_project is None:
+        return None
+
+    tasks = session.query(ProjectTask).filter(ProjectTask.project_id == target_project.project_id).all()
+    runs = session.query(ProjectRun).filter(ProjectRun.project_id == target_project.project_id).all()
+    next_status = _resolve_project_status(target_project.status, tasks, runs)
+    if next_status and target_project.status != next_status:
+        target_project.status = next_status
+        session.flush()
+    return target_project
 
 
 def retire_ephemeral_run_agents(
@@ -235,6 +347,23 @@ def reconcile_run_state(
 
     tasks = session.query(ProjectTask).filter(ProjectTask.run_id == target_run.run_id).all()
     steps = session.query(ProjectRunStep).filter(ProjectRunStep.run_id == target_run.run_id).all()
+    steps_by_task: dict[uuid.UUID, list[ProjectRunStep]] = {}
+    for step in steps:
+        if step.project_task_id is None:
+            continue
+        steps_by_task.setdefault(step.project_task_id, []).append(step)
+
+    task_state_changed = False
+    for task in tasks:
+        next_task_status = _resolve_task_status(
+            task.status, steps_by_task.get(task.project_task_id, [])
+        )
+        if next_task_status and task.status != next_task_status:
+            task.status = next_task_status
+            task_state_changed = True
+
+    if task_state_changed:
+        session.flush()
 
     normalized_status = _normalize_status(target_run.status)
     completion_timestamp = _latest_timestamp(
@@ -287,8 +416,46 @@ def reconcile_run_state(
         session.refresh(target_run)
 
     retire_ephemeral_run_agents(session, run=target_run, tasks=tasks)
+    reconcile_project_state(session, project_id=target_run.project_id)
 
     return target_run
+
+
+def _planner_parallel_group_count(planner_result: PlannerResult) -> int:
+    return len(
+        {
+            str(step.parallel_group).strip()
+            for step in planner_result.steps
+            if str(step.parallel_group or "").strip()
+        }
+    )
+
+
+def _planner_clarification_payload(planner_result: PlannerResult) -> list[dict[str, Any]]:
+    return [question.model_dump() for question in planner_result.clarification_questions]
+
+
+def _planner_step_count(planner_result: PlannerResult) -> int:
+    return len(planner_result.steps)
+
+
+def _planner_task_input_payload(
+    *,
+    input_payload: Optional[dict[str, Any]],
+    planner_result: PlannerResult,
+    execution_mode: str,
+) -> dict[str, Any]:
+    return {
+        **(input_payload or {}),
+        "execution_mode": execution_mode,
+        "planner_summary": planner_result.summary,
+        "planner_source": planner_result.planner_source,
+        "planner_provider": planner_result.planner_provider,
+        "planner_model": planner_result.planner_model,
+        "step_count": _planner_step_count(planner_result),
+        "parallel_group_count": _planner_parallel_group_count(planner_result),
+        "planner_clarification_questions": _planner_clarification_payload(planner_result),
+    }
 
 
 def create_project_task_and_launch_run(
@@ -300,8 +467,9 @@ def create_project_task_and_launch_run(
     priority: str,
     assignee_agent_id: Optional[uuid.UUID],
     input_payload: Optional[dict[str, Any]],
+    planner_result: PlannerResult,
     current_user: CurrentUser,
-) -> tuple[ProjectTask, ProjectPlan, ProjectRun, ProjectRunStep]:
+) -> tuple[ProjectTask, Optional[ProjectPlan], Optional[ProjectRun], Optional[ProjectRunStep]]:
     """Create a task, plan, run, and initial pending run step bundle in one transaction."""
     actor_user_id = get_current_user_uuid(current_user)
     ensure_related_records(
@@ -318,17 +486,21 @@ def create_project_task_and_launch_run(
         session.query(ProjectPlan).filter(ProjectPlan.project_id == project_id).count() + 1
     )
     execution_mode = str((input_payload or {}).get("execution_mode") or "auto")
-    step_definitions = build_step_definitions(title, description, execution_mode=execution_mode)
+    planner_task_payload = _planner_task_input_payload(
+        input_payload=input_payload,
+        planner_result=planner_result,
+        execution_mode=execution_mode,
+    )
 
     task = ProjectTask(
         project_id=project_id,
         assignee_agent_id=assignee_agent_id,
         title=title,
         description=description,
-        status="queued",
+        status="needs_clarification" if planner_result.needs_clarification else "queued",
         priority=priority,
         sort_order=next_sort_order,
-        input_payload={**(input_payload or {}), "step_count": len(step_definitions)},
+        input_payload=planner_task_payload,
         created_by_user_id=actor_user_id,
     )
     session.add(task)
@@ -343,6 +515,10 @@ def create_project_task_and_launch_run(
         payload={"status": task.status},
     )
 
+    if planner_result.needs_clarification:
+        reconcile_project_state(session, project_id=project_id)
+        return task, None, None, None
+
     plan = ProjectPlan(
         project_id=project_id,
         name=f"{title} Plan",
@@ -353,7 +529,7 @@ def create_project_task_and_launch_run(
             "project_task_id": str(task.project_task_id),
             "task_title": title,
             "execution_mode": execution_mode,
-            "nodes": step_definitions,
+            **build_plan_definition(planner_result),
         },
         created_by_user_id=actor_user_id,
     )
@@ -386,7 +562,12 @@ def create_project_task_and_launch_run(
             "project_task_id": str(task.project_task_id),
             "task_title": title,
             "execution_mode": execution_mode,
-            "step_count": len(step_definitions),
+            "step_count": _planner_step_count(planner_result),
+            "parallel_group_count": _planner_parallel_group_count(planner_result),
+            "planner_summary": planner_result.summary,
+            "planner_source": planner_result.planner_source,
+            "planner_provider": planner_result.planner_provider,
+            "planner_model": planner_result.planner_model,
         },
         requested_by_user_id=actor_user_id,
     )
@@ -403,24 +584,32 @@ def create_project_task_and_launch_run(
         payload={"status": run.status},
     )
 
-    created_steps: list[ProjectRunStep] = []
-    for step_definition in step_definitions:
+    created_steps: list[tuple[ProjectRunStep, Any]] = []
+    planner_step_to_run_step_id: dict[str, str] = {}
+    for index, planner_step in enumerate(planner_result.steps):
         step = ProjectRunStep(
             run_id=run.run_id,
             project_task_id=task.project_task_id,
-            name=str(step_definition.get("name") or title),
+            name=planner_step.name,
             step_type="task",
             status="pending",
-            sequence_number=int(step_definition.get("sequence") or 0),
+            sequence_number=index,
             input_payload={
                 "project_task_id": str(task.project_task_id),
-                "step_kind": str(step_definition.get("step_kind") or "implementation"),
-                "executor_kind": str(step_definition.get("executor_kind") or "agent"),
+                "planner_step_id": planner_step.id,
+                "step_kind": planner_step.step_kind,
+                "executor_kind": planner_step.executor_kind,
+                "execution_mode": planner_step.execution_mode,
+                "required_capabilities": list(planner_step.required_capabilities or []),
+                "suggested_agent_ids": list(planner_step.suggested_agent_ids or []),
+                "acceptance": planner_step.acceptance,
+                "parallel_group": planner_step.parallel_group,
             },
         )
         session.add(step)
         flush_and_refresh(session, step)
-        created_steps.append(step)
+        planner_step_to_run_step_id[planner_step.id] = str(step.run_step_id)
+        created_steps.append((step, planner_step))
         append_audit_event(
             session,
             action="run-step.created",
@@ -432,9 +621,25 @@ def create_project_task_and_launch_run(
             payload={"sequence": step.sequence_number, "status": step.status},
         )
 
+    for step, planner_step in created_steps:
+        step.input_payload = {
+            **(step.input_payload or {}),
+            "dependency_step_ids": [
+                planner_step_to_run_step_id[dependency_id]
+                for dependency_id in planner_step.depends_on
+                if dependency_id in planner_step_to_run_step_id
+            ],
+        }
+        flush_and_refresh(session, step)
+
     task.plan_id = plan.plan_id
     task.run_id = run.run_id
     task.status = "queued"
+    task.input_payload = {
+        **(task.input_payload or {}),
+        "plan_id": str(plan.plan_id),
+        "run_id": str(run.run_id),
+    }
     flush_and_refresh(session, task)
     append_audit_event(
         session,
@@ -451,4 +656,126 @@ def create_project_task_and_launch_run(
         },
     )
 
-    return task, plan, run, created_steps[0]
+    reconcile_project_state(session, project_id=project_id)
+    return task, plan, run, created_steps[0][0] if created_steps else None
+
+
+def launch_existing_project_task_run(
+    session: Session,
+    *,
+    task: ProjectTask,
+    planner_result: PlannerResult,
+    current_user: CurrentUser,
+) -> tuple[ProjectTask, Optional[ProjectPlan], Optional[ProjectRun], Optional[ProjectRunStep]]:
+    if task.project_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Task is not attached to a project",
+        )
+    actor_user_id = get_current_user_uuid(current_user)
+    next_plan_version = (
+        session.query(ProjectPlan).filter(ProjectPlan.project_id == task.project_id).count() + 1
+    )
+    execution_mode = str((task.input_payload or {}).get("execution_mode") or "auto")
+    parallel_group_count = _planner_parallel_group_count(planner_result)
+
+    task.input_payload = _planner_task_input_payload(
+        input_payload={**(task.input_payload or {})},
+        planner_result=planner_result,
+        execution_mode=execution_mode,
+    )
+    task.status = "needs_clarification" if planner_result.needs_clarification else "queued"
+    task.output_payload = {}
+    task.error_message = None
+    flush_and_refresh(session, task)
+
+    if planner_result.needs_clarification:
+        return task, None, None, None
+
+    plan = ProjectPlan(
+        project_id=task.project_id,
+        name=f"{task.title} Plan",
+        goal=task.description or task.title,
+        status="active",
+        version=next_plan_version,
+        definition={
+            "project_task_id": str(task.project_task_id),
+            "task_title": task.title,
+            "execution_mode": execution_mode,
+            **build_plan_definition(planner_result),
+        },
+        created_by_user_id=actor_user_id,
+    )
+    session.add(plan)
+    flush_and_refresh(session, plan)
+
+    run = ProjectRun(
+        project_id=task.project_id,
+        plan_id=plan.plan_id,
+        status="queued",
+        trigger_source="manual",
+        runtime_context={
+            "project_task_id": str(task.project_task_id),
+            "task_title": task.title,
+            "execution_mode": execution_mode,
+            "step_count": _planner_step_count(planner_result),
+            "parallel_group_count": parallel_group_count,
+            "planner_summary": planner_result.summary,
+            "planner_source": planner_result.planner_source,
+            "planner_provider": planner_result.planner_provider,
+            "planner_model": planner_result.planner_model,
+        },
+        requested_by_user_id=actor_user_id,
+    )
+    session.add(run)
+    flush_and_refresh(session, run)
+
+    created_steps: list[tuple[ProjectRunStep, Any]] = []
+    planner_step_to_run_step_id: dict[str, str] = {}
+    for index, planner_step in enumerate(planner_result.steps):
+        step = ProjectRunStep(
+            run_id=run.run_id,
+            project_task_id=task.project_task_id,
+            name=planner_step.name,
+            step_type="task",
+            status="pending",
+            sequence_number=index,
+            input_payload={
+                "project_task_id": str(task.project_task_id),
+                "planner_step_id": planner_step.id,
+                "step_kind": planner_step.step_kind,
+                "executor_kind": planner_step.executor_kind,
+                "execution_mode": planner_step.execution_mode,
+                "required_capabilities": list(planner_step.required_capabilities or []),
+                "suggested_agent_ids": list(planner_step.suggested_agent_ids or []),
+                "acceptance": planner_step.acceptance,
+                "parallel_group": planner_step.parallel_group,
+            },
+        )
+        session.add(step)
+        flush_and_refresh(session, step)
+        planner_step_to_run_step_id[planner_step.id] = str(step.run_step_id)
+        created_steps.append((step, planner_step))
+
+    for step, planner_step in created_steps:
+        step.input_payload = {
+            **(step.input_payload or {}),
+            "dependency_step_ids": [
+                planner_step_to_run_step_id[dependency_id]
+                for dependency_id in planner_step.depends_on
+                if dependency_id in planner_step_to_run_step_id
+            ],
+        }
+        flush_and_refresh(session, step)
+
+    task.plan_id = plan.plan_id
+    task.run_id = run.run_id
+    task.status = "queued"
+    task.input_payload = {
+        **(task.input_payload or {}),
+        "plan_id": str(plan.plan_id),
+        "run_id": str(run.run_id),
+    }
+    flush_and_refresh(session, task)
+
+    return task, plan, run, created_steps[0][0] if created_steps else None

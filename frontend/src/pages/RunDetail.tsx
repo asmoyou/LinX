@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import toast from 'react-hot-toast';
@@ -11,6 +11,9 @@ import {
   SectionCard,
   StatusBadge,
 } from '@/components/platform/PlatformUi';
+import { SessionWorkspacePanel } from '@/components/workforce/SessionWorkspacePanel';
+import { useProjectExecutionPolling } from '@/hooks/useProjectExecutionPolling';
+import { projectExecutionApi } from '@/api/projectExecution';
 import { useAuthStore } from '@/stores/authStore';
 import { useProjectExecutionStore } from '@/stores/projectExecutionStore';
 import {
@@ -28,11 +31,24 @@ const isRunHandled = (detail: {
 }): boolean =>
   Boolean(detail.handledAt && detail.handledSignature && detail.handledSignature === detail.alertSignature);
 
+const POLLING_RUN_STATUSES = new Set(['running', 'queued', 'assigned', 'scheduled', 'reviewing']);
+
+const canOpenInWorkspace = (path?: string | null): boolean => {
+  const normalized = String(path || '').trim().replace(/\\/g, '/');
+  return (
+    normalized.startsWith('/workspace/') ||
+    normalized.startsWith('workspace/') ||
+    normalized.startsWith('output/')
+  );
+};
+
 export const RunDetail = () => {
   const { t } = useTranslation();
   const { runId = '' } = useParams();
   const [isRescheduling, setIsRescheduling] = useState(false);
   const [isMarkingHandled, setIsMarkingHandled] = useState(false);
+  const [showWorkspacePanel, setShowWorkspacePanel] = useState(false);
+  const [workspaceFocusPath, setWorkspaceFocusPath] = useState<string | null>(null);
   const currentUser = useAuthStore((state) => state.user);
   const detail = useProjectExecutionStore((state) =>
     runId ? state.runDetails[runId] : undefined,
@@ -49,8 +65,35 @@ export const RunDetail = () => {
       return;
     }
 
-    void loadRunDetail(runId);
+    void loadRunDetail(runId, { force: true });
   }, [loadRunDetail, runId]);
+
+  useProjectExecutionPolling(
+    Boolean(detail && POLLING_RUN_STATUSES.has(detail.status.toLowerCase())),
+    () => {
+      if (!runId) {
+        return Promise.resolve();
+      }
+      return loadRunDetail(runId, { force: true });
+    },
+  );
+
+  const handleOpenWorkspace = (path?: string | null) => {
+    setWorkspaceFocusPath(path || null);
+    setShowWorkspacePanel(true);
+  };
+
+  const loadRunWorkspaceFiles = useCallback(
+    (path?: string, recursive?: boolean, options?: { suppressErrorToast?: boolean }) =>
+      projectExecutionApi.listRunWorkspaceFiles(runId, path, recursive, options),
+    [runId],
+  );
+
+  const downloadRunWorkspaceFile = useCallback(
+    (path: string, options?: { suppressErrorToast?: boolean }) =>
+      projectExecutionApi.downloadRunWorkspaceFile(runId, path, options),
+    [runId],
+  );
 
   const handleReschedule = async () => {
     if (!runId || !detail) return;
@@ -201,6 +244,15 @@ export const RunDetail = () => {
               className="rounded-full border border-zinc-300 px-4 py-2 text-sm font-medium text-zinc-700 transition hover:border-zinc-400 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-200 dark:hover:border-zinc-600 dark:hover:bg-zinc-900"
             >{t('projectExecution.shared.openProject', 'Open Project')}
             </Link>
+            {detail.runWorkspaceRoot ? (
+              <button
+                type="button"
+                onClick={() => handleOpenWorkspace(workspaceFocusPath)}
+                className="rounded-full border border-zinc-300 px-4 py-2 text-sm font-medium text-zinc-700 transition hover:border-zinc-400 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-200 dark:hover:border-zinc-600 dark:hover:bg-zinc-900"
+              >
+                {t('projectExecution.runDetail.openWorkspaceAction', 'Open Workspace')}
+              </button>
+            ) : null}
           </div>
         </div>
       </div>
@@ -219,6 +271,55 @@ export const RunDetail = () => {
           title={t('projectExecution.runDetail.failureTitle', 'Run failure reason')}
           description={detail.failureReason}
         />
+      ) : null}
+
+      {(detail.plannerSummary || detail.stepTotal || detail.currentStepTitle) ? (
+        <SectionCard
+          title={t('projectExecution.runDetail.plannerTitle', 'Plan Overview')}
+          description={t('projectExecution.runDetail.plannerDescription', 'Planner output for this run.')}
+        >
+          <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+            <div className="rounded-[18px] border border-zinc-200/70 bg-zinc-50/70 px-4 py-3 dark:border-zinc-800 dark:bg-zinc-900/60">
+              <p className="text-sm font-medium text-zinc-500 dark:text-zinc-400">
+                {t('projectExecution.runDetail.stepCountLabel', 'Steps')}
+              </p>
+              <p className="mt-2 text-sm text-zinc-800 dark:text-zinc-200">
+                {`${detail.completedStepCount || 0}/${detail.stepTotal || 0}`}
+              </p>
+            </div>
+            <div className="rounded-[18px] border border-zinc-200/70 bg-zinc-50/70 px-4 py-3 dark:border-zinc-800 dark:bg-zinc-900/60">
+              <p className="text-sm font-medium text-zinc-500 dark:text-zinc-400">
+                {t('projectExecution.runDetail.currentStepLabel', 'Current Step')}
+              </p>
+              <p className="mt-2 text-sm text-zinc-800 dark:text-zinc-200">
+                {detail.currentStepTitle || t('projectExecution.runDetail.currentStepUnknown', 'No active step')}
+              </p>
+            </div>
+            <div className="rounded-[18px] border border-zinc-200/70 bg-zinc-50/70 px-4 py-3 dark:border-zinc-800 dark:bg-zinc-900/60">
+              <p className="text-sm font-medium text-zinc-500 dark:text-zinc-400">
+                {t('projectExecution.runDetail.parallelGroupsLabel', 'Parallel Groups')}
+              </p>
+              <p className="mt-2 text-sm text-zinc-800 dark:text-zinc-200">
+                {detail.parallelGroupCount || 0}
+              </p>
+            </div>
+            <div className="rounded-[18px] border border-zinc-200/70 bg-zinc-50/70 px-4 py-3 dark:border-zinc-800 dark:bg-zinc-900/60">
+              <p className="text-sm font-medium text-zinc-500 dark:text-zinc-400">
+                {t('projectExecution.runDetail.plannerSourceLabel', 'Planner Source')}
+              </p>
+              <p className="mt-2 text-sm text-zinc-800 dark:text-zinc-200">
+                {detail.plannerSource
+                  ? formatTokenLabel(detail.plannerSource)
+                  : t('projectExecution.runDetail.plannerSourceUnknown', 'Unknown')}
+              </p>
+            </div>
+          </div>
+          {detail.plannerSummary ? (
+            <p className="mt-4 text-sm leading-6 text-zinc-600 dark:text-zinc-400">
+              {detail.plannerSummary}
+            </p>
+          ) : null}
+        </SectionCard>
       ) : null}
 
       {detail.taskId || detail.taskTitle ? (
@@ -351,8 +452,21 @@ export const RunDetail = () => {
                     key={item.path}
                     className="rounded-[18px] border border-zinc-200/70 bg-zinc-50/70 px-4 py-3 dark:border-zinc-800 dark:bg-zinc-900/60"
                   >
-                    <p className="font-medium text-zinc-950 dark:text-zinc-50">{item.filename}</p>
-                    <p className="mt-1 text-sm text-zinc-600 dark:text-zinc-400">{item.path}</p>
+                    <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                      <div>
+                        <p className="font-medium text-zinc-950 dark:text-zinc-50">{item.filename}</p>
+                        <p className="mt-1 text-sm text-zinc-600 dark:text-zinc-400">{item.path}</p>
+                      </div>
+                      {canOpenInWorkspace(item.path) ? (
+                        <button
+                          type="button"
+                          onClick={() => handleOpenWorkspace(item.path)}
+                          className="rounded-full border border-zinc-300 px-4 py-2 text-sm font-medium text-zinc-700 transition hover:border-zinc-400 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-200 dark:hover:border-zinc-600 dark:hover:bg-zinc-900"
+                        >
+                          {t('projectExecution.shared.openInWorkspace', 'Open in workspace')}
+                        </button>
+                      ) : null}
+                    </div>
                   </div>
                 ))}
               </div>
@@ -364,6 +478,15 @@ export const RunDetail = () => {
           </SectionCard>
         </div>
       </div>
+
+      <SessionWorkspacePanel
+        isOpen={showWorkspacePanel}
+        onClose={() => setShowWorkspacePanel(false)}
+        workspaceKey={runId ? `project-run:${runId}` : undefined}
+        focusPath={workspaceFocusPath}
+        loadWorkspaceFiles={loadRunWorkspaceFiles}
+        downloadWorkspaceFile={downloadRunWorkspaceFile}
+      />
     </div>
   );
 };

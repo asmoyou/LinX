@@ -11,6 +11,7 @@ def test_project_execution_routes_are_registered():
         "/api/v1/projects",
         "/api/v1/projects/{project_id}",
         "/api/v1/project-tasks",
+        "/api/v1/project-tasks/{project_task_id}/launch",
         "/api/v1/project-tasks/{project_task_id}/transition",
         "/api/v1/plans/{plan_id}/activate",
         "/api/v1/runs/{run_id}/start",

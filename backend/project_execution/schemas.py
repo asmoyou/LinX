@@ -228,9 +228,11 @@ class ProjectTaskCreateAndLaunchRequest(BaseModel):
 
 class ProjectTaskLaunchBundleResponse(BaseModel):
     task: ProjectTaskResponse
-    plan: ProjectPlanResponse
-    run: ProjectRunResponse
-    step: ProjectRunStepResponse
+    plan: Optional[ProjectPlanResponse] = None
+    run: Optional[ProjectRunResponse] = None
+    step: Optional[ProjectRunStepResponse] = None
+    needs_clarification: bool = False
+    clarification_questions: list[dict[str, Any]] = Field(default_factory=list)
     agent_assignment: Optional[StepExecutorAssignmentResponse] = None
     external_dispatch: Optional[ExternalAgentDispatchResponse] = None
     executor_assignment: Optional[StepExecutorAssignmentResponse] = None

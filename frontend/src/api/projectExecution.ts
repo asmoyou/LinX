@@ -1,10 +1,7 @@
 import apiClient, { type RequestConfigWithMeta } from './client';
-import { agentsApi } from './agents';
+import { agentsApi, type AgentSessionWorkspaceFile } from './agents';
 import { skillsApi } from './skills';
-import {
-  getProjectExecutionPlanPreview,
-  type ProjectExecutionMode,
-} from '@/utils/projectExecutionPlanning';
+import type { ProjectExecutionMode } from '@/utils/projectExecutionPlanning';
 import type {
   PlatformExtension,
   PlatformQueryResult,
@@ -104,9 +101,11 @@ type SkeletonRunStepRecord = {
 
 type SkeletonTaskLaunchBundleRecord = {
   task: SkeletonProjectTaskRecord;
-  plan: SkeletonPlanRecord;
-  run: SkeletonRunRecord;
-  step: SkeletonRunStepRecord;
+  plan?: SkeletonPlanRecord | null;
+  run?: SkeletonRunRecord | null;
+  step?: SkeletonRunStepRecord | null;
+  needs_clarification?: boolean;
+  clarification_questions?: Array<{ question: string; importance?: string }>;
 };
 
 type SkeletonProjectSpaceRecord = {
@@ -826,6 +825,96 @@ const isClosedRunStatus = (status: string): boolean => {
 const isTerminalTaskStatus = (status: string): boolean =>
   isCompletedStatus(status) || isFailedStatus(status);
 
+const isBlockedStatus = (status: string): boolean => (status || '').toLowerCase() === 'blocked';
+
+const isActiveRunStatus = (status: string): boolean =>
+  ['running', 'executing', 'in_progress'].includes((status || '').toLowerCase());
+
+const isQueuedRunStatus = (status: string): boolean =>
+  ['queued', 'assigned', 'scheduled', 'pending'].includes((status || '').toLowerCase());
+
+type ResolvedProjectLifecycle = {
+  status: string;
+  completedAt: string | null;
+};
+
+const resolveProjectLifecycle = (
+  project: SkeletonProjectRecord,
+  tasks: SkeletonProjectTaskRecord[],
+  runs: SkeletonRunRecord[],
+): ResolvedProjectLifecycle => {
+  const taskStatuses = tasks.map((task) => (task.status || '').toLowerCase());
+  const resolvedRuns = runs.map((run) => resolveRunLifecycle(run, tasks.filter((task) => task.run_id === run.run_id), []));
+  const runStatuses = resolvedRuns.map((run) => (run.status || '').toLowerCase());
+  const fallbackCompletedAt =
+    latestIsoString([
+      ...tasks.map((task) => task.updated_at),
+      ...runs.map((run) => run.completed_at || null),
+      ...runs.map((run) => run.updated_at),
+      project.updated_at,
+    ]) || null;
+
+  if (taskStatuses.length === 0 && runStatuses.length === 0) {
+    return {
+      status: toProjectStatus(project.status),
+      completedAt: null,
+    };
+  }
+
+  if (taskStatuses.some((status) => status === 'running') || runStatuses.some(isActiveRunStatus)) {
+    return {
+      status: 'running',
+      completedAt: null,
+    };
+  }
+
+  if (taskStatuses.some(isBlockedStatus) || runStatuses.some(isBlockedStatus)) {
+    return {
+      status: 'blocked',
+      completedAt: null,
+    };
+  }
+
+  if (taskStatuses.some(isFailedStatus) || runStatuses.some(isFailedStatus)) {
+    return {
+      status: 'failed',
+      completedAt: fallbackCompletedAt,
+    };
+  }
+
+  if (taskStatuses.length > 0) {
+    if (taskStatuses.every(isCompletedStatus)) {
+      return {
+        status: 'completed',
+        completedAt: fallbackCompletedAt,
+      };
+    }
+    return {
+      status: 'queued',
+      completedAt: null,
+    };
+  }
+
+  if (runStatuses.some(isQueuedRunStatus)) {
+    return {
+      status: 'queued',
+      completedAt: null,
+    };
+  }
+
+  if (runStatuses.every((status) => isClosedRunStatus(status) || isBlockedStatus(status))) {
+    return {
+      status: runStatuses.some(isBlockedStatus) ? 'blocked' : 'completed',
+      completedAt: fallbackCompletedAt,
+    };
+  }
+
+  return {
+    status: toProjectStatus(project.status),
+    completedAt: null,
+  };
+};
+
 type ResolvedRunLifecycle = {
   status: string;
   completedAt: string | null;
@@ -1148,6 +1237,25 @@ const toBindingItem = (record: {
   updatedAt: record.updated_at || null,
 });
 
+const toWorkspaceFile = (item: {
+  name: string;
+  path: string;
+  size: number;
+  is_directory?: boolean;
+  is_dir?: boolean;
+  modified_at?: string;
+  previewable_inline?: boolean;
+  retention_class?: string;
+}): AgentSessionWorkspaceFile => ({
+  name: item.name,
+  path: item.path,
+  size: item.size,
+  is_dir: item.is_dir ?? Boolean(item.is_directory),
+  modified_at: item.modified_at,
+  previewable_inline: item.previewable_inline,
+  retentionClass: item.retention_class,
+});
+
 const skeletonApi = {
   async listProjects(): Promise<SkeletonProjectRecord[]> {
     const response = await apiClient.get<SkeletonProjectRecord[]>('/projects', skeletonRequestConfig);
@@ -1199,6 +1307,50 @@ const skeletonApi = {
     return response.data;
   },
 
+  async listRunWorkspaceFiles(
+    runId: string,
+    path?: string,
+    recursive = false,
+    options?: { suppressErrorToast?: boolean },
+  ): Promise<AgentSessionWorkspaceFile[]> {
+    const requestConfig: RequestConfigWithMeta = {
+      ...skeletonRequestConfig,
+      params: {
+        ...(path ? { path } : {}),
+        ...(recursive ? { recursive: true } : {}),
+      },
+      suppressErrorToast: options?.suppressErrorToast,
+    };
+    const response = await apiClient.get<
+      Array<{
+        name: string;
+        path: string;
+        size: number;
+        is_directory?: boolean;
+        is_dir?: boolean;
+        modified_at?: string;
+        previewable_inline?: boolean;
+        retention_class?: string;
+      }>
+    >(`/runs/${runId}/workspace/files`, requestConfig);
+    return response.data.map(toWorkspaceFile);
+  },
+
+  async downloadRunWorkspaceFile(
+    runId: string,
+    path: string,
+    options?: { suppressErrorToast?: boolean },
+  ): Promise<Blob> {
+    const requestConfig: RequestConfigWithMeta = {
+      ...skeletonRequestConfig,
+      params: { path },
+      responseType: 'blob',
+      suppressErrorToast: options?.suppressErrorToast,
+    };
+    const response = await apiClient.get(`/runs/${runId}/workspace/download`, requestConfig);
+    return response.data;
+  },
+
   async listRunExternalDispatches(runId: string): Promise<SkeletonExternalAgentDispatchRecord[]> {
     const response = await apiClient.get<SkeletonExternalAgentDispatchRecord[]>(`/runs/${runId}/external-dispatches`, skeletonRequestConfig);
     return response.data;
@@ -1226,6 +1378,50 @@ const skeletonApi = {
 
       throw error;
     }
+  },
+
+  async listProjectWorkspaceFiles(
+    projectId: string,
+    path?: string,
+    recursive = false,
+    options?: { suppressErrorToast?: boolean },
+  ): Promise<AgentSessionWorkspaceFile[]> {
+    const requestConfig: RequestConfigWithMeta = {
+      ...skeletonRequestConfig,
+      params: {
+        ...(path ? { path } : {}),
+        ...(recursive ? { recursive: true } : {}),
+      },
+      suppressErrorToast: options?.suppressErrorToast,
+    };
+    const response = await apiClient.get<
+      Array<{
+        name: string;
+        path: string;
+        size: number;
+        is_directory?: boolean;
+        is_dir?: boolean;
+        modified_at?: string;
+        previewable_inline?: boolean;
+        retention_class?: string;
+      }>
+    >(`/project-space/${projectId}/files`, requestConfig);
+    return response.data.map(toWorkspaceFile);
+  },
+
+  async downloadProjectWorkspaceFile(
+    projectId: string,
+    path: string,
+    options?: { suppressErrorToast?: boolean },
+  ): Promise<Blob> {
+    const requestConfig: RequestConfigWithMeta = {
+      ...skeletonRequestConfig,
+      params: { path },
+      responseType: 'blob',
+      suppressErrorToast: options?.suppressErrorToast,
+    };
+    const response = await apiClient.get(`/project-space/${projectId}/download`, requestConfig);
+    return response.data;
   },
 
   async listProjectAgentBindings(projectId: string): Promise<SkeletonProjectAgentBindingRecord[]> {
@@ -1473,8 +1669,9 @@ const skeletonApi = {
 
 const deliverableFromUnknown = (value: unknown): ProjectDeliverable | null => {
   const record = asUnknownRecord(value);
-  const filename = pickFirstString(record, ['filename', 'name']);
-  const path = pickFirstString(record, ['path', 'file_reference', 'uri']) || filename;
+  const path = pickFirstString(record, ['path', 'file_reference', 'uri']);
+  const filename =
+    pickFirstString(record, ['filename', 'name']) || path?.split('/').filter(Boolean).pop();
 
   if (!filename || !path) {
     return null;
@@ -1490,51 +1687,99 @@ const deliverableFromUnknown = (value: unknown): ProjectDeliverable | null => {
   };
 };
 
+const NON_DELIVERABLE_WORKSPACE_EXTENSIONS = new Set([
+  '.ttf',
+  '.otf',
+  '.ttc',
+  '.woff',
+  '.woff2',
+  '.eot',
+]);
+
+const normalizeWorkspaceArtifactPath = (value: string): string => {
+  const normalized = String(value || '').trim().replace(/\\/g, '/');
+  if (!normalized) {
+    return '';
+  }
+  if (normalized.startsWith('/')) {
+    return normalized;
+  }
+  return normalized.startsWith('workspace/') ? `/${normalized}` : `/workspace/${normalized}`;
+};
+
+const isDeliverableWorkspaceArtifactPath = (path: string): boolean => {
+  const normalized = normalizeWorkspaceArtifactPath(path);
+  if (
+    !normalized ||
+    normalized === '/workspace/output' ||
+    !normalized.startsWith('/workspace/output/')
+  ) {
+    return false;
+  }
+
+  const suffixIndex = normalized.lastIndexOf('.');
+  const suffix = suffixIndex >= 0 ? normalized.slice(suffixIndex).toLowerCase() : '';
+  return !NON_DELIVERABLE_WORKSPACE_EXTENSIONS.has(suffix);
+};
+
+const artifactDeliverableFromUnknown = (value: unknown): ProjectDeliverable | null => {
+  const record = asUnknownRecord(value);
+  const path = pickFirstString(record, ['path', 'file_path', 'uri']);
+  if (!path || asOptionalBoolean(record.is_directory) || asOptionalBoolean(record.is_dir)) {
+    return null;
+  }
+  if (!isDeliverableWorkspaceArtifactPath(path)) {
+    return null;
+  }
+
+  const normalizedPath = normalizeWorkspaceArtifactPath(path);
+  const filename =
+    pickFirstString(record, ['filename', 'name']) ||
+    normalizedPath.split('/').filter(Boolean).pop() ||
+    normalizedPath;
+
+  return {
+    filename,
+    path: normalizedPath,
+    size: asOptionalNumber(record.size) || asOptionalNumber(record.file_size) || 0,
+    downloadUrl: pickFirstString(record, ['download_url', 'downloadUrl', 'url']),
+    isTarget: true,
+    sourceScope: 'run_workspace',
+  };
+};
+
 const collectDeliverablesFromPayloads = (
   payloads: Array<Record<string, unknown>>,
 ): ProjectDeliverable[] => {
   const mapped = new Map<string, ProjectDeliverable>();
 
   payloads.forEach((payload) => {
-    const rawItems = payload.deliverables;
-    if (!Array.isArray(rawItems)) {
-      return;
+    const rawDeliverables = payload.deliverables;
+    if (Array.isArray(rawDeliverables)) {
+      rawDeliverables.forEach((item) => {
+        const deliverable = deliverableFromUnknown(item);
+        if (!deliverable) {
+          return;
+        }
+
+        mapped.set(deliverable.path, deliverable);
+      });
     }
 
-    rawItems.forEach((item) => {
-      const deliverable = deliverableFromUnknown(item);
-      if (!deliverable) {
-        return;
-      }
+    const rawArtifacts = payload.artifacts;
+    if (Array.isArray(rawArtifacts)) {
+      rawArtifacts.forEach((item) => {
+        const deliverable = artifactDeliverableFromUnknown(item);
+        if (!deliverable) {
+          return;
+        }
 
-      mapped.set(deliverable.path, deliverable);
-    });
+        mapped.set(deliverable.path, deliverable);
+      });
+    }
   });
 
   return Array.from(mapped.values());
-};
-
-const deliverableFromProjectSpace = (
-  projectSpace: SkeletonProjectSpaceRecord | null,
-): ProjectDeliverable | null => {
-  if (!projectSpace) {
-    return null;
-  }
-
-  const path = projectSpace.root_path || projectSpace.storage_uri;
-  if (!path) {
-    return null;
-  }
-
-  const inferredName = path.split('/').filter(Boolean).pop() || 'project-space';
-
-  return {
-    filename: projectSpace.branch_name || inferredName,
-    path,
-    size: 0,
-    isTarget: false,
-    sourceScope: 'shared',
-  };
 };
 
 const getTaskDependenciesFromPayload = (payloads: Array<Record<string, unknown>>): string[] => {
@@ -1605,6 +1850,62 @@ const getTaskExecutionModeFromPayload = (
   return null;
 };
 
+const getPlannerQuestionsFromPayload = (
+  payloads: Array<Record<string, unknown>>,
+): Array<{ question: string; importance?: string }> => {
+  for (const payload of payloads) {
+    const rawQuestions = payload.planner_clarification_questions;
+    if (!Array.isArray(rawQuestions)) continue;
+    return rawQuestions
+      .map((question) => asUnknownRecord(question))
+      .map((question) => ({
+        question: pickFirstString(question, ['question']) || '',
+        importance: pickFirstString(question, ['importance']) || undefined,
+      }))
+      .filter((question) => question.question.length > 0);
+  }
+  return [];
+};
+
+const extractRunPlannerMetrics = (
+  runtimeContext: Record<string, unknown>,
+  runSteps: SkeletonRunStepRecord[],
+) => {
+  const plannerSummary = pickFirstString(runtimeContext, ['planner_summary']);
+  const plannerSource = pickFirstString(runtimeContext, ['planner_source']);
+  const stepTotal =
+    asOptionalNumber(runtimeContext.step_count) || runSteps.length || null;
+  const completedStepCount = runSteps.filter((step) => isCompletedStatus(step.status)).length;
+  const activeStepCount = runSteps.filter((step) =>
+    ['assigned', 'queued', 'leased', 'acked', 'running'].includes(String(step.status).toLowerCase()),
+  ).length;
+  const currentStep = runSteps
+    .slice()
+    .sort((left, right) => left.sequence_number - right.sequence_number)
+    .find((step) => !['completed', 'failed', 'cancelled', 'blocked'].includes(String(step.status).toLowerCase()));
+  const parallelGroups = new Set(
+    runSteps
+      .map((step) => pickFirstString(asUnknownRecord(step.input_payload), ['parallel_group']))
+      .filter((value): value is string => Boolean(value)),
+  );
+  const activeSuggestedAgentIds = currentStep
+    ? asStringArray(asUnknownRecord(currentStep.input_payload).suggested_agent_ids)
+    : [];
+  const clarificationQuestions = getPlannerQuestionsFromPayload([runtimeContext]);
+  return {
+    plannerSummary,
+    plannerSource,
+    stepTotal: stepTotal || 0,
+    completedStepCount,
+    activeStepCount,
+    parallelGroupCount: parallelGroups.size,
+    currentStepTitle: currentStep?.name || null,
+    suggestedAgentIds: activeSuggestedAgentIds,
+    needsClarification: clarificationQuestions.length > 0,
+    clarificationQuestions,
+  };
+};
+
 const toProjectTaskSummaryFromSkeleton = (
   task: SkeletonProjectTaskRecord,
 ): ProjectTaskSummary => {
@@ -1630,6 +1931,7 @@ const buildSkeletonProjectSummary = (
   plans: SkeletonPlanRecord[] = [],
 ): ProjectSummary => {
   const configuration = asUnknownRecord(project.configuration);
+  const lifecycle = resolveProjectLifecycle(project, tasks, runs);
   const latestPlan = [...plans].sort(
     (left, right) => new Date(right.updated_at).getTime() - new Date(left.updated_at).getTime(),
   )[0];
@@ -1658,18 +1960,15 @@ const buildSkeletonProjectSummary = (
       pickFirstString(latestPlanDefinition, ['summary', 'goal', 'instructions']) ||
       pickFirstString(configuration, ['summary', 'goal', 'instructions']) ||
       'No summary available yet.',
-    status: toProjectStatus(project.status),
-    progress: buildProgress(completedTasks, tasks.length, project.status),
+    status: lifecycle.status,
+    progress: buildProgress(completedTasks, tasks.length, lifecycle.status),
     createdAt: project.created_at,
     updatedAt,
     startedAt:
       latestIsoString(
         runs.map((run) => run.started_at || null),
       ) || null,
-    completedAt:
-      latestIsoString(
-        runs.map((run) => run.completed_at || null),
-      ) || null,
+    completedAt: lifecycle.completedAt,
     totalTasks: tasks.length,
     completedTasks,
     failedTasks,
@@ -1826,14 +2125,11 @@ const buildProjectDetailFromSkeleton = (
     configuration,
     ...plans.map((plan) => asUnknownRecord(plan.definition)),
     projectSpace ? asUnknownRecord(projectSpace.space_metadata) : {},
+    ...tasks.map((task) => asUnknownRecord(task.output_payload)),
     ...runs.map((run) => asUnknownRecord(run.runtime_context)),
+    ...runSteps.map((step) => asUnknownRecord(step.output_payload)),
     ...extensions.map((extension) => asUnknownRecord(extension.manifest)),
   ]);
-  const workspaceDeliverable = deliverableFromProjectSpace(projectSpace);
-
-  if (workspaceDeliverable && !deliverables.some((item) => item.path === workspaceDeliverable.path)) {
-    deliverables.unshift(workspaceDeliverable);
-  }
 
   return {
     ...summary,
@@ -1848,6 +2144,7 @@ const buildProjectDetailFromSkeleton = (
       projectSpace?.storage_uri ||
       projectSpace?.root_path ||
       pickFirstString(configuration, ['workspace_bucket', 'workspaceBucket']),
+    projectWorkspaceRoot: projectSpace?.root_path || null,
     configuration,
     tasks: tasks
       .map(toProjectTaskSummaryFromSkeleton)
@@ -1936,6 +2233,7 @@ const buildRunSummaryFromSkeleton = (
     failureReason,
     latestSignal,
   });
+  const plannerMetrics = extractRunPlannerMetrics(runtimeContext, runSteps);
 
   return {
     id: run.run_id,
@@ -1945,6 +2243,16 @@ const buildRunSummaryFromSkeleton = (
     createdAt: run.created_at,
     triggerSource: run.trigger_source,
     executionMode,
+    plannerSource: plannerMetrics.plannerSource,
+    plannerSummary: plannerMetrics.plannerSummary,
+    stepTotal: plannerMetrics.stepTotal,
+    completedStepCount: plannerMetrics.completedStepCount,
+    activeStepCount: plannerMetrics.activeStepCount,
+    parallelGroupCount: plannerMetrics.parallelGroupCount,
+    currentStepTitle: plannerMetrics.currentStepTitle,
+    suggestedAgentIds: plannerMetrics.suggestedAgentIds,
+    needsClarification: plannerMetrics.needsClarification,
+    clarificationQuestions: plannerMetrics.clarificationQuestions,
     taskId,
     taskTitle,
     failureReason,
@@ -2037,12 +2345,9 @@ const buildRunDetailFromSkeleton = (
     ...plans.map((plan) => asUnknownRecord(plan.definition)),
     projectSpace ? asUnknownRecord(projectSpace.space_metadata) : {},
     asUnknownRecord(run.runtime_context),
+    ...tasks.map((task) => asUnknownRecord(task.output_payload)),
+    ...steps.map((step) => asUnknownRecord(step.output_payload)),
   ]);
-  const workspaceDeliverable = deliverableFromProjectSpace(projectSpace);
-
-  if (workspaceDeliverable && !deliverables.some((item) => item.path === workspaceDeliverable.path)) {
-    deliverables.unshift(workspaceDeliverable);
-  }
 
   const runtimeContext = asUnknownRecord(run.runtime_context);
   const assignmentCandidate = runtimeContext.agent_assignment ?? runtimeContext.executor_assignment;
@@ -2115,6 +2420,23 @@ const buildTaskDetailFromSkeleton = (
   if (runWorkspaceRoot) {
     metadata.push({ label: 'Run Workspace', value: runWorkspaceRoot });
   }
+  const plannerSummary = pickFirstString(asUnknownRecord(task.input_payload), ['planner_summary']);
+  const plannerSource = pickFirstString(asUnknownRecord(task.input_payload), ['planner_source']);
+  const stepTotal = asOptionalNumber(asUnknownRecord(task.input_payload).step_count) || runSteps.length || 0;
+  const completedStepCount = runSteps.filter((step) => isCompletedStatus(step.status)).length;
+  const activeStepCount = runSteps.filter((step) =>
+    ['assigned', 'queued', 'leased', 'acked', 'running'].includes(String(step.status).toLowerCase()),
+  ).length;
+  const currentStep = runSteps
+    .slice()
+    .sort((left, right) => left.sequence_number - right.sequence_number)
+    .find((step) => !['completed', 'failed', 'cancelled', 'blocked'].includes(String(step.status).toLowerCase()));
+  const parallelGroupCount = new Set(
+    runSteps
+      .map((step) => pickFirstString(asUnknownRecord(step.input_payload), ['parallel_group']))
+      .filter((value): value is string => Boolean(value)),
+  ).size;
+  const clarificationQuestions = getPlannerQuestionsFromPayload([asUnknownRecord(task.input_payload)]);
 
   const events = runSteps
     .filter((step) => step.project_task_id === task.project_task_id)
@@ -2128,6 +2450,15 @@ const buildTaskDetailFromSkeleton = (
     projectStatus: toProjectStatus(project.status),
     description: task.description || task.title,
     executionMode,
+    plannerSource,
+    plannerSummary,
+    stepTotal,
+    completedStepCount,
+    activeStepCount,
+    parallelGroupCount,
+    currentStepTitle: currentStep?.name || null,
+    suggestedAgentIds: currentStep ? asStringArray(asUnknownRecord(currentStep.input_payload).suggested_agent_ids) : [],
+    clarificationQuestions,
     acceptanceCriteria: getTaskAcceptanceFromPayload(payloads),
     assignedSkillNames: getTaskSkillNamesFromPayload(payloads),
     latestResult:
@@ -2542,6 +2873,40 @@ export const projectExecutionApi = {
     return profiles.map(toProvisioningProfileFromSkeleton);
   },
 
+  async listProjectWorkspaceFiles(
+    projectId: string,
+    path?: string,
+    recursive = false,
+    options?: { suppressErrorToast?: boolean },
+  ): Promise<AgentSessionWorkspaceFile[]> {
+    return skeletonApi.listProjectWorkspaceFiles(projectId, path, recursive, options);
+  },
+
+  async downloadProjectWorkspaceFile(
+    projectId: string,
+    path: string,
+    options?: { suppressErrorToast?: boolean },
+  ): Promise<Blob> {
+    return skeletonApi.downloadProjectWorkspaceFile(projectId, path, options);
+  },
+
+  async listRunWorkspaceFiles(
+    runId: string,
+    path?: string,
+    recursive = false,
+    options?: { suppressErrorToast?: boolean },
+  ): Promise<AgentSessionWorkspaceFile[]> {
+    return skeletonApi.listRunWorkspaceFiles(runId, path, recursive, options);
+  },
+
+  async downloadRunWorkspaceFile(
+    runId: string,
+    path: string,
+    options?: { suppressErrorToast?: boolean },
+  ): Promise<Blob> {
+    return skeletonApi.downloadRunWorkspaceFile(runId, path, options);
+  },
+
   async rescheduleRun(runId: string): Promise<RunDetail> {
     await skeletonApi.scheduleRun(runId);
     return getRunDetailFromSkeleton(runId);
@@ -2593,11 +2958,12 @@ export const projectExecutionApi = {
     title: string;
     description?: string | null;
     executionMode?: ProjectExecutionMode;
-  }): Promise<{ taskId: string; runId: string }> {
+  }): Promise<{ taskId: string; runId: string | null; needsClarification?: boolean }> {
     const bundle = await skeletonApi.createProjectTaskAndLaunchRun(input);
     return {
       taskId: bundle.task.project_task_id,
-      runId: bundle.run.run_id,
+      runId: bundle.run?.run_id || null,
+      needsClarification: Boolean(bundle.needs_clarification),
     };
   },
 
@@ -2607,58 +2973,24 @@ export const projectExecutionApi = {
     title: string;
     description?: string | null;
     executionMode?: ProjectExecutionMode;
-  }): Promise<string> {
-    const executionMode = input.executionMode || 'auto';
-    const existingTask = await skeletonApi.getProjectTask(input.taskId);
-    const preview = getProjectExecutionPlanPreview(
-      input.title,
-      input.description,
-      executionMode,
+  }): Promise<{ runId: string | null; needsClarification?: boolean }> {
+    const response = await apiClient.post<SkeletonTaskLaunchBundleRecord>(
+      `/project-tasks/${input.taskId}/launch`,
+      {
+        project_id: input.projectId,
+        title: input.title,
+        description: input.description || undefined,
+        priority: 'normal',
+        execution_mode: input.executionMode || 'auto',
+        input_payload: {
+          execution_mode: input.executionMode || 'auto',
+        },
+      },
+      skeletonRequestConfig,
     );
-    const stepKind = preview.initialStepKind;
-    const executorKind = preview.requiresExternalRuntime ? 'execution_node' : 'agent';
-    const plan = await skeletonApi.createPlan({
-      projectId: input.projectId,
-      name: `${input.title} Plan`,
-      goal: input.description || input.title,
-      definition: {
-        project_task_id: input.taskId,
-        task_title: input.title,
-        execution_mode: executionMode,
-      },
-    });
-    await skeletonApi.activatePlan(plan.plan_id);
-    const run = await skeletonApi.createRun({
-      projectId: input.projectId,
-      planId: plan.plan_id,
-      runtimeContext: {
-        project_task_id: input.taskId,
-        task_title: input.title,
-        execution_mode: executionMode,
-      },
-    });
-    await skeletonApi.createRunStep({
-      runId: run.run_id,
-      projectTaskId: input.taskId,
-      name: input.title,
-      sequenceNumber: 0,
-      inputPayload: {
-        project_task_id: input.taskId,
-        step_kind: stepKind,
-        executor_kind: executorKind,
-        execution_mode: executionMode,
-      },
-    });
-    await skeletonApi.updateProjectTask(input.taskId, {
-      plan_id: plan.plan_id,
-      run_id: run.run_id,
-      status: 'running',
-      input_payload: {
-        ...(existingTask.input_payload || {}),
-        execution_mode: executionMode,
-      },
-    });
-    await skeletonApi.startRun(run.run_id);
-    return run.run_id;
+    return {
+      runId: response.data.run?.run_id || null,
+      needsClarification: Boolean(response.data.needs_clarification),
+    };
   },
 };

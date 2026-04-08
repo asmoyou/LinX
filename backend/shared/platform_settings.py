@@ -122,16 +122,32 @@ def upsert_ui_experience_settings(
 
 DEFAULT_PROJECT_EXECUTION_SETTINGS: dict[str, Any] = {
     "default_launch_command_template": "",
+    "planner_provider": "",
+    "planner_model": "",
+    "planner_temperature": 0.2,
+    "planner_max_tokens": 4000,
 }
 
 
 def merge_project_execution_settings(value: dict[str, Any] | None) -> dict[str, Any]:
     payload = value if isinstance(value, dict) else {}
     legacy_template = str(payload.get("external_agent_command_template") or "").strip()
+    try:
+        planner_temperature = float(payload.get("planner_temperature", 0.2))
+    except (TypeError, ValueError):
+        planner_temperature = 0.2
+    try:
+        planner_max_tokens = int(payload.get("planner_max_tokens", 4000))
+    except (TypeError, ValueError):
+        planner_max_tokens = 4000
     return {
         "default_launch_command_template": str(
             payload.get("default_launch_command_template") or legacy_template
         ).strip(),
+        "planner_provider": str(payload.get("planner_provider") or "").strip(),
+        "planner_model": str(payload.get("planner_model") or "").strip(),
+        "planner_temperature": max(0.0, min(planner_temperature, 2.0)),
+        "planner_max_tokens": max(planner_max_tokens, 1),
     }
 
 

@@ -19,7 +19,7 @@ from database.project_execution_models import (
     ProjectRunStep,
     ProjectTask,
 )
-from project_execution.service import flush_and_refresh, retire_ephemeral_run_agents
+from project_execution.service import flush_and_refresh, reconcile_run_state, retire_ephemeral_run_agents
 from shared.platform_settings import get_project_execution_settings
 from shared.secret_crypto import sha256_text
 
@@ -623,27 +623,12 @@ class ExternalRuntimeService:
             step.output_payload = {**(step.output_payload or {}), **(result_payload or {})}
             flush_and_refresh(self.session, step)
         if task is not None:
-            task.status = "completed"
-            task.error_message = None
             task.output_payload = {**(task.output_payload or {}), **(result_payload or {})}
             flush_and_refresh(self.session, task)
         if run is not None:
-            remaining = (
-                self.session.query(ProjectRunStep)
-                .filter(ProjectRunStep.run_id == run.run_id)
-                .filter(ProjectRunStep.status.in_(["pending", "queued", "assigned", "leased", "running", "acked"]))
-                .count()
-            )
-            if remaining == 0:
-                run.status = "completed"
-                run.completed_at = now
-                run.error_message = None
-                flush_and_refresh(self.session, run)
-                retire_ephemeral_run_agents(
-                    self.session,
-                    run=run,
-                    tasks=[task] if task is not None else None,
-                )
+            run.error_message = None
+            flush_and_refresh(self.session, run)
+            reconcile_run_state(self.session, run=run)
         return flush_and_refresh(self.session, dispatch)
 
     def fail_dispatch(self, *, dispatch: ExternalAgentDispatch, result_payload: Optional[dict[str, Any]] = None, error_message: Optional[str] = None) -> ExternalAgentDispatch:
@@ -669,11 +654,7 @@ class ExternalRuntimeService:
             run.completed_at = now
             run.error_message = dispatch.error_message
             flush_and_refresh(self.session, run)
-            retire_ephemeral_run_agents(
-                self.session,
-                run=run,
-                tasks=[task] if task is not None else None,
-            )
+            reconcile_run_state(self.session, run=run)
         return flush_and_refresh(self.session, dispatch)
 
 

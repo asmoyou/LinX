@@ -152,7 +152,11 @@ describe('useProjectExecutionStore', () => {
   });
 
   it('creates a task and auto-starts a run with one refresh cycle', async () => {
-    mockedApi.createProjectTaskAndLaunchRun.mockResolvedValue({ taskId: 'task-1', runId: 'run-1' });
+    mockedApi.createProjectTaskAndLaunchRun.mockResolvedValue({
+      taskId: 'task-1',
+      runId: 'run-1',
+      needsClarification: false,
+    });
     mockedApi.listProjects.mockResolvedValue({ data: [], fallback: false });
     mockedApi.getProjectDetail.mockResolvedValue({
       data: createProjectDetail({
@@ -192,7 +196,11 @@ describe('useProjectExecutionStore', () => {
       description: 'Do the work',
     });
 
-    expect(result).toEqual({ taskId: 'task-1', runId: 'run-1' });
+    expect(result).toEqual({
+      taskId: 'task-1',
+      runId: 'run-1',
+      needsClarification: false,
+    });
     expect(mockedApi.createProjectTaskAndLaunchRun).toHaveBeenCalledWith({
       projectId: 'project-1',
       title: 'Task 1',
@@ -206,7 +214,10 @@ describe('useProjectExecutionStore', () => {
   });
 
   it('launches a task run and refreshes dependent views', async () => {
-    mockedApi.launchTaskRun.mockResolvedValue('run-1');
+    mockedApi.launchTaskRun.mockResolvedValue({
+      runId: 'run-1',
+      needsClarification: false,
+    });
     mockedApi.getProjectTaskDetail.mockResolvedValue({
       data: createTaskDetail(),
       fallback: false,
@@ -221,14 +232,14 @@ describe('useProjectExecutionStore', () => {
       fallback: false,
     });
 
-    const runId = await useProjectExecutionStore.getState().launchTaskRun({
+    const result = await useProjectExecutionStore.getState().launchTaskRun({
       projectId: 'project-1',
       taskId: 'task-1',
       title: 'Task 1',
       description: 'Do the work',
     });
 
-    expect(runId).toBe('run-1');
+    expect(result).toEqual({ runId: 'run-1', needsClarification: false });
     expect(mockedApi.launchTaskRun).toHaveBeenCalledWith({
       projectId: 'project-1',
       taskId: 'task-1',

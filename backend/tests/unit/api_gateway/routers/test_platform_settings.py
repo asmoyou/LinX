@@ -118,6 +118,10 @@ def test_get_project_execution_returns_default_launch_command_template(
         "get_project_execution_settings",
         lambda _session: {
             "default_launch_command_template": "codex exec \"$LINX_AGENT_PROMPT\"",
+            "planner_provider": "ollama",
+            "planner_model": "qwen3-vl:30b",
+            "planner_temperature": 0.2,
+            "planner_max_tokens": 4096,
         },
     )
 
@@ -126,6 +130,10 @@ def test_get_project_execution_returns_default_launch_command_template(
     assert response.status_code == 200
     assert response.json() == {
         "default_launch_command_template": "codex exec \"$LINX_AGENT_PROMPT\"",
+        "planner_provider": "ollama",
+        "planner_model": "qwen3-vl:30b",
+        "planner_temperature": 0.2,
+        "planner_max_tokens": 4096,
     }
 
 
@@ -151,6 +159,10 @@ def test_update_project_execution_accepts_manager_role(
         "/api/v1/platform/settings/project-execution",
         json={
             "default_launch_command_template": "codex exec --cd \"$LINX_WORKSPACE_ROOT\" \"$LINX_AGENT_PROMPT\"",
+            "planner_provider": "vllm",
+            "planner_model": "Qwen3-Next-80B-A3B-Instruct-AWQ-4bit",
+            "planner_temperature": 0.1,
+            "planner_max_tokens": 5000,
         },
     )
 
@@ -163,4 +175,8 @@ def test_update_project_execution_accepts_manager_role(
         captured["value"]["default_launch_command_template"]
         == 'codex exec --cd "$LINX_WORKSPACE_ROOT" "$LINX_AGENT_PROMPT"'
     )
+    assert captured["value"]["planner_provider"] == "vllm"
+    assert captured["value"]["planner_model"] == "Qwen3-Next-80B-A3B-Instruct-AWQ-4bit"
+    assert captured["value"]["planner_temperature"] == 0.1
+    assert captured["value"]["planner_max_tokens"] == 5000
     assert client.app.state.session.commit_called is True

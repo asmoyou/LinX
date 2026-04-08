@@ -13,6 +13,10 @@ router = APIRouter()
 
 class ProjectExecutionSettings(BaseModel):
     default_launch_command_template: str = Field(default="")
+    planner_provider: str = Field(default="")
+    planner_model: str = Field(default="")
+    planner_temperature: float = Field(default=0.2, ge=0.0, le=2.0)
+    planner_max_tokens: int = Field(default=4000, ge=1)
 
 
 def _ensure_platform_settings_access(current_user: CurrentUser) -> None:

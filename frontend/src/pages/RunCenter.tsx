@@ -11,6 +11,7 @@ import {
   NoticeBanner,
   StatusBadge,
 } from '@/components/platform/PlatformUi';
+import { useProjectExecutionPolling } from '@/hooks/useProjectExecutionPolling';
 import { useAuthStore } from '@/stores/authStore';
 import { useProjectExecutionStore } from '@/stores/projectExecutionStore';
 import {
@@ -46,8 +47,13 @@ export const RunCenter = () => {
   const markRunHandled = useProjectExecutionStore((state) => state.markRunHandled);
 
   useEffect(() => {
-    void loadRuns();
+    void loadRuns({ force: true });
   }, [loadRuns]);
+
+  useProjectExecutionPolling(
+    runs.some((run) => ACTIVE_STATUSES.has(run.status.toLowerCase())),
+    () => loadRuns({ force: true }),
+  );
 
   const filteredRuns = useMemo(() => {
     switch (filter) {

@@ -299,4 +299,68 @@ describe('projectExecutionApi run lifecycle normalization', () => {
       'task-task-3',
     ]);
   });
+
+  it('derives project summary status from task lifecycle instead of stale project status', async () => {
+    respondToGet({
+      '/projects': [
+        {
+          project_id: 'project-4',
+          name: 'Stale Project Status',
+          description: 'Project summary',
+          status: 'running',
+          configuration: {},
+          created_by_user_id: 'user-4',
+          created_at: '2026-04-07T08:00:00.000Z',
+          updated_at: '2026-04-07T12:00:00.000Z',
+        },
+      ],
+      '/project-tasks': [
+        {
+          project_task_id: 'task-4',
+          project_id: 'project-4',
+          plan_id: null,
+          run_id: 'run-4',
+          assignee_agent_id: null,
+          title: 'Ship final report',
+          description: 'Finalize the deliverable.',
+          status: 'completed',
+          priority: 'normal',
+          sort_order: 0,
+          input_payload: {},
+          output_payload: {},
+          error_message: null,
+          created_by_user_id: 'user-4',
+          created_at: '2026-04-07T09:00:00.000Z',
+          updated_at: '2026-04-07T11:45:00.000Z',
+        },
+      ],
+      '/runs': [
+        {
+          run_id: 'run-4',
+          project_id: 'project-4',
+          plan_id: null,
+          status: 'completed',
+          trigger_source: 'manual',
+          runtime_context: {},
+          error_message: null,
+          requested_by_user_id: 'user-4',
+          started_at: '2026-04-07T10:00:00.000Z',
+          completed_at: '2026-04-07T11:45:00.000Z',
+          created_at: '2026-04-07T09:55:00.000Z',
+          updated_at: '2026-04-07T11:45:00.000Z',
+        },
+      ],
+    });
+
+    const result = await projectExecutionApi.listProjects();
+
+    expect(result.fallback).toBe(false);
+    expect(result.data[0]).toMatchObject({
+      id: 'project-4',
+      status: 'completed',
+      progress: 100,
+      completedTasks: 1,
+      totalTasks: 1,
+    });
+  });
 });

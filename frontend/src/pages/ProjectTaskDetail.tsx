@@ -68,15 +68,25 @@ export const ProjectTaskDetail = () => {
 
     try {
       setIsLaunching(true);
-      const runId = await launchTaskRun({
+      const { runId, needsClarification } = await launchTaskRun({
         projectId,
         taskId,
         title: task.title,
         description: task.description,
         executionMode,
       });
-      toast.success(t('projectExecution.taskDetail.launchSuccess', 'Plan generated and run started'));
       setIsLaunchModalOpen(false);
+      if (needsClarification || !runId) {
+        toast.success(
+          t(
+            'projectExecution.modals.taskNeedsClarification',
+            'Task requires clarification before execution can start',
+          ),
+        );
+        void loadProjectTaskDetail(projectId, taskId);
+        return;
+      }
+      toast.success(t('projectExecution.taskDetail.launchSuccess', 'Plan generated and run started'));
       navigate(`/runs/${runId}`);
     } catch (launchError) {
       const message = launchError instanceof Error ? launchError.message : t('projectExecution.taskDetail.launchError', 'Failed to start run');
@@ -133,6 +143,27 @@ export const ProjectTaskDetail = () => {
           />
         ) : null}
 
+        {task.clarificationQuestions && task.clarificationQuestions.length > 0 ? (
+          <SectionCard
+            title={t('projectExecution.taskDetail.clarificationTitle', 'Clarification required')}
+            description={t('projectExecution.taskDetail.clarificationDescription', 'Planner needs more detail before this task can be executed.')}
+          >
+            <div className="space-y-3">
+              {task.clarificationQuestions.map((question, index) => (
+                <div
+                  key={`${question.question}:${index}`}
+                  className="rounded-2xl border border-amber-300/60 bg-amber-50 px-4 py-3 text-sm text-amber-800 dark:border-amber-900/60 dark:bg-amber-950/30 dark:text-amber-300"
+                >
+                  <p className="font-medium">{question.question}</p>
+                  {question.importance ? (
+                    <p className="mt-1 text-xs uppercase tracking-[0.14em]">{question.importance}</p>
+                  ) : null}
+                </div>
+              ))}
+            </div>
+          </SectionCard>
+        ) : null}
+
         <section className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
           <div className="max-w-3xl space-y-3">
             <p className="text-sm font-semibold uppercase tracking-[0.22em] text-indigo-500">{t('projectExecution.shared.task', 'Task')}</p>
@@ -162,7 +193,7 @@ export const ProjectTaskDetail = () => {
         </section>
 
         <SectionCard title={t('projectExecution.taskDetail.executionContextTitle', 'Execution context')} description={t('projectExecution.taskDetail.executionContextDescription', 'Task-level runtime and assignment metadata.')}>
-          <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+          <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-6">
             <div className="rounded-2xl border border-zinc-200/70 bg-white/70 p-4 dark:border-zinc-800 dark:bg-zinc-950/50">
               <p className="text-sm font-medium text-zinc-500 dark:text-zinc-400">{t('projectExecution.taskDetail.assignedAgent', 'Assigned Agent')}</p>
               <p className="mt-2 text-sm text-zinc-800 dark:text-zinc-200">
@@ -184,6 +215,30 @@ export const ProjectTaskDetail = () => {
                     })
                   : t('projectExecution.taskDetail.executionModeUnknown', 'Auto')}
               </p>
+              {task.plannerSource ? (
+                <p className="mt-3 text-xs text-zinc-500 dark:text-zinc-400">
+                  {t('projectExecution.taskDetail.plannerSourcePrefix', {
+                    value: formatTokenLabel(task.plannerSource),
+                    defaultValue: `Planner ${formatTokenLabel(task.plannerSource)}`,
+                  })}
+                </p>
+              ) : null}
+            </div>
+            <div className="rounded-2xl border border-zinc-200/70 bg-white/70 p-4 dark:border-zinc-800 dark:bg-zinc-950/50">
+              <p className="text-sm font-medium text-zinc-500 dark:text-zinc-400">
+                {t('projectExecution.taskDetail.stepCountLabel', 'Steps')}
+              </p>
+              <p className="mt-2 text-sm text-zinc-800 dark:text-zinc-200">
+                {`${task.completedStepCount || 0}/${task.stepTotal || 0}`}
+              </p>
+            </div>
+            <div className="rounded-2xl border border-zinc-200/70 bg-white/70 p-4 dark:border-zinc-800 dark:bg-zinc-950/50">
+              <p className="text-sm font-medium text-zinc-500 dark:text-zinc-400">
+                {t('projectExecution.taskDetail.currentStepLabel', 'Current Step')}
+              </p>
+              <p className="mt-2 text-sm text-zinc-800 dark:text-zinc-200">
+                {task.currentStepTitle || t('projectExecution.taskDetail.currentStepUnknown', 'No active step')}
+              </p>
             </div>
             <div className="rounded-2xl border border-zinc-200/70 bg-white/70 p-4 dark:border-zinc-800 dark:bg-zinc-950/50">
               <p className="text-sm font-medium text-zinc-500 dark:text-zinc-400">{t('projectExecution.taskDetail.acceptance', 'Acceptance')}</p>
@@ -202,6 +257,14 @@ export const ProjectTaskDetail = () => {
 
         <SectionCard title={t('projectExecution.taskDetail.metadataTitle', 'Metadata')} description={t('projectExecution.taskDetail.metadataDescription', 'Derived metadata and review signal.')}>
           <div className="grid gap-3 md:grid-cols-2">
+            {task.plannerSummary ? (
+              <div className="rounded-2xl border border-zinc-200/70 bg-white/70 p-4 dark:border-zinc-800 dark:bg-zinc-950/50 md:col-span-2">
+                <p className="text-sm font-medium text-zinc-500 dark:text-zinc-400">
+                  {t('projectExecution.taskDetail.plannerSummaryLabel', 'Planner Summary')}
+                </p>
+                <p className="mt-2 text-sm text-zinc-800 dark:text-zinc-200">{task.plannerSummary}</p>
+              </div>
+            ) : null}
             {task.metadata.map((item) => (
               <div
                 key={`${item.label}:${item.value}`}

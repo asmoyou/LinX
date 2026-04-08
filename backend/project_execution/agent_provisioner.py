@@ -10,10 +10,10 @@ from agent_framework.agent_registry import get_agent_registry
 from database.connection import get_db_session
 from database.models import Agent
 from database.project_execution_models import AgentProvisioningProfile, Project, ProjectAgentBinding
+from project_execution.capability_mapper import CapabilityMapper
 from project_execution.external_runtime_service import ExternalRuntimeService
+from project_execution.load_balancer import LoadBalancer
 from shared.logging import get_logger
-from task_manager.capability_mapper import CapabilityMapper
-from task_manager.load_balancer import LoadBalancer
 
 logger = get_logger(__name__)
 
@@ -82,6 +82,7 @@ class ProjectAgentProvisioner:
         current_user: CurrentUser,
         run_id: UUID,
         required_runtime_types: Optional[Sequence[str]] = None,
+        suggested_agent_ids: Optional[Sequence[str]] = None,
     ) -> AgentSelectionResult:
         desired_runtime_types = list(required_runtime_types or self._default_runtime_types_for_step(step_kind))
         selected = self._select_bound_agent(
@@ -90,6 +91,7 @@ class ProjectAgentProvisioner:
             required_capabilities=list(required_capabilities),
             current_user=current_user,
             desired_runtime_types=desired_runtime_types,
+            suggested_agent_ids=suggested_agent_ids,
         )
         if selected is not None:
             return selected
@@ -125,6 +127,7 @@ class ProjectAgentProvisioner:
         required_capabilities: list[str],
         current_user: CurrentUser,
         desired_runtime_types: list[str],
+        suggested_agent_ids: Optional[Sequence[str]] = None,
     ) -> Optional[AgentSelectionResult]:
         with get_db_session() as session:
             runtime_service = ExternalRuntimeService(session)
@@ -159,6 +162,19 @@ class ProjectAgentProvisioner:
             ]
             if not candidates:
                 return None
+            normalized_suggested_agent_ids = {
+                str(agent_id).strip()
+                for agent_id in (suggested_agent_ids or [])
+                if str(agent_id).strip()
+            }
+            if normalized_suggested_agent_ids:
+                preferred_candidates = [
+                    agent
+                    for agent in candidates
+                    if str(agent.agent_id) in normalized_suggested_agent_ids
+                ]
+                if preferred_candidates:
+                    candidates = preferred_candidates
             scored: list[tuple[float, Agent]] = []
             for agent in candidates:
                 capabilities = list(agent.capabilities or []) if isinstance(agent.capabilities, list) else []
