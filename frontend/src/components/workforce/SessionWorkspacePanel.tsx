@@ -22,9 +22,19 @@ import type { AgentSessionWorkspaceFile } from '@/api/agents';
 import { FileCodePreview } from '@/components/common/FileCodePreview';
 
 interface SessionWorkspacePanelProps {
-  agentId: string;
+  agentId?: string;
   sessionId?: string | null;
   conversationId?: string | null;
+  workspaceKey?: string;
+  loadWorkspaceFiles?: (
+    path?: string,
+    recursive?: boolean,
+    options?: { suppressErrorToast?: boolean },
+  ) => Promise<AgentSessionWorkspaceFile[]>;
+  downloadWorkspaceFile?: (
+    path: string,
+    options?: { suppressErrorToast?: boolean },
+  ) => Promise<Blob>;
   isOpen: boolean;
   onClose: () => void;
   focusPath?: string | null;
@@ -297,9 +307,12 @@ function buildFilesSignature(entries: AgentSessionWorkspaceFile[]): string {
 }
 
 export const SessionWorkspacePanel: React.FC<SessionWorkspacePanelProps> = ({
-  agentId,
+  agentId = '',
   sessionId = null,
   conversationId = null,
+  workspaceKey,
+  loadWorkspaceFiles,
+  downloadWorkspaceFile,
   isOpen,
   onClose,
   focusPath = null,
@@ -326,12 +339,16 @@ export const SessionWorkspacePanel: React.FC<SessionWorkspacePanelProps> = ({
   const runtimeKeyRef = useRef('');
   const previewRequestIdRef = useRef(0);
   const lastFilesSignatureRef = useRef('');
+  const loadWorkspaceFilesRef = useRef(loadWorkspaceFiles);
+  const downloadWorkspaceFileRef = useRef(downloadWorkspaceFile);
 
-  const runtimeKey = conversationId
-    ? `conversation:${conversationId}`
-    : sessionId
-      ? `session:${sessionId}`
-      : '';
+  const runtimeKey =
+    workspaceKey ||
+    (conversationId
+      ? `conversation:${conversationId}`
+      : sessionId
+        ? `session:${sessionId}`
+        : '');
 
   const cleanupPreviewUrl = useCallback(() => {
     if (previewUrlRef.current) {
@@ -359,13 +376,20 @@ export const SessionWorkspacePanel: React.FC<SessionWorkspacePanelProps> = ({
         setIsLoading(true);
       }
       try {
-        const list = conversationId
-          ? await agentsApi.getConversationWorkspaceFiles(agentId, conversationId, '', true, {
+        const customLoadWorkspaceFiles = loadWorkspaceFilesRef.current;
+        const list = customLoadWorkspaceFiles
+          ? await customLoadWorkspaceFiles('', true, {
               suppressErrorToast: true,
             })
-          : await agentsApi.getSessionWorkspaceFiles(agentId, sessionId!, '', true, {
-              suppressErrorToast: true,
-            });
+          : conversationId
+            ? await agentsApi.getConversationWorkspaceFiles(agentId, conversationId, '', true, {
+                suppressErrorToast: true,
+              })
+            : sessionId
+              ? await agentsApi.getSessionWorkspaceFiles(agentId, sessionId, '', true, {
+                  suppressErrorToast: true,
+                })
+              : [];
 
         if (runtimeKeyRef.current !== requestRuntimeKey) {
           return;
@@ -398,6 +422,14 @@ export const SessionWorkspacePanel: React.FC<SessionWorkspacePanelProps> = ({
   useEffect(() => {
     runtimeKeyRef.current = runtimeKey;
   }, [runtimeKey]);
+
+  useEffect(() => {
+    loadWorkspaceFilesRef.current = loadWorkspaceFiles;
+  }, [loadWorkspaceFiles]);
+
+  useEffect(() => {
+    downloadWorkspaceFileRef.current = downloadWorkspaceFile;
+  }, [downloadWorkspaceFile]);
 
   useEffect(() => {
     previewRequestIdRef.current += 1;
@@ -549,13 +581,24 @@ export const SessionWorkspacePanel: React.FC<SessionWorkspacePanelProps> = ({
       cleanupPreviewUrl();
 
       try {
-        const blob = conversationId
-          ? await agentsApi.downloadConversationWorkspaceFile(agentId, conversationId, file.path, {
+        const customDownloadWorkspaceFile = downloadWorkspaceFileRef.current;
+        const blob = customDownloadWorkspaceFile
+          ? await customDownloadWorkspaceFile(file.path, {
               suppressErrorToast: true,
             })
-          : await agentsApi.downloadSessionWorkspaceFile(agentId, sessionId!, file.path, {
-              suppressErrorToast: true,
-            });
+          : conversationId
+            ? await agentsApi.downloadConversationWorkspaceFile(agentId, conversationId, file.path, {
+                suppressErrorToast: true,
+              })
+            : sessionId
+              ? await agentsApi.downloadSessionWorkspaceFile(agentId, sessionId, file.path, {
+                  suppressErrorToast: true,
+                })
+              : null;
+
+        if (!blob) {
+          throw new Error(t('agent.workspacePreviewFailed', 'Failed to load file preview'));
+        }
 
         if (
           previewRequestIdRef.current !== requestId ||
@@ -675,9 +718,17 @@ export const SessionWorkspacePanel: React.FC<SessionWorkspacePanelProps> = ({
       if (!runtimeKey) return;
       setIsDownloading(true);
       try {
-        const blob = conversationId
-          ? await agentsApi.downloadConversationWorkspaceFile(agentId, conversationId, file.path)
-          : await agentsApi.downloadSessionWorkspaceFile(agentId, sessionId!, file.path);
+        const customDownloadWorkspaceFile = downloadWorkspaceFileRef.current;
+        const blob = customDownloadWorkspaceFile
+          ? await customDownloadWorkspaceFile(file.path)
+          : conversationId
+            ? await agentsApi.downloadConversationWorkspaceFile(agentId, conversationId, file.path)
+            : sessionId
+              ? await agentsApi.downloadSessionWorkspaceFile(agentId, sessionId, file.path)
+              : null;
+        if (!blob) {
+          throw new Error('Failed to download file');
+        }
         downloadBlob(blob, file.name);
       } finally {
         setIsDownloading(false);

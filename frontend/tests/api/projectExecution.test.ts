@@ -363,4 +363,71 @@ describe('projectExecutionApi run lifecycle normalization', () => {
       totalTasks: 1,
     });
   });
+
+  it('prefers the latest successful task over older failed history for project card status', async () => {
+    respondToGet({
+      '/projects': [
+        {
+          project_id: 'project-5',
+          name: 'Recovered Project',
+          description: 'Project summary',
+          status: 'failed',
+          configuration: {},
+          created_by_user_id: 'user-5',
+          created_at: '2026-04-07T08:00:00.000Z',
+          updated_at: '2026-04-07T12:00:00.000Z',
+        },
+      ],
+      '/project-tasks': [
+        {
+          project_task_id: 'task-5a',
+          project_id: 'project-5',
+          plan_id: null,
+          run_id: null,
+          assignee_agent_id: null,
+          title: 'Initial attempt',
+          description: 'Failed old attempt.',
+          status: 'failed',
+          priority: 'normal',
+          sort_order: 0,
+          input_payload: {},
+          output_payload: {},
+          error_message: 'old error',
+          created_by_user_id: 'user-5',
+          created_at: '2026-04-07T09:00:00.000Z',
+          updated_at: '2026-04-07T10:00:00.000Z',
+        },
+        {
+          project_task_id: 'task-5b',
+          project_id: 'project-5',
+          plan_id: null,
+          run_id: null,
+          assignee_agent_id: null,
+          title: 'Retry attempt',
+          description: 'Succeeded latest attempt.',
+          status: 'completed',
+          priority: 'normal',
+          sort_order: 1,
+          input_payload: {},
+          output_payload: {},
+          error_message: null,
+          created_by_user_id: 'user-5',
+          created_at: '2026-04-07T10:30:00.000Z',
+          updated_at: '2026-04-07T11:30:00.000Z',
+        },
+      ],
+      '/runs': [],
+    });
+
+    const result = await projectExecutionApi.listProjects();
+
+    expect(result.fallback).toBe(false);
+    expect(result.data[0]).toMatchObject({
+      id: 'project-5',
+      status: 'completed',
+      failedTasks: 1,
+      completedTasks: 1,
+      totalTasks: 2,
+    });
+  });
 });

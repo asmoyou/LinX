@@ -12,8 +12,11 @@ import {
   NoticeBanner,
   StatusBadge,
 } from '@/components/platform/PlatformUi';
+import { useProjectExecutionPolling } from '@/hooks/useProjectExecutionPolling';
 import { useProjectExecutionStore } from '@/stores/projectExecutionStore';
 import { formatDateTime, formatNumber } from '@/utils/platformFormatting';
+
+const POLLING_PROJECT_STATUSES = new Set(['running', 'queued', 'assigned', 'scheduled', 'planning', 'reviewing']);
 
 export const Projects = () => {
   const navigate = useNavigate();
@@ -28,8 +31,13 @@ export const Projects = () => {
   const createProject = useProjectExecutionStore((state) => state.createProject);
 
   useEffect(() => {
-    void loadProjects();
+    void loadProjects({ force: true });
   }, [loadProjects]);
+
+  useProjectExecutionPolling(
+    projects.some((project) => POLLING_PROJECT_STATUSES.has(project.status.toLowerCase())),
+    () => loadProjects({ force: true }),
+  );
 
   const stats = useMemo(() => {
     const activeProjects = projects.filter((project) =>

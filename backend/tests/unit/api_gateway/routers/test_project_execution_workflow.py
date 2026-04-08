@@ -487,6 +487,60 @@ def test_complete_run_step_reconciles_task_run_and_project(
     assert project_response.json()["status"] == "completed"
 
 
+def test_project_status_prefers_latest_success_over_historical_failure(
+    api_client: TestClient, auth_headers: dict[str, str]
+):
+    project_response = api_client.post(
+        "/api/v1/projects",
+        json={
+            "name": "Recovered Status Project",
+            "description": "Latest success should drive project status.",
+            "status": "draft",
+            "configuration": {},
+        },
+        headers=auth_headers,
+    )
+    assert project_response.status_code == 201, project_response.text
+    project_id = project_response.json()["project_id"]
+
+    failed_task_response = api_client.post(
+        "/api/v1/project-tasks",
+        json={
+            "project_id": project_id,
+            "title": "Old failed task",
+            "description": "Historical failure",
+            "status": "failed",
+            "priority": "normal",
+            "sort_order": 0,
+            "input_payload": {},
+        },
+        headers=auth_headers,
+    )
+    assert failed_task_response.status_code == 201, failed_task_response.text
+
+    completed_task_response = api_client.post(
+        "/api/v1/project-tasks",
+        json={
+            "project_id": project_id,
+            "title": "Latest successful task",
+            "description": "Recovery succeeded",
+            "status": "completed",
+            "priority": "normal",
+            "sort_order": 1,
+            "input_payload": {},
+        },
+        headers=auth_headers,
+    )
+    assert completed_task_response.status_code == 201, completed_task_response.text
+
+    current_project_response = api_client.get(
+        f"/api/v1/projects/{project_id}",
+        headers=auth_headers,
+    )
+    assert current_project_response.status_code == 200, current_project_response.text
+    assert current_project_response.json()["status"] == "completed"
+
+
 def test_complete_first_run_step_keeps_task_open_until_all_steps_finish(
     api_client: TestClient, auth_headers: dict[str, str]
 ):

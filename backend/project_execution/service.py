@@ -230,28 +230,49 @@ def _resolve_project_status(
     tasks: Iterable[ProjectTask],
     runs: Iterable[ProjectRun],
 ) -> str:
-    task_statuses = [_normalize_status(task.status) for task in tasks]
-    run_statuses = [_normalize_status(run.status) for run in runs]
+    task_list = list(tasks)
+    run_list = list(runs)
+    task_statuses = [_normalize_status(task.status) for task in task_list]
+    run_statuses = [_normalize_status(run.status) for run in run_list]
 
     if not task_statuses and not run_statuses:
         return str(current_status or "")
 
     if any(status in _RUN_ACTIVE_STATUSES for status in (*task_statuses, *run_statuses)):
         return "running"
-    if any(status in _RUN_BLOCKED_STATUSES for status in (*task_statuses, *run_statuses)):
-        return "blocked"
-    if any(_is_failed_status(status) for status in (*task_statuses, *run_statuses)):
-        return "failed"
 
-    if task_statuses:
-        if all(_is_completed_status(status) for status in task_statuses):
+    if any(status in _RUN_QUEUED_STATUSES for status in (*task_statuses, *run_statuses)):
+        return "queued"
+
+    if run_list:
+        latest_run = max(
+            run_list,
+            key=lambda run: _latest_timestamp(
+                [run.updated_at, run.completed_at, run.started_at, run.created_at]
+            )
+            or datetime.min.replace(tzinfo=timezone.utc),
+        )
+        latest_run_status = _normalize_status(latest_run.status)
+        if latest_run_status in _RUN_BLOCKED_STATUSES:
+            return "blocked"
+        if _is_failed_status(latest_run_status):
+            return "failed"
+        if latest_run_status in _TERMINAL_RUN_STATUSES:
             return "completed"
-        return "queued"
 
-    if any(status in _RUN_QUEUED_STATUSES for status in run_statuses):
-        return "queued"
-    if all(status in _TERMINAL_RUN_STATUSES for status in run_statuses):
-        return "completed"
+    if task_list:
+        latest_task = max(
+            task_list,
+            key=lambda task: _latest_timestamp([task.updated_at, task.created_at])
+            or datetime.min.replace(tzinfo=timezone.utc),
+        )
+        latest_task_status = _normalize_status(latest_task.status)
+        if latest_task_status in _RUN_BLOCKED_STATUSES:
+            return "blocked"
+        if _is_failed_status(latest_task_status):
+            return "failed"
+        if _is_completed_status(latest_task_status):
+            return "completed"
 
     return str(current_status or "")
 

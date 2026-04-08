@@ -844,15 +844,15 @@ const resolveProjectLifecycle = (
   runs: SkeletonRunRecord[],
 ): ResolvedProjectLifecycle => {
   const taskStatuses = tasks.map((task) => (task.status || '').toLowerCase());
-  const resolvedRuns = runs.map((run) => resolveRunLifecycle(run, tasks.filter((task) => task.run_id === run.run_id), []));
-  const runStatuses = resolvedRuns.map((run) => (run.status || '').toLowerCase());
-  const fallbackCompletedAt =
-    latestIsoString([
-      ...tasks.map((task) => task.updated_at),
-      ...runs.map((run) => run.completed_at || null),
-      ...runs.map((run) => run.updated_at),
-      project.updated_at,
-    ]) || null;
+  const resolvedRuns = runs.map((run) => ({
+    run,
+    lifecycle: resolveRunLifecycle(
+      run,
+      tasks.filter((task) => task.run_id === run.run_id),
+      [],
+    ),
+  }));
+  const runStatuses = resolvedRuns.map((item) => (item.lifecycle.status || '').toLowerCase());
 
   if (taskStatuses.length === 0 && runStatuses.length === 0) {
     return {
@@ -868,45 +868,79 @@ const resolveProjectLifecycle = (
     };
   }
 
-  if (taskStatuses.some(isBlockedStatus) || runStatuses.some(isBlockedStatus)) {
+  if (taskStatuses.some(isQueuedRunStatus) || runStatuses.some(isQueuedRunStatus)) {
     return {
-      status: 'blocked',
+      status: 'queued',
       completedAt: null,
     };
   }
 
-  if (taskStatuses.some(isFailedStatus) || runStatuses.some(isFailedStatus)) {
-    return {
-      status: 'failed',
-      completedAt: fallbackCompletedAt,
-    };
-  }
-
-  if (taskStatuses.length > 0) {
-    if (taskStatuses.every(isCompletedStatus)) {
+  if (resolvedRuns.length > 0) {
+    const latestRun = resolvedRuns
+      .slice()
+      .sort(
+        (left, right) =>
+          new Date(
+            right.run.updated_at ||
+              right.lifecycle.completedAt ||
+              right.run.started_at ||
+              right.run.created_at,
+          ).getTime() -
+          new Date(
+            left.run.updated_at ||
+              left.lifecycle.completedAt ||
+              left.run.started_at ||
+              left.run.created_at,
+          ).getTime(),
+      )[0];
+    const latestRunStatus = latestRun.lifecycle.status.toLowerCase();
+    if (isBlockedStatus(latestRunStatus)) {
       return {
-        status: 'completed',
-        completedAt: fallbackCompletedAt,
+        status: 'blocked',
+        completedAt: null,
       };
     }
-    return {
-      status: 'queued',
-      completedAt: null,
-    };
+    if (isFailedStatus(latestRunStatus)) {
+      return {
+        status: 'failed',
+        completedAt: latestRun.lifecycle.completedAt,
+      };
+    }
+    if (isClosedRunStatus(latestRunStatus)) {
+      return {
+        status: 'completed',
+        completedAt: latestRun.lifecycle.completedAt,
+      };
+    }
   }
 
-  if (runStatuses.some(isQueuedRunStatus)) {
-    return {
-      status: 'queued',
-      completedAt: null,
-    };
-  }
-
-  if (runStatuses.every((status) => isClosedRunStatus(status) || isBlockedStatus(status))) {
-    return {
-      status: runStatuses.some(isBlockedStatus) ? 'blocked' : 'completed',
-      completedAt: fallbackCompletedAt,
-    };
+  if (tasks.length > 0) {
+    const latestTask = tasks
+      .slice()
+      .sort(
+        (left, right) =>
+          new Date(right.updated_at || right.created_at).getTime() -
+          new Date(left.updated_at || left.created_at).getTime(),
+      )[0];
+    const latestTaskStatus = (latestTask.status || '').toLowerCase();
+    if (isBlockedStatus(latestTaskStatus)) {
+      return {
+        status: 'blocked',
+        completedAt: null,
+      };
+    }
+    if (isFailedStatus(latestTaskStatus)) {
+      return {
+        status: 'failed',
+        completedAt: latestTask.updated_at || null,
+      };
+    }
+    if (isCompletedStatus(latestTaskStatus)) {
+      return {
+        status: 'completed',
+        completedAt: latestTask.updated_at || null,
+      };
+    }
   }
 
   return {
