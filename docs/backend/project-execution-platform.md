@@ -8,7 +8,7 @@ This backend slice introduces a minimal DB-backed foundation for a new project e
 - `project_tasks`
 - `project_plans`
 - `project_runs`
-- `project_run_steps`
+- `execution_nodes`
 - `project_spaces`
 - `external_agent_profiles`
 - `external_agent_bindings`
@@ -24,7 +24,9 @@ This backend slice introduces a minimal DB-backed foundation for a new project e
 - `POST|GET|PATCH|DELETE /api/v1/project-tasks`
 - `POST|GET|PATCH|DELETE /api/v1/plans`
 - `POST|GET|PATCH|DELETE /api/v1/runs`
-- `POST|GET|PATCH|DELETE /api/v1/run-steps`
+- `POST|GET /api/v1/attempts`
+- `GET|POST|PATCH /api/v1/attempts/{attempt_id}/nodes`
+- `GET|POST /api/v1/attempts/{attempt_id}/nodes/{node_id}`
 - `PUT|GET|POST /api/v1/project-space/{project_id}`
 - `GET|PATCH|POST /api/v1/agents/{agent_id}/external-runtime/*`
 - `POST|GET /api/v1/external-runtime/*`

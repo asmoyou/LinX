@@ -651,9 +651,9 @@ def create_app() -> FastAPI:
         tags=["Project Runs"],
     )
     app.include_router(
-        project_execution.run_steps_router,
-        prefix="/api/v1/run-steps",
-        tags=["Run Steps"],
+        project_execution.attempts_router,
+        prefix="/api/v1/attempts",
+        tags=["Execution Attempts"],
     )
     app.include_router(
         project_execution.project_space_router,

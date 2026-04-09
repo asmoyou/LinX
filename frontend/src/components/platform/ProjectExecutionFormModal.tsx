@@ -285,7 +285,7 @@ const ProjectTaskCreateModalBody = ({
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
   const [error, setError] = useState<string | null>(null);
-  const [autoStart, setAutoStart] = useState(true);
+  const [autoStart, setAutoStart] = useState(false);
   const [executionMode, setExecutionMode] = useState<ProjectExecutionMode>('auto');
 
   const disabled = isSubmitting || !title.trim();

@@ -117,12 +117,12 @@ export const RunCenter = () => {
     <div className="space-y-6">
       <section className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
         <div className="max-w-3xl space-y-3">
-          <p className="text-sm font-semibold uppercase tracking-[0.22em] text-indigo-500">{t('projectExecution.runCenter.badge', 'Run Triage')}
+          <p className="text-sm font-semibold uppercase tracking-[0.22em] text-indigo-500">{t('projectExecution.runCenter.badge', 'Attempt Ops')}
           </p>
           <div>
-            <h1 className="text-3xl font-semibold text-zinc-950 dark:text-zinc-50">{t('projectExecution.runCenter.title', 'Run Alerts')}</h1>
+            <h1 className="text-3xl font-semibold text-zinc-950 dark:text-zinc-50">{t('projectExecution.runCenter.title', 'Attempt Ops')}</h1>
             <p className="mt-2 text-sm text-zinc-600 dark:text-zinc-400">
-              {t('projectExecution.runCenter.subtitle', 'Track the runs that are blocked, failing, or still in flight, then jump back into the owning project when action is required.')}
+              {t('projectExecution.runCenter.subtitle', 'Track execution attempts that are blocked, failing, or still in flight, then jump into the owning task or project when action is required.')}
             </p>
           </div>
         </div>
@@ -136,8 +136,8 @@ export const RunCenter = () => {
 
       {fallbackSections.includes('runs') ? (
         <NoticeBanner
-          title={t('projectExecution.runCenter.fallbackTitle', 'Run Alerts is using fallback data')}
-          description={t('projectExecution.runCenter.fallbackDescription', 'Runs are sourced from the project execution backend and can fall back to local seeded data if those APIs are unavailable.')}
+          title={t('projectExecution.runCenter.fallbackTitle', 'Attempt Ops is using fallback data')}
+          description={t('projectExecution.runCenter.fallbackDescription', 'Attempts are sourced from the project execution backend and can fall back to local seeded data if those APIs are unavailable.')}
         />
       ) : null}
 

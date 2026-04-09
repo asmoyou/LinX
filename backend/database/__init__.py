@@ -36,6 +36,7 @@ from .models import (
 )
 from .project_execution_models import (
     AgentProvisioningProfile,
+    ExecutionNode,
     ExternalAgentBinding,
     ExternalAgentDispatch,
     ExternalAgentDispatchEvent,
@@ -47,7 +48,6 @@ from .project_execution_models import (
     ProjectExtensionPackage,
     ProjectPlan,
     ProjectRun,
-    ProjectRunStep,
     ProjectSkillPackage,
     ProjectSpace,
     ProjectTask,
@@ -79,6 +79,7 @@ __all__ = [
     "Project",
     "ProjectAgentBinding",
     "AgentProvisioningProfile",
+    "ExecutionNode",
     "ExternalAgentBinding",
     "ExternalAgentDispatch",
     "ExternalAgentDispatchEvent",
@@ -87,7 +88,6 @@ __all__ = [
     "ProjectTask",
     "ProjectPlan",
     "ProjectRun",
-    "ProjectRunStep",
     "ProjectSpace",
     "ProjectSkillPackage",
     "ProjectExtensionPackage",

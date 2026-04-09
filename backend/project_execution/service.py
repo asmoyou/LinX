@@ -10,13 +10,14 @@ from sqlalchemy.orm import Session
 from access_control.permissions import CurrentUser
 from database.models import Agent
 from database.project_execution_models import (
+    ExecutionNode,
     Project,
     ProjectAuditEvent,
     ProjectPlan,
     ProjectRun,
-    ProjectRunStep,
     ProjectTask,
 )
+from project_execution.execution_nodes import create_execution_node
 from project_execution.model_planner import PlannerResult, build_plan_definition
 
 _COMPLETED_STATUSES = {"completed", "done", "success", "succeeded", "approved"}
@@ -177,22 +178,22 @@ def _latest_timestamp(values: Iterable[Optional[datetime]]) -> Optional[datetime
     return max(filtered) if filtered else None
 
 
-def _resolve_task_status(current_status: Any, steps: Iterable[ProjectRunStep]) -> str:
-    step_statuses = [_normalize_status(step.status) for step in steps]
-    if not step_statuses:
+def _resolve_task_status(current_status: Any, execution_records: Iterable[Any]) -> str:
+    record_statuses = [_normalize_status(record.status) for record in execution_records]
+    if not record_statuses:
         return str(current_status or "")
 
-    if any(_is_failed_status(status) for status in step_statuses):
+    if any(_is_failed_status(status) for status in record_statuses):
         return "failed"
-    if any(status in _TASK_ACTIVE_STEP_STATUSES for status in step_statuses):
+    if any(status in _TASK_ACTIVE_STEP_STATUSES for status in record_statuses):
         return "running"
-    if any(status in _TASK_ASSIGNED_STEP_STATUSES for status in step_statuses):
+    if any(status in _TASK_ASSIGNED_STEP_STATUSES for status in record_statuses):
         return "assigned"
-    if any(status in _TASK_PENDING_STEP_STATUSES for status in step_statuses):
+    if any(status in _TASK_PENDING_STEP_STATUSES for status in record_statuses):
         return "queued"
-    if all(_is_completed_status(status) for status in step_statuses):
+    if all(_is_completed_status(status) for status in record_statuses):
         return "completed"
-    if any(_is_blocked_status(status) for status in step_statuses):
+    if any(_is_blocked_status(status) for status in record_statuses):
         return "blocked"
     return str(current_status or "")
 
@@ -212,13 +213,14 @@ def reconcile_task_state(
     if target_task is None:
         return None
 
-    steps = (
-        session.query(ProjectRunStep)
-        .filter(ProjectRunStep.project_task_id == target_task.project_task_id)
-        .order_by(ProjectRunStep.sequence_number.asc(), ProjectRunStep.created_at.asc())
+    execution_nodes = (
+        session.query(ExecutionNode)
+        .filter(ExecutionNode.project_task_id == target_task.project_task_id)
+        .order_by(ExecutionNode.sequence_number.asc(), ExecutionNode.created_at.asc())
         .all()
     )
-    next_status = _resolve_task_status(target_task.status, steps)
+    execution_records: list[Any] = list(execution_nodes)
+    next_status = _resolve_task_status(target_task.status, execution_records)
     if next_status and target_task.status != next_status:
         target_task.status = next_status
         session.flush()
@@ -367,17 +369,23 @@ def reconcile_run_state(
         return None
 
     tasks = session.query(ProjectTask).filter(ProjectTask.run_id == target_run.run_id).all()
-    steps = session.query(ProjectRunStep).filter(ProjectRunStep.run_id == target_run.run_id).all()
-    steps_by_task: dict[uuid.UUID, list[ProjectRunStep]] = {}
-    for step in steps:
-        if step.project_task_id is None:
+    execution_nodes = (
+        session.query(ExecutionNode)
+        .filter(ExecutionNode.run_id == target_run.run_id)
+        .order_by(ExecutionNode.sequence_number.asc(), ExecutionNode.created_at.asc())
+        .all()
+    )
+    execution_records: list[Any] = list(execution_nodes)
+    records_by_task: dict[uuid.UUID, list[Any]] = {}
+    for record in execution_records:
+        if record.project_task_id is None:
             continue
-        steps_by_task.setdefault(step.project_task_id, []).append(step)
+        records_by_task.setdefault(record.project_task_id, []).append(record)
 
     task_state_changed = False
     for task in tasks:
         next_task_status = _resolve_task_status(
-            task.status, steps_by_task.get(task.project_task_id, [])
+            task.status, records_by_task.get(task.project_task_id, [])
         )
         if next_task_status and task.status != next_task_status:
             task.status = next_task_status
@@ -393,11 +401,11 @@ def reconcile_run_state(
             target_run.updated_at,
             target_run.started_at,
             *(task.updated_at for task in tasks),
-            *(step.completed_at for step in steps),
-            *(step.updated_at for step in steps),
+            *(record.completed_at for record in execution_records),
+            *(record.updated_at for record in execution_records),
         ]
     )
-    failed_steps = any(_is_failed_status(step.status) for step in steps)
+    failed_execution_records = any(_is_failed_status(record.status) for record in execution_records)
     failed_tasks = any(_is_failed_status(task.status) for task in tasks)
     has_active_tasks = any(not _is_terminal_task_status(task.status) for task in tasks)
     changed = False
@@ -408,7 +416,7 @@ def reconcile_run_state(
             changed = True
     elif not tasks:
         if target_run.started_at is not None:
-            next_status = "failed" if failed_steps else "completed"
+            next_status = "failed" if failed_execution_records else "completed"
             if target_run.status != next_status:
                 target_run.status = next_status
                 changed = True
@@ -420,7 +428,7 @@ def reconcile_run_state(
             target_run.completed_at = None
             changed = True
     elif not has_active_tasks:
-        next_status = "failed" if failed_tasks or failed_steps else "completed"
+        next_status = "failed" if failed_tasks or failed_execution_records else "completed"
         if target_run.status != next_status:
             target_run.status = next_status
             changed = True
@@ -490,7 +498,7 @@ def create_project_task_and_launch_run(
     input_payload: Optional[dict[str, Any]],
     planner_result: PlannerResult,
     current_user: CurrentUser,
-) -> tuple[ProjectTask, Optional[ProjectPlan], Optional[ProjectRun], Optional[ProjectRunStep]]:
+) -> tuple[ProjectTask, Optional[ProjectPlan], Optional[ProjectRun], Optional[ExecutionNode]]:
     """Create a task, plan, run, and initial pending run step bundle in one transaction."""
     actor_user_id = get_current_user_uuid(current_user)
     ensure_related_records(
@@ -605,17 +613,18 @@ def create_project_task_and_launch_run(
         payload={"status": run.status},
     )
 
-    created_steps: list[tuple[ProjectRunStep, Any]] = []
-    planner_step_to_run_step_id: dict[str, str] = {}
+    created_nodes: list[tuple[ExecutionNode, Any]] = []
+    planner_step_to_node_id: dict[str, str] = {}
     for index, planner_step in enumerate(planner_result.steps):
-        step = ProjectRunStep(
-            run_id=run.run_id,
+        node = create_execution_node(
+            session,
+            run=run,
             project_task_id=task.project_task_id,
             name=planner_step.name,
-            step_type="task",
+            node_type="task",
             status="pending",
             sequence_number=index,
-            input_payload={
+            node_payload={
                 "project_task_id": str(task.project_task_id),
                 "planner_step_id": planner_step.id,
                 "step_kind": planner_step.step_kind,
@@ -627,31 +636,31 @@ def create_project_task_and_launch_run(
                 "parallel_group": planner_step.parallel_group,
             },
         )
-        session.add(step)
-        flush_and_refresh(session, step)
-        planner_step_to_run_step_id[planner_step.id] = str(step.run_step_id)
-        created_steps.append((step, planner_step))
+        planner_step_to_node_id[planner_step.id] = str(node.node_id)
+        created_nodes.append((node, planner_step))
         append_audit_event(
             session,
-            action="run-step.created",
-            resource_type="project_run_step",
-            resource_id=step.run_step_id,
+            action="execution-node.created",
+            resource_type="execution_node",
+            resource_id=node.node_id,
             project_id=project_id,
             run_id=run.run_id,
             current_user=current_user,
-            payload={"sequence": step.sequence_number, "status": step.status},
+            payload={"sequence": node.sequence_number, "status": node.status},
         )
 
-    for step, planner_step in created_steps:
-        step.input_payload = {
-            **(step.input_payload or {}),
-            "dependency_step_ids": [
-                planner_step_to_run_step_id[dependency_id]
-                for dependency_id in planner_step.depends_on
-                if dependency_id in planner_step_to_run_step_id
-            ],
+    for node, planner_step in created_nodes:
+        node.dependency_node_ids = [
+            planner_step_to_node_id[dependency_id]
+            for dependency_id in planner_step.depends_on
+            if dependency_id in planner_step_to_node_id
+        ]
+        node.node_payload = {
+            **(node.node_payload or {}),
+            "dependency_node_ids": list(node.dependency_node_ids or []),
+            "dependency_step_ids": [],
         }
-        flush_and_refresh(session, step)
+        flush_and_refresh(session, node)
 
     task.plan_id = plan.plan_id
     task.run_id = run.run_id
@@ -678,7 +687,57 @@ def create_project_task_and_launch_run(
     )
 
     reconcile_project_state(session, project_id=project_id)
-    return task, plan, run, created_steps[0][0] if created_steps else None
+    first_node = created_nodes[0][0] if created_nodes else None
+    return task, plan, run, first_node
+
+
+def _update_planned_execution_nodes_for_run(
+    session: Session,
+    *,
+    run: ProjectRun,
+    task: ProjectTask,
+    planner_result: PlannerResult,
+) -> list[ExecutionNode]:
+    created_nodes: list[tuple[ExecutionNode, Any]] = []
+    planner_step_to_node_id: dict[str, str] = {}
+    for index, planner_step in enumerate(planner_result.steps):
+        node = create_execution_node(
+            session,
+            run=run,
+            project_task_id=task.project_task_id,
+            name=planner_step.name,
+            node_type="task",
+            status="pending",
+            sequence_number=index,
+            node_payload={
+                "project_task_id": str(task.project_task_id),
+                "planner_step_id": planner_step.id,
+                "step_kind": planner_step.step_kind,
+                "executor_kind": planner_step.executor_kind,
+                "execution_mode": planner_step.execution_mode,
+                "required_capabilities": list(planner_step.required_capabilities or []),
+                "suggested_agent_ids": list(planner_step.suggested_agent_ids or []),
+                "acceptance": planner_step.acceptance,
+                "parallel_group": planner_step.parallel_group,
+            },
+        )
+        planner_step_to_node_id[planner_step.id] = str(node.node_id)
+        created_nodes.append((node, planner_step))
+
+    for node, planner_step in created_nodes:
+        node.dependency_node_ids = [
+            planner_step_to_node_id[dependency_id]
+            for dependency_id in planner_step.depends_on
+            if dependency_id in planner_step_to_node_id
+        ]
+        node.node_payload = {
+            **(node.node_payload or {}),
+            "dependency_node_ids": list(node.dependency_node_ids or []),
+            "dependency_step_ids": [],
+        }
+        flush_and_refresh(session, node)
+
+    return [node for node, _ in created_nodes]
 
 
 def launch_existing_project_task_run(
@@ -687,7 +746,7 @@ def launch_existing_project_task_run(
     task: ProjectTask,
     planner_result: PlannerResult,
     current_user: CurrentUser,
-) -> tuple[ProjectTask, Optional[ProjectPlan], Optional[ProjectRun], Optional[ProjectRunStep]]:
+) -> tuple[ProjectTask, Optional[ProjectPlan], Optional[ProjectRun], Optional[ExecutionNode]]:
     if task.project_id is None:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -751,43 +810,12 @@ def launch_existing_project_task_run(
     session.add(run)
     flush_and_refresh(session, run)
 
-    created_steps: list[tuple[ProjectRunStep, Any]] = []
-    planner_step_to_run_step_id: dict[str, str] = {}
-    for index, planner_step in enumerate(planner_result.steps):
-        step = ProjectRunStep(
-            run_id=run.run_id,
-            project_task_id=task.project_task_id,
-            name=planner_step.name,
-            step_type="task",
-            status="pending",
-            sequence_number=index,
-            input_payload={
-                "project_task_id": str(task.project_task_id),
-                "planner_step_id": planner_step.id,
-                "step_kind": planner_step.step_kind,
-                "executor_kind": planner_step.executor_kind,
-                "execution_mode": planner_step.execution_mode,
-                "required_capabilities": list(planner_step.required_capabilities or []),
-                "suggested_agent_ids": list(planner_step.suggested_agent_ids or []),
-                "acceptance": planner_step.acceptance,
-                "parallel_group": planner_step.parallel_group,
-            },
-        )
-        session.add(step)
-        flush_and_refresh(session, step)
-        planner_step_to_run_step_id[planner_step.id] = str(step.run_step_id)
-        created_steps.append((step, planner_step))
-
-    for step, planner_step in created_steps:
-        step.input_payload = {
-            **(step.input_payload or {}),
-            "dependency_step_ids": [
-                planner_step_to_run_step_id[dependency_id]
-                for dependency_id in planner_step.depends_on
-                if dependency_id in planner_step_to_run_step_id
-            ],
-        }
-        flush_and_refresh(session, step)
+    created_nodes = _update_planned_execution_nodes_for_run(
+        session,
+        run=run,
+        task=task,
+        planner_result=planner_result,
+    )
 
     task.plan_id = plan.plan_id
     task.run_id = run.run_id
@@ -799,4 +827,5 @@ def launch_existing_project_task_run(
     }
     flush_and_refresh(session, task)
 
-    return task, plan, run, created_steps[0][0] if created_steps else None
+    first_node = created_nodes[0] if created_nodes else None
+    return task, plan, run, first_node

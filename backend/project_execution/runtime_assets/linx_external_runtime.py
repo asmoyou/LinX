@@ -32,6 +32,7 @@ import zipfile
 
 MAX_CAPTURE_CHARS = 30000
 MAX_TOOL_ITERATIONS = 8
+_LOG_FILE_PATH: Path | None = None
 
 
 class FatalRuntimeStop(RuntimeError):
@@ -40,7 +41,16 @@ class FatalRuntimeStop(RuntimeError):
 
 def log_runtime(message: str) -> None:
     timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
-    print(f"[{timestamp}] [linx-external-runtime] {message}", file=sys.stderr, flush=True)
+    line = f"[{timestamp}] [linx-external-runtime] {message}"
+    print(line, file=sys.stderr, flush=True)
+    global _LOG_FILE_PATH
+    if _LOG_FILE_PATH is not None:
+        try:
+            _LOG_FILE_PATH.parent.mkdir(parents=True, exist_ok=True)
+            with _LOG_FILE_PATH.open("a", encoding="utf-8") as handle:
+                handle.write(line + "\n")
+        except Exception:
+            pass
 
 
 def configure_process_identity(agent_id: str | None = None) -> None:
@@ -1027,7 +1037,7 @@ def execute_dispatch(
                     },
                 )
         return ok, result_payload, error_message, followup_action
-    if source_type == "project_run_step":
+    if source_type in {"project_run_step", "execution_node"}:
         prompt = str(request_payload.get("execution_prompt") or "").strip()
         run_id = str(request_payload.get("run_id") or dispatch_id).strip() or dispatch_id
         workspace_root = (
@@ -1113,7 +1123,7 @@ def execute_dispatch(
             "LINX_AGENT_RUNTIME_TYPE": str(dispatch.get("runtime_type") or ""),
             "LINX_PROJECT_ID": str(request_payload.get("project_id") or ""),
             "LINX_RUN_ID": str(request_payload.get("run_id") or ""),
-            "LINX_RUN_STEP_ID": str(request_payload.get("run_step_id") or ""),
+            "LINX_NODE_ID": str(request_payload.get("node_id") or ""),
             "LINX_WORKSPACE_ROOT": str(workspace_root),
             "LINX_AGENT_DISPATCH_ID": dispatch_id,
             "LINX_AGENT_TASK_TITLE": str(request_payload.get("task_title") or ""),
@@ -1319,6 +1329,9 @@ def run() -> int:
     args = parse_args()
     config_path = Path(args.config).expanduser().resolve()
     config = load_config(config_path)
+    global _LOG_FILE_PATH
+    runtime_home = Path(str(config.get("runtime_home") or config_path.parent.parent)).expanduser()
+    _LOG_FILE_PATH = runtime_home / "runtime.stderr.log"
     configure_process_identity(str(config.get("agent_id") or ""))
     if not config.get("python_executable"):
         config["python_executable"] = sys.executable

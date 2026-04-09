@@ -11,16 +11,15 @@ from sqlalchemy.orm import Session
 
 from database.models import Agent
 from database.project_execution_models import (
+    ExecutionNode,
     ExternalAgentBinding,
     ExternalAgentDispatch,
     ExternalAgentDispatchEvent,
     ExternalAgentInstallToken,
     ExternalAgentProfile,
     ProjectRun,
-    ProjectRunStep,
     ProjectTask,
 )
-from project_execution.execution_nodes import create_or_update_execution_node_from_step
 from project_execution.service import flush_and_refresh, reconcile_run_state, retire_ephemeral_run_agents
 from shared.secret_crypto import sha256_text
 
@@ -492,7 +491,7 @@ class ExternalRuntimeService:
         request_payload: dict[str, Any],
         project_id: Optional[UUID] = None,
         run_id: Optional[UUID] = None,
-        run_step_id: Optional[UUID] = None,
+        node_id: Optional[UUID] = None,
     ) -> ExternalAgentDispatch:
         binding = self.get_active_binding(agent_id=agent_id)
         if binding is None:
@@ -507,7 +506,7 @@ class ExternalRuntimeService:
             binding_id=binding.binding_id,
             project_id=project_id,
             run_id=run_id,
-            run_step_id=run_step_id,
+            node_id=node_id,
             source_type=source_type,
             source_id=source_id,
             runtime_type=runtime_type,
@@ -610,29 +609,38 @@ class ExternalRuntimeService:
             .all()
         )
 
-    def _sync_dispatch_targets(self, *, dispatch: ExternalAgentDispatch) -> tuple[Optional[ProjectRunStep], Optional[ProjectTask], Optional[ProjectRun]]:
-        step = None
+    def _sync_dispatch_targets(
+        self,
+        *,
+        dispatch: ExternalAgentDispatch,
+    ) -> tuple[Optional[ExecutionNode], Optional[ProjectTask], Optional[ProjectRun]]:
+        node = None
         task = None
         run = None
-        if dispatch.run_step_id:
-            step = self.session.query(ProjectRunStep).filter(ProjectRunStep.run_step_id == dispatch.run_step_id).first()
-        if step and step.project_task_id:
-            task = self.session.query(ProjectTask).filter(ProjectTask.project_task_id == step.project_task_id).first()
+        if dispatch.node_id is not None:
+            node = self.session.query(ExecutionNode).filter(ExecutionNode.node_id == dispatch.node_id).first()
+        if node is None and dispatch.source_type == "execution_node":
+            try:
+                node_id = UUID(str(dispatch.source_id))
+            except (TypeError, ValueError):
+                node_id = None
+            if node_id is not None:
+                node = self.session.query(ExecutionNode).filter(ExecutionNode.node_id == node_id).first()
+        if node and node.project_task_id:
+            task = self.session.query(ProjectTask).filter(ProjectTask.project_task_id == node.project_task_id).first()
         if dispatch.run_id:
             run = self.session.query(ProjectRun).filter(ProjectRun.run_id == dispatch.run_id).first()
-        return step, task, run
+        return node, task, run
 
     def ack_dispatch(self, *, dispatch: ExternalAgentDispatch, result_payload: Optional[dict[str, Any]] = None) -> ExternalAgentDispatch:
         dispatch.status = "acked"
         dispatch.acked_at = self.utc_now()
         dispatch.result_payload = {**(dispatch.result_payload or {}), **(result_payload or {})}
-        step, task, run = self._sync_dispatch_targets(dispatch=dispatch)
-        if step is not None:
-            step.status = "assigned"
-            step.output_payload = {**(step.output_payload or {}), **(result_payload or {})}
-            flush_and_refresh(self.session, step)
-            if run is not None:
-                create_or_update_execution_node_from_step(self.session, run=run, step=step)
+        node, task, run = self._sync_dispatch_targets(dispatch=dispatch)
+        if node is not None:
+            node.status = "assigned"
+            node.result_payload = {**(node.result_payload or {}), **(result_payload or {})}
+            flush_and_refresh(self.session, node)
         if task is not None:
             task.status = "assigned"
             task.error_message = None
@@ -651,16 +659,14 @@ class ExternalRuntimeService:
             dispatch.started_at = self.utc_now()
         dispatch.result_payload = {**(dispatch.result_payload or {}), **(result_payload or {})}
         dispatch.error_message = error_message
-        step, task, run = self._sync_dispatch_targets(dispatch=dispatch)
-        if step is not None:
-            step.status = normalized_status
-            step.output_payload = {**(step.output_payload or {}), **(result_payload or {})}
-            step.error_message = error_message
-            if step.started_at is None:
-                step.started_at = self.utc_now()
-            flush_and_refresh(self.session, step)
-            if run is not None:
-                create_or_update_execution_node_from_step(self.session, run=run, step=step)
+        node, task, run = self._sync_dispatch_targets(dispatch=dispatch)
+        if node is not None:
+            node.status = normalized_status
+            node.result_payload = {**(node.result_payload or {}), **(result_payload or {})}
+            node.error_message = error_message
+            if node.started_at is None:
+                node.started_at = self.utc_now()
+            flush_and_refresh(self.session, node)
         if task is not None:
             task.status = normalized_status
             task.error_message = error_message
@@ -679,16 +685,14 @@ class ExternalRuntimeService:
         if dispatch.started_at is None:
             dispatch.started_at = now
         dispatch.result_payload = {**(dispatch.result_payload or {}), **(result_payload or {})}
-        step, task, run = self._sync_dispatch_targets(dispatch=dispatch)
-        if step is not None:
-            step.status = "completed"
-            step.completed_at = now
-            if step.started_at is None:
-                step.started_at = dispatch.started_at
-            step.output_payload = {**(step.output_payload or {}), **(result_payload or {})}
-            flush_and_refresh(self.session, step)
-            if run is not None:
-                create_or_update_execution_node_from_step(self.session, run=run, step=step)
+        node, task, run = self._sync_dispatch_targets(dispatch=dispatch)
+        if node is not None:
+            node.status = "completed"
+            node.completed_at = now
+            if node.started_at is None:
+                node.started_at = dispatch.started_at
+            node.result_payload = {**(node.result_payload or {}), **(result_payload or {})}
+            flush_and_refresh(self.session, node)
         if task is not None:
             task.output_payload = {**(task.output_payload or {}), **(result_payload or {})}
             flush_and_refresh(self.session, task)
@@ -704,15 +708,13 @@ class ExternalRuntimeService:
         dispatch.completed_at = now
         dispatch.error_message = error_message or dispatch.error_message or "External runtime reported failure"
         dispatch.result_payload = {**(dispatch.result_payload or {}), **(result_payload or {})}
-        step, task, run = self._sync_dispatch_targets(dispatch=dispatch)
-        if step is not None:
-            step.status = "failed"
-            step.completed_at = now
-            step.error_message = dispatch.error_message
-            step.output_payload = {**(step.output_payload or {}), **(result_payload or {})}
-            flush_and_refresh(self.session, step)
-            if run is not None:
-                create_or_update_execution_node_from_step(self.session, run=run, step=step)
+        node, task, run = self._sync_dispatch_targets(dispatch=dispatch)
+        if node is not None:
+            node.status = "failed"
+            node.completed_at = now
+            node.error_message = dispatch.error_message
+            node.result_payload = {**(node.result_payload or {}), **(result_payload or {})}
+            flush_and_refresh(self.session, node)
         if task is not None:
             task.status = "failed"
             task.error_message = dispatch.error_message

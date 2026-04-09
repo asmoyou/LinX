@@ -22,7 +22,7 @@ class Project(Base):
     project_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     name = Column(String(255), nullable=False, index=True)
     description = Column(Text, nullable=True)
-    status = Column(String(50), nullable=False, default="draft", index=True)
+    status = Column(String(50), nullable=False, default="planning", index=True)
     configuration = Column(JSONB, nullable=False, default=dict)
     created_by_user_id = Column(
         UUID(as_uuid=True),
@@ -169,8 +169,8 @@ class ProjectRun(Base):
     project = relationship("Project", back_populates="runs")
     plan = relationship("ProjectPlan", back_populates="runs")
     requester = relationship("User")
-    steps = relationship(
-        "ProjectRunStep",
+    execution_nodes = relationship(
+        "ExecutionNode",
         back_populates="run",
         cascade="all, delete-orphan",
         passive_deletes=True,
@@ -237,7 +237,6 @@ class ProjectTask(Base):
     run = relationship("ProjectRun", back_populates="tasks")
     assigned_agent = relationship("Agent")
     creator = relationship("User")
-    steps = relationship("ProjectRunStep", back_populates="project_task")
     contracts = relationship(
         "ProjectTaskContract",
         back_populates="project_task",
@@ -286,6 +285,12 @@ class ProjectTask(Base):
         cascade="all, delete-orphan",
         passive_deletes=True,
         order_by="ProjectTaskReviewIssue.created_at.desc()",
+    )
+    execution_nodes = relationship(
+        "ExecutionNode",
+        back_populates="project_task",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
     )
 
     __table_args__ = (
@@ -409,9 +414,9 @@ class ProjectTaskHandoff(Base):
         nullable=True,
         index=True,
     )
-    run_step_id = Column(
+    node_id = Column(
         UUID(as_uuid=True),
-        ForeignKey("project_run_steps.run_step_id", ondelete="SET NULL"),
+        ForeignKey("execution_nodes.node_id", ondelete="SET NULL"),
         nullable=True,
         index=True,
     )
@@ -436,7 +441,7 @@ class ProjectTaskHandoff(Base):
 
     project_task = relationship("ProjectTask", back_populates="handoffs")
     run = relationship("ProjectRun")
-    run_step = relationship("ProjectRunStep")
+    execution_node = relationship("ExecutionNode")
     creator = relationship("User")
 
     __table_args__ = (
@@ -463,9 +468,9 @@ class ProjectTaskChangeBundle(Base):
         nullable=True,
         index=True,
     )
-    run_step_id = Column(
+    node_id = Column(
         UUID(as_uuid=True),
-        ForeignKey("project_run_steps.run_step_id", ondelete="SET NULL"),
+        ForeignKey("execution_nodes.node_id", ondelete="SET NULL"),
         nullable=True,
         index=True,
     )
@@ -490,7 +495,7 @@ class ProjectTaskChangeBundle(Base):
 
     project_task = relationship("ProjectTask", back_populates="change_bundles")
     run = relationship("ProjectRun")
-    run_step = relationship("ProjectRunStep")
+    execution_node = relationship("ExecutionNode")
     creator = relationship("User")
 
     __table_args__ = (
@@ -517,9 +522,9 @@ class ProjectTaskEvidenceBundle(Base):
         nullable=True,
         index=True,
     )
-    run_step_id = Column(
+    node_id = Column(
         UUID(as_uuid=True),
-        ForeignKey("project_run_steps.run_step_id", ondelete="SET NULL"),
+        ForeignKey("execution_nodes.node_id", ondelete="SET NULL"),
         nullable=True,
         index=True,
     )
@@ -539,7 +544,7 @@ class ProjectTaskEvidenceBundle(Base):
 
     project_task = relationship("ProjectTask", back_populates="evidence_bundles")
     run = relationship("ProjectRun")
-    run_step = relationship("ProjectRunStep")
+    execution_node = relationship("ExecutionNode")
     creator = relationship("User")
 
     __table_args__ = (
@@ -609,12 +614,18 @@ class ProjectTaskReviewIssue(Base):
     )
 
 
-class ProjectRunStep(Base):
-    """Step-level records within a run."""
+class ExecutionNode(Base):
+    """Persistent execution node mirrored from attempt steps."""
 
-    __tablename__ = "project_run_steps"
+    __tablename__ = "execution_nodes"
 
-    run_step_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    node_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    project_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("projects.project_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
     run_id = Column(
         UUID(as_uuid=True),
         ForeignKey("project_runs.run_id", ondelete="CASCADE"),
@@ -628,11 +639,12 @@ class ProjectRunStep(Base):
         index=True,
     )
     name = Column(String(255), nullable=False)
-    step_type = Column(String(50), nullable=False, default="task")
+    node_type = Column(String(50), nullable=False, default="task")
     status = Column(String(50), nullable=False, default="pending", index=True)
     sequence_number = Column(Integer, nullable=False, default=0)
-    input_payload = Column(JSONB, nullable=False, default=dict)
-    output_payload = Column(JSONB, nullable=False, default=dict)
+    dependency_node_ids = Column(JSONB, nullable=False, default=list)
+    node_payload = Column(JSONB, nullable=False, default=dict)
+    result_payload = Column(JSONB, nullable=False, default=dict)
     error_message = Column(Text, nullable=True)
     started_at = Column(DateTime(timezone=True), nullable=True)
     completed_at = Column(DateTime(timezone=True), nullable=True)
@@ -641,12 +653,13 @@ class ProjectRunStep(Base):
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
     )
 
-    run = relationship("ProjectRun", back_populates="steps")
-    project_task = relationship("ProjectTask", back_populates="steps")
+    project = relationship("Project")
+    run = relationship("ProjectRun", back_populates="execution_nodes")
+    project_task = relationship("ProjectTask", back_populates="execution_nodes")
 
     __table_args__ = (
-        Index("idx_project_run_step_run_status", "run_id", "status"),
-        Index("idx_project_run_step_run_sequence", "run_id", "sequence_number"),
+        Index("idx_execution_node_run_status", "run_id", "status"),
+        Index("idx_execution_node_task_sequence", "project_task_id", "sequence_number"),
     )
 
 
@@ -872,9 +885,9 @@ class ExternalAgentDispatch(Base):
         nullable=True,
         index=True,
     )
-    run_step_id = Column(
+    node_id = Column(
         UUID(as_uuid=True),
-        ForeignKey("project_run_steps.run_step_id", ondelete="SET NULL"),
+        ForeignKey("execution_nodes.node_id", ondelete="SET NULL"),
         nullable=True,
         index=True,
     )
@@ -898,7 +911,7 @@ class ExternalAgentDispatch(Base):
     binding = relationship("ExternalAgentBinding")
     project = relationship("Project")
     run = relationship("ProjectRun")
-    run_step = relationship("ProjectRunStep")
+    execution_node = relationship("ExecutionNode")
 
     __table_args__ = (
         Index("idx_external_agent_dispatch_binding_status", "binding_id", "status"),

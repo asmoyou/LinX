@@ -163,7 +163,7 @@ export const RunDetail = () => {
         <Link
           to="/runs"
           className="text-sm font-medium text-indigo-600 hover:text-indigo-500 dark:text-indigo-400"
-        >{`← ${t('projectExecution.shared.backToRuns', 'Back to Run Alerts')}`}
+        >{`← ${t('projectExecution.shared.backToRuns', 'Back to Attempt Ops')}`}
         </Link>
         <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
           <div className="max-w-3xl">
@@ -414,6 +414,73 @@ export const RunDetail = () => {
         </SectionCard>
 
         <div className="space-y-6">
+          {detail.nodes && detail.nodes.length > 0 ? (
+            <SectionCard
+              title={t('projectExecution.runDetail.nodesTitle', 'Execution Nodes')}
+              description={t('projectExecution.runDetail.nodesDescription', 'Ordered nodes executed for this attempt.')}
+            >
+              <div className="space-y-3">
+                {detail.nodes.map((node) => (
+                  <div
+                    key={node.id}
+                    className="rounded-[18px] border border-zinc-200/70 bg-zinc-50/70 px-4 py-3 dark:border-zinc-800 dark:bg-zinc-900/60"
+                  >
+                    <div className="flex flex-wrap items-center justify-between gap-3">
+                      <div>
+                        <p className="font-medium text-zinc-950 dark:text-zinc-50">{node.name}</p>
+                        <p className="mt-1 text-sm text-zinc-600 dark:text-zinc-400">
+                          {`${node.sequenceNumber + 1}. ${formatTokenLabel(node.nodeType)}`}
+                        </p>
+                        <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
+                          {[node.executionMode, node.executorKind, node.runtimeType].filter(Boolean).map((item) => formatTokenLabel(String(item))).join(' · ')}
+                        </p>
+                      </div>
+                      <StatusBadge status={node.status} />
+                    </div>
+                    {node.dependencyStepIds && node.dependencyStepIds.length > 0 ? (
+                      <p className="mt-2 text-xs text-zinc-500 dark:text-zinc-400">
+                        {`Depends on ${node.dependencyStepIds.length} node(s)`}
+                      </p>
+                    ) : null}
+                  </div>
+                ))}
+              </div>
+            </SectionCard>
+          ) : null}
+
+          {detail.runtimeSessions && detail.runtimeSessions.length > 0 ? (
+            <SectionCard
+              title={t('projectExecution.runDetail.runtimeSessionsTitle', 'Runtime Sessions')}
+              description={t('projectExecution.runDetail.runtimeSessionsDescription', 'Workspace and dispatch sessions attached to this attempt.')}
+            >
+              <div className="space-y-3">
+                {detail.runtimeSessions.map((session) => (
+                  <div
+                    key={session.id}
+                    className="rounded-[18px] border border-zinc-200/70 bg-zinc-50/70 px-4 py-3 dark:border-zinc-800 dark:bg-zinc-900/60"
+                  >
+                    <div className="flex flex-wrap items-center justify-between gap-3">
+                      <div>
+                        <p className="font-medium text-zinc-950 dark:text-zinc-50">
+                          {formatTokenLabel(session.sessionType)}
+                        </p>
+                        <p className="mt-1 text-sm text-zinc-600 dark:text-zinc-400">
+                          {[session.runtimeType, session.agentId, session.bindingId].filter(Boolean).join(' · ')}
+                        </p>
+                        {session.workspaceRoot ? (
+                          <p className="mt-1 break-all text-xs text-zinc-500 dark:text-zinc-400">
+                            {session.workspaceRoot}
+                          </p>
+                        ) : null}
+                      </div>
+                      <StatusBadge status={session.status} />
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </SectionCard>
+          ) : null}
+
           {detail.externalDispatches && detail.externalDispatches.length > 0 ? (
             <SectionCard title={t('projectExecution.runDetail.externalSessionsTitle', 'External Agent Dispatches')} description={t('projectExecution.runDetail.externalSessionsDescription', 'External host-backed dispatches attached to this run.') }>
               <div className="space-y-3">
@@ -429,7 +496,7 @@ export const RunDetail = () => {
                           {t('projectExecution.runDetail.externalSessionNode', { value: dispatch.bindingId, defaultValue: `Binding: ${dispatch.bindingId}` })}
                         </p>
                         <p className="mt-1 break-all text-xs text-zinc-500 dark:text-zinc-400">
-                          {dispatch.runStepId || t('projectExecution.runDetail.externalSessionWorkdirPending', 'Dispatch metadata will be reported by the runtime.')}
+                          {dispatch.nodeId || t('projectExecution.runDetail.externalSessionWorkdirPending', 'Dispatch metadata will be reported by the runtime.')}
                         </p>
                         {dispatch.errorMessage ? (
                           <p className="mt-1 text-xs text-rose-600 dark:text-rose-400">{dispatch.errorMessage}</p>

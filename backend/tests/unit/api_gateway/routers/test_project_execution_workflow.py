@@ -17,7 +17,13 @@ from agent_framework.agent_registry import get_agent_registry
 from api_gateway.main import create_app
 from database.connection import get_db_session
 from database.models import Agent, AgentConversation, PlatformSetting
-from database.project_execution_models import ExternalAgentBinding, ExternalAgentDispatch, ProjectRun, ProjectTask
+from database.project_execution_models import (
+    ExecutionNode,
+    ExternalAgentBinding,
+    ExternalAgentDispatch,
+    ProjectRun,
+    ProjectTask,
+)
 from project_execution.run_workspace_manager import get_run_workspace_manager
 from project_execution.external_runtime_service import (
     CURRENT_EXTERNAL_RUNTIME_VERSION,
@@ -196,6 +202,69 @@ def _create_project_and_running_task_run(
     return task_id, run_id
 
 
+def _create_attempt_node(
+    api_client: TestClient,
+    auth_headers: dict[str, str],
+    *,
+    run_id: str,
+    task_id: str,
+    name: str,
+    status: str = "pending",
+    sequence_number: int = 0,
+    node_payload: dict | None = None,
+) -> dict:
+    response = api_client.post(
+        f"/api/v1/attempts/{run_id}/nodes",
+        json={
+            "project_task_id": task_id,
+            "name": name,
+            "node_type": "task",
+            "status": status,
+            "sequence_number": sequence_number,
+            "node_payload": node_payload or {"project_task_id": task_id},
+        },
+        headers=auth_headers,
+    )
+    assert response.status_code == 201, response.text
+    return response.json()
+
+
+def _complete_attempt_node(
+    api_client: TestClient,
+    auth_headers: dict[str, str],
+    *,
+    run_id: str,
+    node_id: str,
+    status: str = "completed",
+    result_payload: dict | None = None,
+) -> dict:
+    response = api_client.post(
+        f"/api/v1/attempts/{run_id}/nodes/{node_id}/complete",
+        json={
+            "status": status,
+            "result_payload": result_payload or {},
+        },
+        headers=auth_headers,
+    )
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+def _get_attempt_node(
+    api_client: TestClient,
+    auth_headers: dict[str, str],
+    *,
+    run_id: str,
+    node_id: str,
+) -> dict:
+    response = api_client.get(
+        f"/api/v1/attempts/{run_id}/nodes/{node_id}",
+        headers=auth_headers,
+    )
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
 def test_project_execution_workflow_chain(api_client: TestClient, auth_headers: dict[str, str]):
     project_response = api_client.post(
         "/api/v1/projects",
@@ -274,22 +343,15 @@ def test_project_execution_workflow_chain(api_client: TestClient, auth_headers: 
     )
     assert patch_task_response.status_code == 200, patch_task_response.text
 
-    step_response = api_client.post(
-        "/api/v1/run-steps",
-        json={
-            "run_id": run_id,
-            "project_task_id": task_id,
-            "name": "Execute initial task",
-            "step_type": "task",
-            "status": "pending",
-            "sequence_number": 0,
-            "input_payload": {"project_task_id": task_id},
-        },
-        headers=auth_headers,
+    node = _create_attempt_node(
+        api_client,
+        auth_headers,
+        run_id=run_id,
+        task_id=task_id,
+        name="Execute initial task",
+        status="pending",
     )
-    assert step_response.status_code == 201, step_response.text
-    step = step_response.json()
-    assert step["run_id"] == run_id
+    assert node["runId"] == run_id
 
     start_response = api_client.post(
         f"/api/v1/runs/{run_id}/start",
@@ -303,6 +365,24 @@ def test_project_execution_workflow_chain(api_client: TestClient, auth_headers: 
     runs_list = api_client.get("/api/v1/runs", headers=auth_headers)
     assert runs_list.status_code == 200, runs_list.text
     assert any(item["run_id"] == run_id for item in runs_list.json())
+
+
+def test_create_project_normalizes_draft_to_planning(
+    api_client: TestClient, auth_headers: dict[str, str]
+):
+    response = api_client.post(
+        "/api/v1/projects",
+        json={
+            "name": "Normalize Draft",
+            "description": "Draft should no longer be the visible default.",
+            "status": "draft",
+            "configuration": {},
+        },
+        headers=auth_headers,
+    )
+    assert response.status_code == 201, response.text
+    payload = response.json()
+    assert payload["status"] == "planning"
 
 
 def test_project_detail_endpoint_returns_aggregated_view(
@@ -358,24 +438,19 @@ def test_project_task_detail_endpoint_returns_execution_context(
     )
     assert patch_task_response.status_code == 200, patch_task_response.text
 
-    step_response = api_client.post(
-        "/api/v1/run-steps",
-        json={
-            "run_id": run_id,
+    _create_attempt_node(
+        api_client,
+        auth_headers,
+        run_id=run_id,
+        task_id=task_id,
+        name="Write summary",
+        status="running",
+        node_payload={
             "project_task_id": task_id,
-            "name": "Write summary",
-            "step_type": "task",
-            "status": "running",
-            "sequence_number": 0,
-            "input_payload": {
-                "project_task_id": task_id,
-                "suggested_agent_ids": ["agent-1"],
-                "parallel_group": "documentation",
-            },
+            "suggested_agent_ids": ["agent-1"],
+            "parallel_group": "documentation",
         },
-        headers=auth_headers,
     )
-    assert step_response.status_code == 201, step_response.text
 
     detail_response = api_client.get(
         f"/api/v1/project-tasks/{task_id}/detail",
@@ -537,14 +612,14 @@ def test_project_task_dependency_endpoints_update_readiness(
     assert refreshed_detail["dependencies"][0]["satisfied"] is True
 
 
-def test_project_task_delivery_records_round_trip_into_detail(
+def test_launch_existing_project_task_rejects_unsatisfied_dependencies(
     api_client: TestClient, auth_headers: dict[str, str]
 ):
     project_response = api_client.post(
         "/api/v1/projects",
         json={
-            "name": "Delivery Records Project",
-            "description": "Store delivery records for one task.",
+            "name": "Launch Blocked Project",
+            "description": "Launch should be blocked by dependencies.",
             "status": "draft",
             "configuration": {},
         },
@@ -553,25 +628,162 @@ def test_project_task_delivery_records_round_trip_into_detail(
     assert project_response.status_code == 201, project_response.text
     project_id = project_response.json()["project_id"]
 
-    task_response = api_client.post(
+    upstream_response = api_client.post(
         "/api/v1/project-tasks",
         json={
             "project_id": project_id,
-            "title": "Review this delivery",
-            "description": "Task with structured delivery records.",
-            "status": "in_review",
+            "title": "Upstream task",
+            "description": "Not done yet.",
+            "status": "reviewing",
             "priority": "normal",
             "sort_order": 0,
             "input_payload": {},
         },
         headers=auth_headers,
     )
-    assert task_response.status_code == 201, task_response.text
-    task_id = task_response.json()["project_task_id"]
+    assert upstream_response.status_code == 201, upstream_response.text
+    upstream_task_id = upstream_response.json()["project_task_id"]
+
+    blocked_response = api_client.post(
+        "/api/v1/project-tasks",
+        json={
+            "project_id": project_id,
+            "title": "Blocked task",
+            "description": "Should not launch until upstream completes.",
+            "status": "planning",
+            "priority": "normal",
+            "sort_order": 1,
+            "input_payload": {},
+        },
+        headers=auth_headers,
+    )
+    assert blocked_response.status_code == 201, blocked_response.text
+    blocked_task_id = blocked_response.json()["project_task_id"]
+
+    replace_response = api_client.put(
+        f"/api/v1/project-tasks/{blocked_task_id}/dependencies",
+        json={
+            "dependencies": [
+                {
+                    "dependsOnTaskId": upstream_task_id,
+                    "requiredState": "completed",
+                    "dependencyType": "hard",
+                }
+            ]
+        },
+        headers=auth_headers,
+    )
+    assert replace_response.status_code == 200, replace_response.text
+
+    launch_response = api_client.post(
+        f"/api/v1/project-tasks/{blocked_task_id}/launch",
+        json={
+            "project_id": project_id,
+            "title": "Blocked task",
+            "description": "Should not launch until upstream completes.",
+            "priority": "normal",
+            "input_payload": {},
+        },
+        headers=auth_headers,
+    )
+    assert launch_response.status_code == 409, launch_response.text
+    assert "Waiting on" in launch_response.text
+
+
+def test_schedule_and_start_run_reject_unsatisfied_dependencies(
+    api_client: TestClient, auth_headers: dict[str, str]
+):
+    project_response = api_client.post(
+        "/api/v1/projects",
+        json={
+            "name": "Schedule Blocked Project",
+            "description": "Run scheduling should be blocked by dependencies.",
+            "status": "draft",
+            "configuration": {},
+        },
+        headers=auth_headers,
+    )
+    assert project_response.status_code == 201, project_response.text
+    project_id = project_response.json()["project_id"]
+
+    upstream_response = api_client.post(
+        "/api/v1/project-tasks",
+        json={
+            "project_id": project_id,
+            "title": "Upstream task",
+            "description": "Not done yet.",
+            "status": "reviewing",
+            "priority": "normal",
+            "sort_order": 0,
+            "input_payload": {},
+        },
+        headers=auth_headers,
+    )
+    assert upstream_response.status_code == 201, upstream_response.text
+    upstream_task_id = upstream_response.json()["project_task_id"]
+
+    bundle_response = api_client.post(
+        "/api/v1/project-tasks/create-and-launch",
+        json={
+            "project_id": project_id,
+            "title": "Primary task",
+            "description": "Create attempt first, then block reschedule/start.",
+            "priority": "normal",
+            "input_payload": {},
+        },
+        headers=auth_headers,
+    )
+    assert bundle_response.status_code == 201, bundle_response.text
+    payload = bundle_response.json()
+    task_id = payload["task"]["project_task_id"]
+    run_id = payload["run"]["run_id"]
+
+    replace_response = api_client.put(
+        f"/api/v1/project-tasks/{task_id}/dependencies",
+        json={
+            "dependencies": [
+                {
+                    "dependsOnTaskId": upstream_task_id,
+                    "requiredState": "completed",
+                    "dependencyType": "hard",
+                }
+            ]
+        },
+        headers=auth_headers,
+    )
+    assert replace_response.status_code == 200, replace_response.text
+
+    schedule_response = api_client.post(f"/api/v1/runs/{run_id}/schedule", headers=auth_headers)
+    assert schedule_response.status_code == 409, schedule_response.text
+
+    start_response = api_client.post(f"/api/v1/runs/{run_id}/start", headers=auth_headers)
+    assert start_response.status_code == 409, start_response.text
+
+
+def test_project_task_delivery_records_round_trip_into_detail(
+    api_client: TestClient, auth_headers: dict[str, str]
+):
+    task_id, run_id = _create_project_and_running_task_run(
+        api_client,
+        auth_headers,
+        project_name="Delivery Records Project",
+        task_title="Review this delivery",
+    )
+    node = _create_attempt_node(
+        api_client,
+        auth_headers,
+        run_id=run_id,
+        task_id=task_id,
+        name="Review delivery evidence",
+        status="running",
+        node_payload={"project_task_id": task_id},
+    )
 
     bundle_response = api_client.post(
         f"/api/v1/project-tasks/{task_id}/change-bundles",
         json={
+            "runId": run_id,
+            "nodeId": node["id"],
             "bundleKind": "patchset",
             "status": "submitted",
             "baseRef": "abc1234",
@@ -588,10 +800,13 @@ def test_project_task_delivery_records_round_trip_into_detail(
     )
     assert bundle_response.status_code == 201, bundle_response.text
     bundle = bundle_response.json()
+    assert bundle["nodeId"] == node["id"]
 
     evidence_response = api_client.post(
         f"/api/v1/project-tasks/{task_id}/evidence-bundles",
         json={
+            "runId": run_id,
+            "nodeId": node["id"],
             "summary": "Smoke evidence attached",
             "status": "collected",
             "bundle": {
@@ -603,10 +818,13 @@ def test_project_task_delivery_records_round_trip_into_detail(
     )
     assert evidence_response.status_code == 201, evidence_response.text
     evidence = evidence_response.json()
+    assert evidence["nodeId"] == node["id"]
 
     handoff_response = api_client.post(
         f"/api/v1/project-tasks/{task_id}/handoffs",
         json={
+            "runId": run_id,
+            "nodeId": node["id"],
             "stage": "dev_to_review",
             "fromActor": "developer",
             "toActor": "reviewer",
@@ -620,6 +838,7 @@ def test_project_task_delivery_records_round_trip_into_detail(
     )
     assert handoff_response.status_code == 201, handoff_response.text
     handoff = handoff_response.json()
+    assert handoff["nodeId"] == node["id"]
 
     issue_response = api_client.post(
         f"/api/v1/project-tasks/{task_id}/review-issues",
@@ -672,20 +891,14 @@ def test_project_task_attempts_endpoint_lists_related_runs(
         task_title="Attempted Task",
     )
 
-    step_response = api_client.post(
-        "/api/v1/run-steps",
-        json={
-            "run_id": run_id,
-            "project_task_id": task_id,
-            "name": "Attempt node",
-            "step_type": "task",
-            "status": "running",
-            "sequence_number": 0,
-            "input_payload": {"project_task_id": task_id},
-        },
-        headers=auth_headers,
+    _create_attempt_node(
+        api_client,
+        auth_headers,
+        run_id=run_id,
+        task_id=task_id,
+        name="Attempt node",
+        status="running",
     )
-    assert step_response.status_code == 201, step_response.text
 
     attempts_response = api_client.get(
         f"/api/v1/project-tasks/{task_id}/attempts",
@@ -697,6 +910,27 @@ def test_project_task_attempts_endpoint_lists_related_runs(
     assert attempts[0]["id"] == run_id
     assert attempts[0]["taskId"] == task_id
     assert attempts[0]["totalNodes"] >= 1
+
+
+def test_attempt_alias_routes_return_run_semantics(
+    api_client: TestClient, auth_headers: dict[str, str]
+):
+    task_id, run_id = _create_project_and_running_task_run(
+        api_client,
+        auth_headers,
+        project_name="Attempt Alias Project",
+        task_title="Alias Task",
+    )
+
+    attempts_response = api_client.get("/api/v1/attempts", headers=auth_headers)
+    assert attempts_response.status_code == 200, attempts_response.text
+    assert any(item["run_id"] == run_id for item in attempts_response.json())
+
+    detail_response = api_client.get(f"/api/v1/attempts/{run_id}", headers=auth_headers)
+    assert detail_response.status_code == 200, detail_response.text
+    detail = detail_response.json()
+    assert detail["id"] == run_id
+    assert detail["taskId"] == task_id
 
 
 def test_run_nodes_and_runtime_sessions_endpoints(
@@ -721,27 +955,22 @@ def test_run_nodes_and_runtime_sessions_endpoints(
     )
     assert patch_run_response.status_code == 200, patch_run_response.text
 
-    step_response = api_client.post(
-        "/api/v1/run-steps",
-        json={
-            "run_id": run_id,
-            "project_task_id": task_id,
-            "name": "Node A",
-            "step_type": "task",
-            "status": "running",
-            "sequence_number": 0,
-            "input_payload": {
-              "project_task_id": task_id,
-              "execution_mode": "project_sandbox",
-              "executor_kind": "agent",
-              "runtime_type": "project_sandbox",
-              "suggested_agent_ids": ["agent-a"],
-            },
+    node = _create_attempt_node(
+        api_client,
+        auth_headers,
+        run_id=run_id,
+        task_id=task_id,
+        name="Node A",
+        status="running",
+        node_payload={
+          "project_task_id": task_id,
+          "execution_mode": "project_sandbox",
+          "executor_kind": "agent",
+          "runtime_type": "project_sandbox",
+          "suggested_agent_ids": ["agent-a"],
         },
-        headers=auth_headers,
     )
-    assert step_response.status_code == 201, step_response.text
-    run_step_id = step_response.json()["run_step_id"]
+    node_id = node["id"]
 
     with get_db_session() as session:
         task = session.query(ProjectTask).filter(ProjectTask.project_task_id == UUID(task_id)).first()
@@ -769,9 +998,9 @@ def test_run_nodes_and_runtime_sessions_endpoints(
             binding_id=binding.binding_id,
             project_id=task.project_id,
             run_id=UUID(run_id),
-            run_step_id=UUID(run_step_id),
-            source_type="project_run_step",
-            source_id=run_step_id,
+            node_id=UUID(node_id),
+            source_type="execution_node",
+            source_id=node_id,
             runtime_type="external_worktree",
             request_payload={"run_workspace_root": "/workspace/runs/node-task"},
             result_payload={},
@@ -795,6 +1024,111 @@ def test_run_nodes_and_runtime_sessions_endpoints(
     sessions = sessions_response.json()
     assert any(item["sessionType"] == "run_workspace" for item in sessions)
     assert any(item["sessionType"] == "external_dispatch" for item in sessions)
+
+
+def test_execution_nodes_dual_write_from_run_steps(
+    api_client: TestClient, auth_headers: dict[str, str]
+):
+    task_id, run_id = _create_project_and_running_task_run(
+        api_client,
+        auth_headers,
+        project_name="Execution Nodes Dual Write",
+        task_title="Mirror Step State",
+    )
+
+    node = _create_attempt_node(
+        api_client,
+        auth_headers,
+        run_id=run_id,
+        task_id=task_id,
+        name="Mirror node",
+        status="pending",
+        node_payload={"project_task_id": task_id, "execution_mode": "project_sandbox"},
+    )
+    node_id = node["id"]
+
+    with get_db_session() as session:
+        stored_node = session.query(ExecutionNode).filter(ExecutionNode.node_id == UUID(node_id)).first()
+        assert stored_node is not None
+        assert stored_node.status == "pending"
+        assert stored_node.name == "Mirror node"
+
+    _complete_attempt_node(
+        api_client,
+        auth_headers,
+        run_id=run_id,
+        node_id=node_id,
+        result_payload={"result": "ok"},
+    )
+
+    with get_db_session() as session:
+        stored_node = session.query(ExecutionNode).filter(ExecutionNode.node_id == UUID(node_id)).first()
+        assert stored_node is not None
+        assert stored_node.status == "completed"
+        assert stored_node.result_payload.get("result") == "ok"
+
+
+def test_attempt_node_write_routes_sync_back_to_run_steps(
+    api_client: TestClient, auth_headers: dict[str, str]
+):
+    task_id, run_id = _create_project_and_running_task_run(
+        api_client,
+        auth_headers,
+        project_name="Attempt Node Write Routes",
+        task_title="Node-first updates",
+    )
+
+    node = _create_attempt_node(
+        api_client,
+        auth_headers,
+        run_id=run_id,
+        task_id=task_id,
+        name="Writable node",
+        status="pending",
+        node_payload={"project_task_id": task_id},
+    )
+    node_id = node["id"]
+
+    update_response = api_client.patch(
+        f"/api/v1/attempts/{run_id}/nodes/{node_id}",
+        json={"status": "assigned", "name": "Writable node assigned"},
+        headers=auth_headers,
+    )
+    assert update_response.status_code == 200, update_response.text
+    assert update_response.json()["status"] == "assigned"
+    assert update_response.json()["name"] == "Writable node assigned"
+
+    with get_db_session() as session:
+        step = session.query(ProjectTask).filter(ProjectTask.project_task_id == UUID(task_id)).first()
+        assert step is not None
+        run_step = session.query(ExecutionNode).filter(ExecutionNode.node_id == UUID(node_id)).first()
+        assert run_step is not None
+
+    node_detail = _get_attempt_node(
+        api_client,
+        auth_headers,
+        run_id=run_id,
+        node_id=node_id,
+    )
+    assert node_detail["status"] == "assigned"
+    assert node_detail["name"] == "Writable node assigned"
+
+    complete_response = api_client.post(
+        f"/api/v1/attempts/{run_id}/nodes/{node_id}/complete",
+        json={"status": "completed", "result_payload": {"outcome": "done"}},
+        headers=auth_headers,
+    )
+    assert complete_response.status_code == 200, complete_response.text
+    assert complete_response.json()["status"] == "completed"
+
+    node_detail = _get_attempt_node(
+        api_client,
+        auth_headers,
+        run_id=run_id,
+        node_id=node_id,
+    )
+    assert node_detail["status"] == "completed"
+    assert node_detail["resultPayload"]["outcome"] == "done"
 
 
 def test_run_detail_endpoint_returns_timeline_and_deliverables(
@@ -832,38 +1166,30 @@ def test_run_detail_endpoint_returns_timeline_and_deliverables(
     )
     assert patch_run_response.status_code == 200, patch_run_response.text
 
-    step_response = api_client.post(
-        "/api/v1/run-steps",
-        json={
-            "run_id": run_id,
-            "project_task_id": task_id,
-            "name": "Publish release note",
-            "step_type": "task",
-            "status": "running",
-            "sequence_number": 0,
-            "input_payload": {"project_task_id": task_id},
-        },
-        headers=auth_headers,
+    node = _create_attempt_node(
+        api_client,
+        auth_headers,
+        run_id=run_id,
+        task_id=task_id,
+        name="Publish release note",
+        status="running",
+        node_payload={"project_task_id": task_id},
     )
-    assert step_response.status_code == 201, step_response.text
-    step_id = step_response.json()["run_step_id"]
 
-    complete_step_response = api_client.post(
-        f"/api/v1/run-steps/{step_id}/complete",
-        json={
-            "status": "completed",
-            "output_payload": {
-                "artifacts": [
-                    {
-                        "path": "/workspace/output/release-note.md",
-                        "name": "release-note.md",
-                    }
-                ]
-            },
+    _complete_attempt_node(
+        api_client,
+        auth_headers,
+        run_id=run_id,
+        node_id=node["id"],
+        result_payload={
+            "artifacts": [
+                {
+                    "path": "/workspace/output/release-note.md",
+                    "name": "release-note.md",
+                }
+            ]
         },
-        headers=auth_headers,
     )
-    assert complete_step_response.status_code == 200, complete_step_response.text
 
     detail_response = api_client.get(f"/api/v1/runs/{run_id}/detail", headers=auth_headers)
     assert detail_response.status_code == 200, detail_response.text
@@ -914,7 +1240,7 @@ def test_create_project_task_and_launch_run_atomically(
     task = payload["task"]
     plan = payload["plan"]
     run = payload["run"]
-    step = payload["step"]
+    node = payload["node"]
     assignment = payload["executor_assignment"]
     workspace = payload["run_workspace"]
 
@@ -933,12 +1259,13 @@ def test_create_project_task_and_launch_run_atomically(
     assert run["runtime_context"]["project_task_id"] == task["project_task_id"]
     assert run["started_at"] is None
 
-    assert step["run_id"] == run["run_id"]
+    assert node["runId"] == run["run_id"]
+    assert node["taskId"] == task["project_task_id"]
+    assert node["status"] == "assigned"
     assert assignment["executor_kind"] == "agent"
     assert assignment["agent_id"] is not None
+    assert assignment["node_id"] == node["id"]
     assert workspace["workspace_id"] == run["run_id"]
-    assert step["project_task_id"] == task["project_task_id"]
-    assert step["status"] == "assigned"
 
     get_task_response = api_client.get(
         f"/api/v1/project-tasks/{task['project_task_id']}",
@@ -1040,33 +1367,25 @@ def test_complete_run_step_reconciles_task_run_and_project(
     assert task_response.status_code == 200, task_response.text
     project_id = task_response.json()["project_id"]
 
-    step_response = api_client.post(
-        "/api/v1/run-steps",
-        json={
-            "run_id": run_id,
-            "project_task_id": task_id,
-            "name": "Finalize Release Notes",
-            "step_type": "task",
-            "status": "running",
-            "sequence_number": 0,
-            "input_payload": {"project_task_id": task_id},
-        },
-        headers=auth_headers,
+    node = _create_attempt_node(
+        api_client,
+        auth_headers,
+        run_id=run_id,
+        task_id=task_id,
+        name="Finalize Release Notes",
+        status="running",
+        node_payload={"project_task_id": task_id},
     )
-    assert step_response.status_code == 201, step_response.text
-    step_id = step_response.json()["run_step_id"]
 
-    complete_response = api_client.post(
-        f"/api/v1/run-steps/{step_id}/complete",
-        json={
-            "status": "completed",
-            "output_payload": {
-                "artifacts": [{"path": "/workspace/output/release-notes.md", "name": "release-notes.md"}]
-            },
+    _complete_attempt_node(
+        api_client,
+        auth_headers,
+        run_id=run_id,
+        node_id=node["id"],
+        result_payload={
+            "artifacts": [{"path": "/workspace/output/release-notes.md", "name": "release-notes.md"}]
         },
-        headers=auth_headers,
     )
-    assert complete_response.status_code == 200, complete_response.text
 
     task_response = api_client.get(f"/api/v1/project-tasks/{task_id}", headers=auth_headers)
     assert task_response.status_code == 200, task_response.text
@@ -1149,43 +1468,35 @@ def test_complete_first_run_step_keeps_task_open_until_all_steps_finish(
     assert task_response.status_code == 200, task_response.text
     project_id = task_response.json()["project_id"]
 
-    first_step_response = api_client.post(
-        "/api/v1/run-steps",
-        json={
-            "run_id": run_id,
-            "project_task_id": task_id,
-            "name": "Research: Ship Launch Checklist",
-            "step_type": "task",
-            "status": "running",
-            "sequence_number": 0,
-            "input_payload": {"project_task_id": task_id, "step_kind": "research"},
-        },
-        headers=auth_headers,
+    first_step = _create_attempt_node(
+        api_client,
+        auth_headers,
+        run_id=run_id,
+        task_id=task_id,
+        name="Research: Ship Launch Checklist",
+        status="running",
+        sequence_number=0,
+        node_payload={"project_task_id": task_id, "step_kind": "research"},
     )
-    assert first_step_response.status_code == 201, first_step_response.text
-    first_step_id = first_step_response.json()["run_step_id"]
 
-    second_step_response = api_client.post(
-        "/api/v1/run-steps",
-        json={
-            "run_id": run_id,
-            "project_task_id": task_id,
-            "name": "Review: Ship Launch Checklist",
-            "step_type": "task",
-            "status": "pending",
-            "sequence_number": 1,
-            "input_payload": {"project_task_id": task_id, "step_kind": "review"},
-        },
-        headers=auth_headers,
+    _create_attempt_node(
+        api_client,
+        auth_headers,
+        run_id=run_id,
+        task_id=task_id,
+        name="Review: Ship Launch Checklist",
+        status="pending",
+        sequence_number=1,
+        node_payload={"project_task_id": task_id, "step_kind": "review"},
     )
-    assert second_step_response.status_code == 201, second_step_response.text
 
-    complete_response = api_client.post(
-        f"/api/v1/run-steps/{first_step_id}/complete",
-        json={"status": "completed", "output_payload": {}},
-        headers=auth_headers,
+    _complete_attempt_node(
+        api_client,
+        auth_headers,
+        run_id=run_id,
+        node_id=first_step["id"],
+        result_payload={},
     )
-    assert complete_response.status_code == 200, complete_response.text
 
     task_response = api_client.get(f"/api/v1/project-tasks/{task_id}", headers=auth_headers)
     assert task_response.status_code == 200, task_response.text
@@ -1837,6 +2148,62 @@ def test_request_runtime_uninstall_revokes_binding_and_rejects_future_heartbeats
     assert overview["state"]["bound"] is False
 
 
+def test_external_runtime_can_reinstall_after_revoked_binding(
+    api_client: TestClient, auth_headers: dict[str, str]
+):
+    project_response = api_client.post(
+        "/api/v1/projects",
+        json={
+            "name": "Runtime Reinstall Project",
+            "description": "Allow reinstall after a previous binding was revoked.",
+            "status": "draft",
+            "configuration": {},
+        },
+        headers=auth_headers,
+    )
+    assert project_response.status_code == 201, project_response.text
+    project = project_response.json()
+    agent_id, machine_token = _provision_bound_external_agent(
+        api_client,
+        auth_headers,
+        project_id=project["project_id"],
+        owner_user_id=project["created_by_user_id"],
+        name="Runtime Reinstall Agent",
+    )
+    host_headers = {"Authorization": f"Bearer {machine_token}"}
+
+    unregister_response = api_client.post(
+        "/api/v1/external-runtime/self-unregister",
+        headers=host_headers,
+    )
+    assert unregister_response.status_code == 200, unregister_response.text
+
+    with get_db_session() as session:
+        service = ExternalRuntimeService(session)
+        row, code = service.create_install_token(
+            agent_id=UUID(agent_id),
+            created_by_user_id=UUID(project["created_by_user_id"]),
+        )
+        session.commit()
+        assert row.status == "active"
+
+    bootstrap_response = api_client.post(
+        "/api/v1/external-runtime/bootstrap",
+        json={
+            "agent_id": agent_id,
+            "install_code": code,
+            "host_name": "reinstall-host",
+            "host_os": "darwin",
+            "host_arch": "arm64",
+            "host_fingerprint": f"reinstall-{agent_id}",
+            "current_version": CURRENT_EXTERNAL_RUNTIME_VERSION,
+            "metadata": {},
+        },
+    )
+    assert bootstrap_response.status_code == 200, bootstrap_response.text
+    assert bootstrap_response.json()["machine_token"].startswith("lxem_")
+
+
 def test_host_action_dispatch_uses_native_executor_payload(
     api_client: TestClient, auth_headers: dict[str, str]
 ):
@@ -1883,7 +2250,8 @@ def test_host_action_dispatch_uses_native_executor_payload(
     assert dispatch_response.status_code == 200, dispatch_response.text
     dispatch = dispatch_response.json()
     assert dispatch["agent_id"] == agent_id
-    assert dispatch["source_type"] == "project_run_step"
+    assert dispatch["source_type"] == "execution_node"
+    assert dispatch["request_payload"]["node_id"]
     assert dispatch["request_payload"]["step_kind"] == "host_action"
     assert "launch_command_template" not in dispatch["request_payload"]
     assert "launch_command_source" not in dispatch["request_payload"]
@@ -1938,7 +2306,7 @@ def test_host_action_dispatch_blocks_when_runtime_upgrade_is_required(
     payload = create_and_launch_response.json()
     assert payload["agent_assignment"]["dispatch_id"] is None
     assert "upgrade" in payload["agent_assignment"]["selection_reason"].lower()
-    assert payload["step"]["status"] == "blocked"
+    assert payload["node"]["status"] == "blocked"
     assert payload["run"]["status"] == "blocked"
 
 
@@ -2020,8 +2388,8 @@ def test_project_sandbox_execution_mode_overrides_host_keyword_inference(
     assert create_and_launch_response.status_code == 201, create_and_launch_response.text
     payload = create_and_launch_response.json()
     assert payload["task"]["input_payload"]["execution_mode"] == "project_sandbox"
-    assert payload["step"]["input_payload"]["execution_mode"] == "project_sandbox"
-    assert payload["step"]["input_payload"]["step_kind"] == "implementation"
+    assert payload["node"]["executionMode"] == "project_sandbox"
+    assert payload["node"]["nodePayload"]["step_kind"] == "implementation"
     assert payload["agent_assignment"]["runtime_type"] == "project_sandbox"
     assert payload["run"]["status"] == "scheduled"
     assert payload["run"]["error_message"] is None
@@ -2069,9 +2437,12 @@ def test_host_action_task_creates_external_dispatch(
     assert payload["agent_assignment"]["executor_kind"] == "agent"
     assert payload["agent_assignment"]["agent_id"] == agent_id
     assert payload["agent_assignment"]["dispatch_id"] is not None
+    assert payload["agent_assignment"]["node_id"] is not None
     assert payload["agent_assignment"]["runtime_type"] == "external_worktree"
     assert payload["external_dispatch"]["status"] == "pending"
-    assert payload["step"]["status"] == "queued"
+    assert payload["external_dispatch"]["node_id"] == payload["agent_assignment"]["node_id"]
+    assert payload["node"]["id"] == payload["agent_assignment"]["node_id"]
+    assert payload["node"]["status"] == "queued"
     assert payload["run"]["status"] == "scheduled"
 
     dispatch_response = api_client.get(
@@ -2081,7 +2452,8 @@ def test_host_action_task_creates_external_dispatch(
     assert dispatch_response.status_code == 200, dispatch_response.text
     dispatch = dispatch_response.json()
     assert dispatch["dispatch_id"] == payload["external_dispatch"]["dispatch_id"]
-    assert dispatch["run_step_id"] == payload["step"]["run_step_id"]
+    assert dispatch["node_id"] == payload["agent_assignment"]["node_id"]
+    assert dispatch["node_id"] == payload["node"]["id"]
 
 
 def test_external_dispatch_completion_updates_run_state(
@@ -2125,7 +2497,7 @@ def test_external_dispatch_completion_updates_run_state(
     assert create_and_launch_response.status_code == 201, create_and_launch_response.text
     payload = create_and_launch_response.json()
     run_id = payload["run"]["run_id"]
-    step_id = payload["step"]["run_step_id"]
+    node_id = payload["node"]["id"]
     dispatch_id = payload["external_dispatch"]["dispatch_id"]
     host_headers = {"Authorization": f"Bearer {machine_token}"}
 
@@ -2148,9 +2520,13 @@ def test_external_dispatch_completion_updates_run_state(
     assert run_response.status_code == 200, run_response.text
     assert run_response.json()["status"] == "completed"
 
-    step_response = api_client.get(f"/api/v1/run-steps/{step_id}", headers=auth_headers)
-    assert step_response.status_code == 200, step_response.text
-    assert step_response.json()["status"] == "completed"
+    node_response = _get_attempt_node(
+        api_client,
+        auth_headers,
+        run_id=run_id,
+        node_id=node_id,
+    )
+    assert node_response["status"] == "completed"
 
 
 def test_external_dispatch_completion_keeps_task_open_with_pending_followup_step(
@@ -2227,25 +2603,21 @@ def test_external_dispatch_completion_keeps_task_open_with_pending_followup_step
     for sequence_number, step_name in enumerate(
         ["Upload host assets", "Verify host assets"],
     ):
-        step_response = api_client.post(
-            "/api/v1/run-steps",
-            json={
-                "run_id": run_id,
+        _create_attempt_node(
+            api_client,
+            auth_headers,
+            run_id=run_id,
+            task_id=task_id,
+            name=step_name,
+            status="pending",
+            sequence_number=sequence_number,
+            node_payload={
                 "project_task_id": task_id,
-                "name": step_name,
-                "step_type": "task",
-                "status": "pending",
-                "sequence_number": sequence_number,
-                "input_payload": {
-                    "project_task_id": task_id,
-                    "step_kind": "host_action",
-                    "executor_kind": "execution_node",
-                    "execution_mode": "external_runtime",
-                },
+                "step_kind": "host_action",
+                "executor_kind": "execution_node",
+                "execution_mode": "external_runtime",
             },
-            headers=auth_headers,
         )
-        assert step_response.status_code == 201, step_response.text
 
     schedule_response = api_client.post(
         f"/api/v1/runs/{run_id}/schedule",

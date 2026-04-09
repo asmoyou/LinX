@@ -50,6 +50,161 @@ export interface ProjectTaskSummary {
   assignedAgentName?: string | null;
   dependencyIds: string[];
   reviewStatus?: string | null;
+  ready?: boolean;
+  blockingDependencyCount?: number;
+  openIssueCount?: number;
+  latestChangeBundleStatus?: string | null;
+  nextAction?: string | null;
+  blockerReason?: string | null;
+}
+
+export interface TaskContract {
+  id: string;
+  taskId: string;
+  version: number;
+  goal?: string | null;
+  scope: string[];
+  constraints: string[];
+  deliverables: string[];
+  acceptanceCriteria: string[];
+  assumptions: string[];
+  evidenceRequired: string[];
+  allowedSurface?: Record<string, unknown>;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface TaskDependency {
+  id: string;
+  projectTaskId: string;
+  dependsOnTaskId: string;
+  dependsOnTaskTitle?: string | null;
+  dependsOnTaskStatus?: string | null;
+  requiredState: string;
+  dependencyType: string;
+  artifactSelector?: Record<string, unknown>;
+  satisfied: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface TaskHandoff {
+  id: string;
+  taskId: string;
+  runId?: string | null;
+  nodeId?: string | null;
+  stage: string;
+  fromActor: string;
+  toActor?: string | null;
+  statusFrom?: string | null;
+  statusTo?: string | null;
+  title?: string | null;
+  summary: string;
+  payload?: Record<string, unknown>;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface TaskChangeBundle {
+  id: string;
+  taskId: string;
+  runId?: string | null;
+  nodeId?: string | null;
+  bundleKind: string;
+  status: string;
+  baseRef?: string | null;
+  headRef?: string | null;
+  summary?: string | null;
+  commitCount: number;
+  changedFiles: Array<Record<string, unknown>>;
+  artifactManifest?: Record<string, unknown>;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface TaskEvidenceBundle {
+  id: string;
+  taskId: string;
+  runId?: string | null;
+  nodeId?: string | null;
+  summary: string;
+  status: string;
+  bundle?: Record<string, unknown>;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface TaskReviewIssue {
+  id: string;
+  taskId: string;
+  changeBundleId?: string | null;
+  evidenceBundleId?: string | null;
+  handoffId?: string | null;
+  issueKey?: string | null;
+  severity: string;
+  category: string;
+  acceptanceRef?: string | null;
+  summary: string;
+  suggestion?: string | null;
+  status: string;
+  resolvedAt?: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ExecutionAttempt {
+  id: string;
+  taskId: string;
+  status: PlatformStatus;
+  createdAt: string;
+  startedAt?: string | null;
+  completedAt?: string | null;
+  triggerSource: string;
+  executionMode?: string | null;
+  currentStepTitle?: string | null;
+  failureReason?: string | null;
+  totalNodes: number;
+  completedNodes: number;
+  activeRuntimeSessions: number;
+}
+
+export interface ExecutionAttemptNode {
+  id: string;
+  runId: string;
+  taskId?: string | null;
+  name: string;
+  nodeType: string;
+  status: PlatformStatus;
+  sequenceNumber: number;
+  executionMode?: string | null;
+  executorKind?: string | null;
+  runtimeType?: string | null;
+  suggestedAgentIds?: string[];
+  dependencyStepIds?: string[];
+  nodePayload?: Record<string, unknown>;
+  resultPayload?: Record<string, unknown>;
+  errorMessage?: string | null;
+  startedAt?: string | null;
+  completedAt?: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface RuntimeSession {
+  id: string;
+  runId: string;
+  nodeId?: string | null;
+  sessionType: string;
+  status: PlatformStatus;
+  runtimeType?: string | null;
+  agentId?: string | null;
+  bindingId?: string | null;
+  workspaceRoot?: string | null;
+  metadata?: Record<string, unknown>;
+  createdAt: string;
+  startedAt?: string | null;
+  completedAt?: string | null;
+  updatedAt?: string | null;
 }
 
 export interface ProjectAgentSummary {
@@ -159,6 +314,14 @@ export interface ProjectTaskDetail extends ProjectTaskSummary {
   acceptanceCriteria?: string | null;
   assignedSkillNames: string[];
   latestResult?: string | null;
+  contract?: TaskContract | null;
+  dependencies?: TaskDependency[];
+  handoffs?: TaskHandoff[];
+  latestChangeBundle?: TaskChangeBundle | null;
+  latestEvidenceBundle?: TaskEvidenceBundle | null;
+  reviewIssues?: TaskReviewIssue[];
+  openIssueCount?: number;
+  attempts?: ExecutionAttempt[];
   metadata: ProjectTaskMetadataItem[];
   events: ProjectActivityItem[];
 }
@@ -205,11 +368,14 @@ export interface RunDetail extends RunSummary {
   executorAssignment?: {
     executorKind?: string | null;
     agentId?: string | null;
+    nodeId?: string | null;
     selectionReason?: string | null;
     provisionedAgent?: boolean;
     runtimeType?: string | null;
   } | null;
   externalDispatches?: ExternalAgentDispatch[];
+  nodes?: ExecutionAttemptNode[];
+  runtimeSessions?: RuntimeSession[];
 }
 
 export interface ExternalAgentDispatch {
@@ -218,7 +384,7 @@ export interface ExternalAgentDispatch {
   bindingId: string;
   projectId: string;
   runId: string;
-  runStepId: string;
+  nodeId: string;
   sourceType: string;
   sourceId: string;
   runtimeType: string;

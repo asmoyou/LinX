@@ -99,11 +99,33 @@ type SkeletonRunStepRecord = {
   updated_at: string;
 };
 
+type SkeletonExecutionNodeRecord = {
+  id: string;
+  run_id: string;
+  task_id?: string | null;
+  name: string;
+  node_type: string;
+  status: string;
+  sequence_number: number;
+  execution_mode?: string | null;
+  executor_kind?: string | null;
+  runtime_type?: string | null;
+  suggested_agent_ids?: string[];
+  dependency_step_ids?: string[];
+  node_payload?: Record<string, unknown>;
+  result_payload?: Record<string, unknown>;
+  error_message?: string | null;
+  started_at?: string | null;
+  completed_at?: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
 type SkeletonTaskLaunchBundleRecord = {
   task: SkeletonProjectTaskRecord;
   plan?: SkeletonPlanRecord | null;
   run?: SkeletonRunRecord | null;
-  step?: SkeletonRunStepRecord | null;
+  node?: SkeletonExecutionNodeRecord | null;
   needs_clarification?: boolean;
   clarification_questions?: Array<{ question: string; importance?: string }>;
 };
@@ -173,7 +195,7 @@ type SkeletonExternalAgentDispatchRecord = {
   binding_id: string;
   project_id?: string | null;
   run_id?: string | null;
-  run_step_id?: string | null;
+  node_id?: string | null;
   source_type: string;
   source_id: string;
   runtime_type: string;
@@ -1390,11 +1412,11 @@ const skeletonApi = {
     return response.data;
   },
 
-  async listRunSteps(runId?: string): Promise<SkeletonRunStepRecord[]> {
-    const response = await apiClient.get<SkeletonRunStepRecord[]>('/run-steps', {
-      ...skeletonRequestConfig,
-      params: runId ? { run_id: runId } : undefined,
-    });
+  async listAttemptNodes(runId: string): Promise<SkeletonExecutionNodeRecord[]> {
+    const response = await apiClient.get<SkeletonExecutionNodeRecord[]>(
+      `/attempts/${runId}/nodes`,
+      skeletonRequestConfig,
+    );
     return response.data;
   },
 
@@ -1518,7 +1540,7 @@ const skeletonApi = {
       {
         name: input.name,
         description: input.description || undefined,
-        status: 'draft',
+        status: 'planning',
         configuration: {},
       },
       skeletonRequestConfig,
@@ -1677,28 +1699,6 @@ const skeletonApi = {
     return response.data;
   },
 
-  async createRunStep(input: {
-    runId: string;
-    projectTaskId: string;
-    name: string;
-    sequenceNumber?: number;
-    inputPayload?: Record<string, unknown>;
-  }): Promise<SkeletonRunStepRecord> {
-    const response = await apiClient.post<SkeletonRunStepRecord>(
-      '/run-steps',
-      {
-        run_id: input.runId,
-        project_task_id: input.projectTaskId,
-        name: input.name,
-        step_type: 'task',
-        status: 'pending',
-        sequence_number: input.sequenceNumber ?? 0,
-        input_payload: input.inputPayload || { project_task_id: input.projectTaskId },
-      },
-      skeletonRequestConfig,
-    );
-    return response.data;
-  },
 };
 
 const deliverableFromUnknown = (value: unknown): ProjectDeliverable | null => {
@@ -2331,6 +2331,32 @@ const activityFromRunStep = (
   taskId: step.project_task_id || null,
 });
 
+const nodeToSkeletonRunStep = (
+  node: SkeletonExecutionNodeRecord,
+): SkeletonRunStepRecord => ({
+  run_step_id: node.id,
+  run_id: node.run_id,
+  project_task_id: node.task_id || null,
+  name: node.name,
+  step_type: node.node_type,
+  status: node.status,
+  sequence_number: node.sequence_number,
+  input_payload:
+    node.node_payload || {
+      execution_mode: node.execution_mode || undefined,
+      executor_kind: node.executor_kind || undefined,
+      runtime_type: node.runtime_type || undefined,
+      suggested_agent_ids: node.suggested_agent_ids || [],
+      dependency_step_ids: node.dependency_step_ids || [],
+    },
+  output_payload: node.result_payload || {},
+  error_message: node.error_message || null,
+  started_at: node.started_at || null,
+  completed_at: node.completed_at || null,
+  created_at: node.created_at,
+  updated_at: node.updated_at,
+});
+
 const buildRunDetailFromSkeleton = (
   run: SkeletonRunRecord,
   project: SkeletonProjectRecord,
@@ -2396,6 +2422,7 @@ const buildRunDetailFromSkeleton = (
     executorAssignment: assignment ? {
       executorKind: pickFirstString(assignment, ['executor_kind']),
       agentId: pickFirstString(assignment, ['agent_id']),
+      nodeId: pickFirstString(assignment, ['node_id']),
       selectionReason: pickFirstString(assignment, ['selection_reason']),
       provisionedAgent: asOptionalBoolean(assignment.provisioned_agent) || false,
       runtimeType: pickFirstString(assignment, ['runtime_type']),
@@ -2525,7 +2552,7 @@ const toExternalAgentDispatchFromSkeleton = (
   bindingId: dispatch.binding_id,
   projectId: dispatch.project_id || '',
   runId: dispatch.run_id || '',
-  runStepId: dispatch.run_step_id || '',
+  nodeId: dispatch.node_id || '',
   sourceType: dispatch.source_type,
   sourceId: dispatch.source_id,
   runtimeType: dispatch.runtime_type,
@@ -2591,24 +2618,29 @@ const listProjectsFromSkeleton = async (): Promise<ProjectSummary[]> => {
 };
 
 const getProjectDetailFromSkeleton = async (projectId: string): Promise<ProjectDetail> => {
-  const [project, tasks, runs, runSteps, extensions, plans, projectSpace, agentBindings, provisioningProfiles] = await Promise.all([
+  const [project, tasks, runs, extensions, plans, projectSpace, agentBindings, provisioningProfiles] = await Promise.all([
     skeletonApi.getProject(projectId),
     skeletonApi.listProjectTasks(projectId),
     skeletonApi.listRuns(projectId),
-    skeletonApi.listRunSteps(),
     skeletonApi.listExtensions(projectId),
     skeletonApi.listPlans(projectId),
     skeletonApi.getProjectSpace(projectId),
     skeletonApi.listProjectAgentBindings(projectId),
     skeletonApi.listAgentProvisioningProfiles(projectId),
   ]);
-  const runIds = new Set(runs.map((run) => run.run_id));
+  const runNodeGroups = await Promise.all(
+    runs.map(async (run) => {
+      const nodes = await skeletonApi.listAttemptNodes(run.run_id);
+      return nodes.map(nodeToSkeletonRunStep);
+    }),
+  );
+  const runSteps = runNodeGroups.flat();
 
   return buildProjectDetailFromSkeleton(
     project,
     tasks,
     runs,
-    runSteps.filter((step) => runIds.has(step.run_id)),
+    runSteps,
     extensions,
     plans,
     projectSpace,
@@ -2625,18 +2657,27 @@ const getProjectTaskDetailFromSkeleton = async (
     skeletonApi.getProject(projectId),
     skeletonApi.getProjectTask(taskId),
   ]);
-  const runSteps = task.run_id ? await skeletonApi.listRunSteps(task.run_id) : [];
+  const runSteps = task.run_id
+    ? await skeletonApi.listAttemptNodes(task.run_id)
+        .then((nodes) => nodes.map(nodeToSkeletonRunStep))
+    : [];
 
   return buildTaskDetailFromSkeleton(project, task, runSteps);
 };
 
 const listRunsFromSkeleton = async (): Promise<RunSummary[]> => {
-  const [runs, projects, tasks, runSteps] = await Promise.all([
+  const [runs, projects, tasks] = await Promise.all([
     skeletonApi.listRuns(),
     skeletonApi.listProjects(),
     skeletonApi.listProjectTasks(),
-    skeletonApi.listRunSteps(),
   ]);
+  const runNodeGroups = await Promise.all(
+    runs.map(async (run) => {
+      const nodes = await skeletonApi.listAttemptNodes(run.run_id);
+      return nodes.map(nodeToSkeletonRunStep);
+    }),
+  );
+  const runSteps = runNodeGroups.flat();
 
   const projectById = new Map(projects.map((project) => [project.project_id, project]));
   const tasksByRun = groupByKey(tasks, (task) => task.run_id || null);
@@ -2656,12 +2697,13 @@ const listRunsFromSkeleton = async (): Promise<RunSummary[]> => {
 
 const getRunDetailFromSkeleton = async (runId: string): Promise<RunDetail> => {
   const run = await skeletonApi.getRun(runId);
-  const [project, tasks, steps, externalDispatches] = await Promise.all([
+  const [project, tasks, externalDispatches] = await Promise.all([
     skeletonApi.getProject(run.project_id),
     skeletonApi.listProjectTasks(run.project_id),
-    skeletonApi.listRunSteps(runId),
     skeletonApi.listRunExternalDispatches(run.run_id),
   ]);
+  const steps = await skeletonApi.listAttemptNodes(runId)
+    .then((nodes) => nodes.map(nodeToSkeletonRunStep));
 
   return buildRunDetailFromSkeleton(
     run,
@@ -2695,12 +2737,29 @@ export const projectExecutionApi = {
 
   async getProjectDetail(projectId: string): Promise<PlatformQueryResult<ProjectDetail>> {
     try {
-      const data = await getProjectDetailFromSkeleton(projectId);
+      const response = await apiClient.get<ProjectDetail>(
+        `/projects/${projectId}/detail`,
+        skeletonRequestConfig,
+      );
+      const data = response.data;
       return {
         data,
         fallback: false,
       };
     } catch (error) {
+      try {
+        const data = await getProjectDetailFromSkeleton(projectId);
+        return {
+          data,
+          fallback: false,
+          error: asErrorMessage(error, 'Failed to load project detail'),
+        };
+      } catch (legacyError) {
+        if (!ENABLE_PROJECT_EXECUTION_SEEDS) {
+          throw legacyError;
+        }
+      }
+
       if (!ENABLE_PROJECT_EXECUTION_SEEDS) {
         throw error;
       }
@@ -2722,12 +2781,29 @@ export const projectExecutionApi = {
     taskId: string,
   ): Promise<PlatformQueryResult<ProjectTaskDetail>> {
     try {
-      const data = await getProjectTaskDetailFromSkeleton(projectId, taskId);
+      const response = await apiClient.get<ProjectTaskDetail>(
+        `/project-tasks/${taskId}/detail`,
+        skeletonRequestConfig,
+      );
+      const data = response.data;
       return {
         data,
         fallback: false,
       };
     } catch (error) {
+      try {
+        const data = await getProjectTaskDetailFromSkeleton(projectId, taskId);
+        return {
+          data,
+          fallback: false,
+          error: asErrorMessage(error, 'Failed to load task detail'),
+        };
+      } catch (legacyError) {
+        if (!ENABLE_PROJECT_EXECUTION_SEEDS) {
+          throw legacyError;
+        }
+      }
+
       if (!ENABLE_PROJECT_EXECUTION_SEEDS) {
         throw error;
       }
@@ -2759,12 +2835,29 @@ export const projectExecutionApi = {
 
   async getRunDetail(runId: string): Promise<PlatformQueryResult<RunDetail>> {
     try {
-      const data = await getRunDetailFromSkeleton(runId);
+      const response = await apiClient.get<RunDetail>(
+        `/runs/${runId}/detail`,
+        skeletonRequestConfig,
+      );
+      const data = response.data;
       return {
         data,
         fallback: false,
       };
     } catch (error) {
+      try {
+        const data = await getRunDetailFromSkeleton(runId);
+        return {
+          data,
+          fallback: false,
+          error: asErrorMessage(error, 'Failed to load run detail'),
+        };
+      } catch (legacyError) {
+        if (!ENABLE_PROJECT_EXECUTION_SEEDS) {
+          throw legacyError;
+        }
+      }
+
       if (!ENABLE_PROJECT_EXECUTION_SEEDS) {
         throw error;
       }

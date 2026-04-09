@@ -237,7 +237,7 @@ export const ProjectDetail = () => {
       setIsCreatingTask(true);
 
       if (!shouldAutoStart) {
-        const taskId = await createProjectTask({
+        await createProjectTask({
           projectId,
           title: payload.title,
           description: payload.description,
@@ -245,7 +245,6 @@ export const ProjectDetail = () => {
         });
         toast.success(t('projectExecution.modals.taskCreated', 'Task created'));
         setIsTaskModalOpen(false);
-        navigate(`/projects/${projectId}/tasks/${taskId}`);
         return;
       }
 
@@ -273,6 +272,7 @@ export const ProjectDetail = () => {
         const message = launchError instanceof Error
           ? launchError.message
           : t('projectExecution.modals.autoStartFailed', 'Task created, but automatic run start failed');
+        await loadProjectDetail(projectId, { force: true });
         toast.error(message);
       }
     } catch (creationError) {
@@ -401,9 +401,48 @@ export const ProjectDetail = () => {
                   </div>
                   <div className="flex flex-wrap gap-4 text-sm text-zinc-600 dark:text-zinc-400">
                     <span>{t('projectExecution.projectDetail.dependencies', { count: task.dependencyIds.length, defaultValue: `Dependencies: ${task.dependencyIds.length}` })}</span>
+                    {typeof task.blockingDependencyCount === 'number' ? (
+                      <span>
+                        {task.blockingDependencyCount > 0
+                          ? t('projectExecution.projectDetail.blockedDependencies', {
+                              count: task.blockingDependencyCount,
+                              defaultValue: `Blocking: ${task.blockingDependencyCount}`,
+                            })
+                          : t('projectExecution.projectDetail.readyState', 'Ready')}
+                      </span>
+                    ) : null}
+                    {typeof task.openIssueCount === 'number' ? (
+                      <span>
+                        {task.openIssueCount > 0
+                          ? t('projectExecution.projectDetail.openIssues', {
+                              count: task.openIssueCount,
+                              defaultValue: `Open issues: ${task.openIssueCount}`,
+                            })
+                          : t('projectExecution.projectDetail.noOpenIssues', 'No open issues')}
+                      </span>
+                    ) : null}
+                    {task.latestChangeBundleStatus ? (
+                      <span>
+                        {t('projectExecution.projectDetail.latestBundle', {
+                          value: formatTokenLabel(task.latestChangeBundleStatus),
+                          defaultValue: `Bundle: ${formatTokenLabel(task.latestChangeBundleStatus)}`,
+                        })}
+                      </span>
+                    ) : null}
+                    {task.nextAction ? (
+                      <span>
+                        {t('projectExecution.projectDetail.nextAction', {
+                          value: task.nextAction,
+                          defaultValue: `Next: ${task.nextAction}`,
+                        })}
+                      </span>
+                    ) : null}
                     <span>{t('projectExecution.projectDetail.owner', { value: task.assignedAgentName || 'Unassigned', defaultValue: `Owner: ${task.assignedAgentName || 'Unassigned'}` })}</span>
                     {task.reviewStatus ? <span>{t('projectExecution.projectDetail.review', { value: task.reviewStatus, defaultValue: `Review: ${task.reviewStatus}` })}</span> : null}
                   </div>
+                  {task.blockerReason ? (
+                    <p className="text-sm text-amber-700 dark:text-amber-300">{task.blockerReason}</p>
+                  ) : null}
                 </Link>
               ))}
             </div>

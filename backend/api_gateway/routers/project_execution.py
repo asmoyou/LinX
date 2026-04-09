@@ -3,7 +3,7 @@
 import mimetypes
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
@@ -15,6 +15,7 @@ from api_gateway.routers import agents as agents_router
 from database.connection import get_db_session
 from database.models import Agent
 from database.project_execution_models import (
+    ExecutionNode,
     AgentProvisioningProfile,
     ExternalAgentDispatch,
     Project,
@@ -22,17 +23,33 @@ from database.project_execution_models import (
     ProjectExtensionPackage,
     ProjectPlan,
     ProjectRun,
-    ProjectRunStep,
     ProjectSkillPackage,
     ProjectSpace,
     ProjectTask,
+    ProjectTaskChangeBundle,
+    ProjectTaskEvidenceBundle,
+    ProjectTaskHandoff,
+    ProjectTaskReviewIssue,
 )
 from project_execution.model_planner import ProjectExecutionPlanner
+from project_execution.read_models import (
+    build_run_node_read_models,
+    build_run_runtime_session_read_models,
+    build_project_detail_read_model,
+    build_task_attempt_read_models,
+    build_project_task_detail_read_model,
+    build_run_detail_read_model,
+)
 from project_execution.run_workspace_manager import get_run_workspace_manager
 from project_execution.schemas import (
     AgentProvisioningProfileCreate,
     AgentProvisioningProfileResponse,
     AgentProvisioningProfileUpdate,
+    ExecutionAttemptNodeReadModel,
+    ExecutionAttemptNodeCreateRequest,
+    ExecutionAttemptNodeStatusRequest,
+    ExecutionAttemptNodeUpdateRequest,
+    ExecutionAttemptReadModel,
     ExternalAgentDispatchResponse,
     ExtensionPackageCreate,
     ExtensionPackageResponse,
@@ -42,32 +59,53 @@ from project_execution.schemas import (
     ProjectAgentBindingResponse,
     ProjectAgentBindingUpdate,
     ProjectCreate,
+    ProjectDetailReadModel,
     ProjectPlanCreate,
     ProjectPlanResponse,
     ProjectPlanUpdate,
     ProjectResponse,
     ProjectRunCreate,
     ProjectRunResponse,
-    ProjectRunStepCreate,
-    ProjectRunStepResponse,
-    ProjectRunStepUpdate,
     ProjectRunUpdate,
     ProjectSpaceResponse,
     ProjectSpaceUpsert,
     ProjectTaskCreate,
     ProjectTaskCreateAndLaunchRequest,
+    TaskContractReadModel,
+    TaskContractUpsertRequest,
+    TaskChangeBundleCreateRequest,
+    TaskChangeBundleReadModel,
+    TaskDependencyReadModel,
+    TaskDependencyReplaceRequest,
+    TaskEvidenceBundleCreateRequest,
+    TaskEvidenceBundleReadModel,
+    TaskHandoffCreateRequest,
+    TaskHandoffReadModel,
+    ProjectTaskDetailReadModel,
     ProjectTaskLaunchBundleResponse,
     ProjectTaskResponse,
     ProjectTaskUpdate,
     ProjectUpdate,
+    RunDetailReadModel,
     RunSchedulingResponse,
-    RunStepStatusRequest,
     RunTransitionRequest,
+    RuntimeSessionReadModel,
     SkillImportRequest,
     SkillPackageResponse,
     SkillPackageTestRequest,
+    TaskReviewIssueCreateRequest,
+    TaskReviewIssueReadModel,
+    TaskReviewIssueUpdateRequest,
     TaskTransitionRequest,
 )
+from project_execution.delivery_records import (
+    create_task_change_bundle,
+    create_task_evidence_bundle,
+    create_task_handoff,
+    create_task_review_issue,
+    update_task_review_issue,
+)
+from project_execution.execution_nodes import create_execution_node
 from project_execution.scheduler import schedule_run_after_launch
 from project_execution.service import (
     append_audit_event,
@@ -82,6 +120,19 @@ from project_execution.service import (
     reconcile_project_state,
     reconcile_run_state,
 )
+from project_execution.task_contracts import (
+    create_manual_task_contract,
+    ensure_task_contract,
+    get_latest_task_contract,
+)
+from project_execution.task_dependencies import (
+    compute_task_readiness,
+    DependencyCycleError,
+    DependencyValidationError,
+    build_dependency_snapshot,
+    replace_task_dependencies,
+    summarize_task_blockers,
+)
 from shared.logging import get_logger
 
 logger = get_logger(__name__)
@@ -90,7 +141,7 @@ projects_router = APIRouter()
 project_tasks_router = APIRouter()
 plans_router = APIRouter()
 runs_router = APIRouter()
-run_steps_router = APIRouter()
+attempts_router = APIRouter()
 project_space_router = APIRouter()
 extensions_router = APIRouter()
 skills_import_router = APIRouter()
@@ -193,6 +244,121 @@ def _planner_questions_to_response(planner_result) -> list[dict[str, str]]:
     return [question.model_dump() for question in planner_result.clarification_questions]
 
 
+def _execution_node_to_read_model(node: ExecutionNode) -> ExecutionAttemptNodeReadModel:
+    payload = node.node_payload if isinstance(node.node_payload, dict) else {}
+    dependency_node_ids = payload.get("dependency_node_ids")
+    if not isinstance(dependency_node_ids, list):
+        dependency_node_ids = node.dependency_node_ids if isinstance(node.dependency_node_ids, list) else []
+    suggested_agent_ids = payload.get("suggested_agent_ids")
+    if not isinstance(suggested_agent_ids, list):
+        suggested_agent_ids = []
+    return ExecutionAttemptNodeReadModel(
+        id=str(node.node_id),
+        run_id=str(node.run_id),
+        task_id=str(node.project_task_id) if node.project_task_id else None,
+        name=node.name,
+        node_type=node.node_type,
+        status=node.status,
+        sequence_number=node.sequence_number,
+        execution_mode=str(payload.get("execution_mode") or "").strip() or None,
+        executor_kind=str(payload.get("executor_kind") or "").strip() or None,
+        runtime_type=str(payload.get("runtime_type") or "").strip() or None,
+        suggested_agent_ids=[str(item) for item in suggested_agent_ids if str(item).strip()],
+        dependency_step_ids=[str(item) for item in dependency_node_ids if str(item).strip()],
+        node_payload=payload,
+        result_payload=node.result_payload if isinstance(node.result_payload, dict) else {},
+        error_message=node.error_message,
+        started_at=node.started_at,
+        completed_at=node.completed_at,
+        created_at=node.created_at,
+        updated_at=node.updated_at,
+    )
+
+
+def _create_execution_step_pair(
+    session,
+    *,
+    run: ProjectRun,
+    project_task_id: Optional[UUID],
+    name: str,
+    node_type: str,
+    status_value: str,
+    sequence_number: int,
+    payload: dict[str, Any],
+) -> ExecutionNode:
+    node = create_execution_node(
+        session,
+        run=run,
+        project_task_id=project_task_id,
+        name=name,
+        node_type=node_type,
+        status=status_value,
+        sequence_number=sequence_number,
+        node_payload=payload,
+    )
+    return node
+
+
+def _update_execution_node_and_sync_step(
+    session,
+    *,
+    node: ExecutionNode,
+    request: ExecutionAttemptNodeUpdateRequest,
+) -> ExecutionNode:
+    if request.project_task_id is not None:
+        node.project_task_id = request.project_task_id
+    if request.name is not None:
+        node.name = request.name
+    if request.node_type is not None:
+        node.node_type = request.node_type
+    if request.status is not None:
+        node.status = request.status
+    if request.sequence_number is not None:
+        node.sequence_number = request.sequence_number
+    if request.node_payload is not None:
+        node.node_payload = request.node_payload
+    if request.result_payload is not None:
+        node.result_payload = request.result_payload
+    if request.error_message is not None:
+        node.error_message = request.error_message
+    flush_and_refresh(session, node)
+    return node
+
+
+def _complete_execution_node_and_sync_step(
+    session,
+    *,
+    node: ExecutionNode,
+    request: ExecutionAttemptNodeStatusRequest,
+) -> ExecutionNode:
+    node.status = request.status
+    node.result_payload = request.result_payload
+    node.error_message = request.error_message
+    if node.started_at is None:
+        node.started_at = _utc_now()
+    node.completed_at = _utc_now()
+    flush_and_refresh(session, node)
+    return node
+
+
+def _resolve_execution_reference(
+    session,
+    *,
+    task: ProjectTask,
+    run_id: Optional[UUID],
+    node_id: Optional[str],
+) -> Optional[UUID]:
+    parsed_node_id = parse_uuid(node_id, "node_id") if node_id else None
+
+    if parsed_node_id is not None:
+        node = get_or_404(session, ExecutionNode, ExecutionNode.node_id, parsed_node_id, "Execution node not found")
+        if node.project_task_id and node.project_task_id != task.project_task_id:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Execution node not found")
+        if run_id is not None and node.run_id != run_id:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Execution node not found")
+    return parsed_node_id
+
+
 @runs_router.get(
     "/{run_id}/external-dispatches", response_model=list[ExternalAgentDispatchResponse]
 )
@@ -220,10 +386,13 @@ async def create_project(
 ):
     with get_db_session() as session:
         actor_user_id = get_current_user_uuid(current_user)
+        normalized_status = str(request.status or "").strip().lower() or "planning"
+        if normalized_status == "draft":
+            normalized_status = "planning"
         project = Project(
             name=request.name,
             description=request.description,
-            status=request.status,
+            status=normalized_status,
             configuration=request.configuration,
             created_by_user_id=actor_user_id,
         )
@@ -269,6 +438,19 @@ async def get_project(project_id: str, current_user: CurrentUser = Depends(get_c
         )
         reconcile_project_state(session, project=project)
         return project
+
+
+@projects_router.get("/{project_id}/detail", response_model=ProjectDetailReadModel)
+async def get_project_detail(
+    project_id: str,
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    parsed_project_id = parse_uuid(project_id, "project_id")
+    with get_db_session() as session:
+        project = _load_owned_project_or_404(
+            session, project_id=parsed_project_id, current_user=current_user
+        )
+        return build_project_detail_read_model(session, project=project)
 
 
 @projects_router.patch("/{project_id}", response_model=ProjectResponse)
@@ -660,7 +842,7 @@ async def create_project_task_and_launch(
 
     with get_db_session() as session:
         try:
-            task, plan, run, step = create_project_task_and_launch_run(
+            task, plan, run, node = create_project_task_and_launch_run(
                 session,
                 project_id=request.project_id,
                 title=request.title,
@@ -674,12 +856,17 @@ async def create_project_task_and_launch(
                 planner_result=planner_result,
                 current_user=current_user,
             )
+            ensure_task_contract(
+                session,
+                task=task,
+                actor_user_id=get_current_user_uuid(current_user),
+            )
         except IntegrityError as exc:
             _handle_integrity_error(exc, duplicate_detail="Project task could not be created")
         task_id = task.project_task_id
         plan_id = plan.plan_id if plan is not None else None
         run_id = run.run_id if run is not None else None
-        step_id = step.run_step_id if step is not None else None
+        node_id = node.node_id if node is not None else None
 
     scheduling_result = (
         await schedule_run_after_launch(run_id=run_id, current_user=current_user)
@@ -701,16 +888,16 @@ async def create_project_task_and_launch(
             if run_id is not None
             else None
         )
-        step = (
-            get_or_404(session, ProjectRunStep, ProjectRunStep.run_step_id, step_id, "Run step not found")
-            if step_id is not None
+        node = (
+            get_or_404(session, ExecutionNode, ExecutionNode.node_id, node_id, "Execution node not found")
+            if node_id is not None
             else None
         )
         return ProjectTaskLaunchBundleResponse(
             task=ProjectTaskResponse.model_validate(task),
             plan=ProjectPlanResponse.model_validate(plan) if plan is not None else None,
             run=ProjectRunResponse.model_validate(run) if run is not None else None,
-            step=ProjectRunStepResponse.model_validate(step) if step is not None else None,
+            node=_execution_node_to_read_model(node) if node is not None else None,
             needs_clarification=planner_result.needs_clarification,
             clarification_questions=_planner_questions_to_response(planner_result),
             agent_assignment=scheduling_result.get("agent_assignment"),
@@ -755,6 +942,7 @@ async def create_project_task(
         )
         session.add(task)
         flush_and_refresh(session, task)
+        ensure_task_contract(session, task=task, actor_user_id=actor_user_id)
         append_audit_event(
             session,
             action="project-task.created",
@@ -792,6 +980,12 @@ async def launch_existing_project_task(
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND, detail="Project task not found"
             )
+        readiness = compute_task_readiness(session, project_task_id=task.project_task_id)
+        if not readiness["ready"]:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=summarize_task_blockers(readiness) or "Task dependencies are not satisfied",
+            )
         project_context, available_agents = _build_planner_context(
             session, project_id=task.project_id
         )
@@ -813,16 +1007,21 @@ async def launch_existing_project_task(
             parsed_task_id,
             "Project task not found",
         )
-        task, plan, run, step = launch_existing_project_task_run(
+        task, plan, run, node = launch_existing_project_task_run(
             session,
             task=task,
             planner_result=planner_result,
             current_user=current_user,
         )
+        ensure_task_contract(
+            session,
+            task=task,
+            actor_user_id=get_current_user_uuid(current_user),
+        )
         task_id = task.project_task_id
         plan_id = plan.plan_id if plan is not None else None
         run_id = run.run_id if run is not None else None
-        step_id = step.run_step_id if step is not None else None
+        node_id = node.node_id if node is not None else None
 
     scheduling_result = (
         await schedule_run_after_launch(run_id=run_id, current_user=current_user)
@@ -844,16 +1043,16 @@ async def launch_existing_project_task(
             if run_id is not None
             else None
         )
-        step = (
-            get_or_404(session, ProjectRunStep, ProjectRunStep.run_step_id, step_id, "Run step not found")
-            if step_id is not None
+        node = (
+            get_or_404(session, ExecutionNode, ExecutionNode.node_id, node_id, "Execution node not found")
+            if node_id is not None
             else None
         )
         return ProjectTaskLaunchBundleResponse(
             task=ProjectTaskResponse.model_validate(task),
             plan=ProjectPlanResponse.model_validate(plan) if plan is not None else None,
             run=ProjectRunResponse.model_validate(run) if run is not None else None,
-            step=ProjectRunStepResponse.model_validate(step) if step is not None else None,
+            node=_execution_node_to_read_model(node) if node is not None else None,
             needs_clarification=planner_result.needs_clarification,
             clarification_questions=_planner_questions_to_response(planner_result),
             agent_assignment=scheduling_result.get("agent_assignment"),
@@ -895,6 +1094,762 @@ async def get_project_task(
                 status_code=status.HTTP_404_NOT_FOUND, detail="Project task not found"
             )
         return task
+
+
+@project_tasks_router.get(
+    "/{project_task_id}/detail", response_model=ProjectTaskDetailReadModel
+)
+async def get_project_task_detail(
+    project_task_id: str,
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    parsed_task_id = parse_uuid(project_task_id, "project_task_id")
+    with get_db_session() as session:
+        task = get_or_404(
+            session,
+            ProjectTask,
+            ProjectTask.project_task_id,
+            parsed_task_id,
+            "Project task not found",
+        )
+        if str(task.created_by_user_id) != str(current_user.user_id):
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="Project task not found"
+            )
+        if get_latest_task_contract(session, project_task_id=task.project_task_id) is None:
+            ensure_task_contract(
+                session,
+                task=task,
+                actor_user_id=get_current_user_uuid(current_user),
+            )
+        return build_project_task_detail_read_model(session, task=task)
+
+
+@project_tasks_router.get(
+    "/{project_task_id}/attempts", response_model=list[ExecutionAttemptReadModel]
+)
+async def list_project_task_attempts(
+    project_task_id: str,
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    parsed_task_id = parse_uuid(project_task_id, "project_task_id")
+    with get_db_session() as session:
+        task = get_or_404(
+            session,
+            ProjectTask,
+            ProjectTask.project_task_id,
+            parsed_task_id,
+            "Project task not found",
+        )
+        if str(task.created_by_user_id) != str(current_user.user_id):
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="Project task not found"
+            )
+        project = get_or_404(session, Project, Project.project_id, task.project_id, "Project not found")
+        return build_task_attempt_read_models(session, task=task, project=project)
+
+
+@project_tasks_router.get(
+    "/{project_task_id}/contract", response_model=TaskContractReadModel
+)
+async def get_project_task_contract(
+    project_task_id: str,
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    parsed_task_id = parse_uuid(project_task_id, "project_task_id")
+    with get_db_session() as session:
+        task = get_or_404(
+            session,
+            ProjectTask,
+            ProjectTask.project_task_id,
+            parsed_task_id,
+            "Project task not found",
+        )
+        if str(task.created_by_user_id) != str(current_user.user_id):
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="Project task not found"
+            )
+        contract = get_latest_task_contract(session, project_task_id=task.project_task_id)
+        if contract is None:
+            contract = ensure_task_contract(
+                session,
+                task=task,
+                actor_user_id=get_current_user_uuid(current_user),
+            )
+        return TaskContractReadModel(
+            id=str(contract.contract_id),
+            task_id=str(contract.project_task_id),
+            version=contract.version,
+            goal=contract.goal,
+            scope=list(contract.scope or []),
+            constraints=list(contract.constraints or []),
+            deliverables=list(contract.deliverables or []),
+            acceptance_criteria=list(contract.acceptance_criteria or []),
+            assumptions=list(contract.assumptions or []),
+            evidence_required=list(contract.evidence_required or []),
+            allowed_surface=contract.allowed_surface or {},
+            created_at=contract.created_at,
+            updated_at=contract.updated_at,
+        )
+
+
+@project_tasks_router.put(
+    "/{project_task_id}/contract", response_model=TaskContractReadModel
+)
+async def update_project_task_contract(
+    project_task_id: str,
+    request: TaskContractUpsertRequest,
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    parsed_task_id = parse_uuid(project_task_id, "project_task_id")
+    with get_db_session() as session:
+        task = get_or_404(
+            session,
+            ProjectTask,
+            ProjectTask.project_task_id,
+            parsed_task_id,
+            "Project task not found",
+        )
+        if str(task.created_by_user_id) != str(current_user.user_id):
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="Project task not found"
+            )
+        contract = create_manual_task_contract(
+            session,
+            task=task,
+            actor_user_id=get_current_user_uuid(current_user),
+            payload=request.model_dump(by_alias=False),
+        )
+        append_audit_event(
+            session,
+            action="project-task.contract.updated",
+            resource_type="project_task_contract",
+            resource_id=contract.contract_id,
+            project_id=task.project_id,
+            run_id=task.run_id,
+            current_user=current_user,
+        )
+        return TaskContractReadModel(
+            id=str(contract.contract_id),
+            task_id=str(contract.project_task_id),
+            version=contract.version,
+            goal=contract.goal,
+            scope=list(contract.scope or []),
+            constraints=list(contract.constraints or []),
+            deliverables=list(contract.deliverables or []),
+            acceptance_criteria=list(contract.acceptance_criteria or []),
+            assumptions=list(contract.assumptions or []),
+            evidence_required=list(contract.evidence_required or []),
+            allowed_surface=contract.allowed_surface or {},
+            created_at=contract.created_at,
+            updated_at=contract.updated_at,
+        )
+
+
+@project_tasks_router.get(
+    "/{project_task_id}/dependencies", response_model=list[TaskDependencyReadModel]
+)
+async def get_project_task_dependencies(
+    project_task_id: str,
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    parsed_task_id = parse_uuid(project_task_id, "project_task_id")
+    with get_db_session() as session:
+        task = get_or_404(
+            session,
+            ProjectTask,
+            ProjectTask.project_task_id,
+            parsed_task_id,
+            "Project task not found",
+        )
+        if str(task.created_by_user_id) != str(current_user.user_id):
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="Project task not found"
+            )
+        return [
+            TaskDependencyReadModel(**item)
+            for item in build_dependency_snapshot(session, project_task_id=task.project_task_id)
+        ]
+
+
+@project_tasks_router.put(
+    "/{project_task_id}/dependencies", response_model=list[TaskDependencyReadModel]
+)
+async def replace_project_task_dependencies(
+    project_task_id: str,
+    request: TaskDependencyReplaceRequest,
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    parsed_task_id = parse_uuid(project_task_id, "project_task_id")
+    with get_db_session() as session:
+        task = get_or_404(
+            session,
+            ProjectTask,
+            ProjectTask.project_task_id,
+            parsed_task_id,
+            "Project task not found",
+        )
+        if str(task.created_by_user_id) != str(current_user.user_id):
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="Project task not found"
+            )
+        try:
+            replace_task_dependencies(
+                session,
+                task=task,
+                dependencies=[item.model_dump(by_alias=False) for item in request.dependencies],
+                actor_user_id=get_current_user_uuid(current_user),
+            )
+        except DependencyValidationError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=str(exc),
+            ) from exc
+        except DependencyCycleError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=str(exc),
+            ) from exc
+        append_audit_event(
+            session,
+            action="project-task.dependencies.replaced",
+            resource_type="project_task",
+            resource_id=task.project_task_id,
+            project_id=task.project_id,
+            run_id=task.run_id,
+            current_user=current_user,
+            payload={"dependency_count": len(request.dependencies)},
+        )
+        return [
+            TaskDependencyReadModel(**item)
+            for item in build_dependency_snapshot(session, project_task_id=task.project_task_id)
+        ]
+
+
+@project_tasks_router.get(
+    "/{project_task_id}/handoffs", response_model=list[TaskHandoffReadModel]
+)
+async def list_project_task_handoffs(
+    project_task_id: str,
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    parsed_task_id = parse_uuid(project_task_id, "project_task_id")
+    with get_db_session() as session:
+        task = get_or_404(
+            session,
+            ProjectTask,
+            ProjectTask.project_task_id,
+            parsed_task_id,
+            "Project task not found",
+        )
+        if str(task.created_by_user_id) != str(current_user.user_id):
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project task not found")
+        rows = (
+            session.query(ProjectTaskHandoff)
+            .filter(ProjectTaskHandoff.project_task_id == task.project_task_id)
+            .order_by(ProjectTaskHandoff.created_at.desc())
+            .all()
+        )
+        return [
+            TaskHandoffReadModel(
+                id=str(row.handoff_id),
+                task_id=str(row.project_task_id),
+                run_id=str(row.run_id) if row.run_id else None,
+                node_id=str(row.node_id) if row.node_id else None,
+                stage=row.stage,
+                from_actor=row.from_actor,
+                to_actor=row.to_actor,
+                status_from=row.status_from,
+                status_to=row.status_to,
+                title=row.title,
+                summary=row.summary,
+                payload=row.payload or {},
+                created_at=row.created_at,
+                updated_at=row.updated_at,
+            )
+            for row in rows
+        ]
+
+
+@project_tasks_router.post(
+    "/{project_task_id}/handoffs",
+    response_model=TaskHandoffReadModel,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_project_task_handoff(
+    project_task_id: str,
+    request: TaskHandoffCreateRequest,
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    parsed_task_id = parse_uuid(project_task_id, "project_task_id")
+    with get_db_session() as session:
+        task = get_or_404(
+            session,
+            ProjectTask,
+            ProjectTask.project_task_id,
+            parsed_task_id,
+            "Project task not found",
+        )
+        if str(task.created_by_user_id) != str(current_user.user_id):
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project task not found")
+        run_id = parse_uuid(request.run_id, "run_id") if request.run_id else None
+        ensure_related_records(session, project_id=task.project_id, run_id=run_id)
+        node_id = _resolve_execution_reference(
+            session,
+            task=task,
+            run_id=run_id,
+            node_id=request.node_id,
+        )
+        row = create_task_handoff(
+            session,
+            task=task,
+            actor_user_id=get_current_user_uuid(current_user),
+            payload={
+                **request.model_dump(by_alias=False),
+                "run_id": run_id,
+                "node_id": node_id,
+            },
+        )
+        append_audit_event(
+            session,
+            action="project-task.handoff.created",
+            resource_type="project_task_handoff",
+            resource_id=row.handoff_id,
+            project_id=task.project_id,
+            run_id=row.run_id,
+            current_user=current_user,
+            payload={"stage": row.stage, "from_actor": row.from_actor, "to_actor": row.to_actor},
+        )
+        return TaskHandoffReadModel(
+            id=str(row.handoff_id),
+            task_id=str(row.project_task_id),
+            run_id=str(row.run_id) if row.run_id else None,
+            node_id=str(row.node_id) if row.node_id else None,
+            stage=row.stage,
+            from_actor=row.from_actor,
+            to_actor=row.to_actor,
+            status_from=row.status_from,
+            status_to=row.status_to,
+            title=row.title,
+            summary=row.summary,
+            payload=row.payload or {},
+            created_at=row.created_at,
+            updated_at=row.updated_at,
+        )
+
+
+@project_tasks_router.get(
+    "/{project_task_id}/change-bundles", response_model=list[TaskChangeBundleReadModel]
+)
+async def list_project_task_change_bundles(
+    project_task_id: str,
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    parsed_task_id = parse_uuid(project_task_id, "project_task_id")
+    with get_db_session() as session:
+        task = get_or_404(
+            session,
+            ProjectTask,
+            ProjectTask.project_task_id,
+            parsed_task_id,
+            "Project task not found",
+        )
+        if str(task.created_by_user_id) != str(current_user.user_id):
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project task not found")
+        rows = (
+            session.query(ProjectTaskChangeBundle)
+            .filter(ProjectTaskChangeBundle.project_task_id == task.project_task_id)
+            .order_by(ProjectTaskChangeBundle.created_at.desc())
+            .all()
+        )
+        return [
+            TaskChangeBundleReadModel(
+                id=str(row.change_bundle_id),
+                task_id=str(row.project_task_id),
+                run_id=str(row.run_id) if row.run_id else None,
+                node_id=str(row.node_id) if row.node_id else None,
+                bundle_kind=row.bundle_kind,
+                status=row.status,
+                base_ref=row.base_ref,
+                head_ref=row.head_ref,
+                summary=row.summary,
+                commit_count=row.commit_count,
+                changed_files=row.changed_files or [],
+                artifact_manifest=row.artifact_manifest or {},
+                created_at=row.created_at,
+                updated_at=row.updated_at,
+            )
+            for row in rows
+        ]
+
+
+@project_tasks_router.post(
+    "/{project_task_id}/change-bundles",
+    response_model=TaskChangeBundleReadModel,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_project_task_change_bundle(
+    project_task_id: str,
+    request: TaskChangeBundleCreateRequest,
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    parsed_task_id = parse_uuid(project_task_id, "project_task_id")
+    with get_db_session() as session:
+        task = get_or_404(
+            session,
+            ProjectTask,
+            ProjectTask.project_task_id,
+            parsed_task_id,
+            "Project task not found",
+        )
+        if str(task.created_by_user_id) != str(current_user.user_id):
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project task not found")
+        run_id = parse_uuid(request.run_id, "run_id") if request.run_id else None
+        ensure_related_records(session, project_id=task.project_id, run_id=run_id)
+        node_id = _resolve_execution_reference(
+            session,
+            task=task,
+            run_id=run_id,
+            node_id=request.node_id,
+        )
+        row = create_task_change_bundle(
+            session,
+            task=task,
+            actor_user_id=get_current_user_uuid(current_user),
+            payload={
+                **request.model_dump(by_alias=False),
+                "run_id": run_id,
+                "node_id": node_id,
+            },
+        )
+        append_audit_event(
+            session,
+            action="project-task.change-bundle.created",
+            resource_type="project_task_change_bundle",
+            resource_id=row.change_bundle_id,
+            project_id=task.project_id,
+            run_id=row.run_id,
+            current_user=current_user,
+            payload={"status": row.status, "bundle_kind": row.bundle_kind},
+        )
+        return TaskChangeBundleReadModel(
+            id=str(row.change_bundle_id),
+            task_id=str(row.project_task_id),
+            run_id=str(row.run_id) if row.run_id else None,
+            node_id=str(row.node_id) if row.node_id else None,
+            bundle_kind=row.bundle_kind,
+            status=row.status,
+            base_ref=row.base_ref,
+            head_ref=row.head_ref,
+            summary=row.summary,
+            commit_count=row.commit_count,
+            changed_files=row.changed_files or [],
+            artifact_manifest=row.artifact_manifest or {},
+            created_at=row.created_at,
+            updated_at=row.updated_at,
+        )
+
+
+@project_tasks_router.get(
+    "/{project_task_id}/evidence-bundles", response_model=list[TaskEvidenceBundleReadModel]
+)
+async def list_project_task_evidence_bundles(
+    project_task_id: str,
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    parsed_task_id = parse_uuid(project_task_id, "project_task_id")
+    with get_db_session() as session:
+        task = get_or_404(
+            session,
+            ProjectTask,
+            ProjectTask.project_task_id,
+            parsed_task_id,
+            "Project task not found",
+        )
+        if str(task.created_by_user_id) != str(current_user.user_id):
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project task not found")
+        rows = (
+            session.query(ProjectTaskEvidenceBundle)
+            .filter(ProjectTaskEvidenceBundle.project_task_id == task.project_task_id)
+            .order_by(ProjectTaskEvidenceBundle.created_at.desc())
+            .all()
+        )
+        return [
+            TaskEvidenceBundleReadModel(
+                id=str(row.evidence_bundle_id),
+                task_id=str(row.project_task_id),
+                run_id=str(row.run_id) if row.run_id else None,
+                node_id=str(row.node_id) if row.node_id else None,
+                summary=row.summary,
+                status=row.status,
+                bundle=row.bundle or {},
+                created_at=row.created_at,
+                updated_at=row.updated_at,
+            )
+            for row in rows
+        ]
+
+
+@project_tasks_router.post(
+    "/{project_task_id}/evidence-bundles",
+    response_model=TaskEvidenceBundleReadModel,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_project_task_evidence_bundle(
+    project_task_id: str,
+    request: TaskEvidenceBundleCreateRequest,
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    parsed_task_id = parse_uuid(project_task_id, "project_task_id")
+    with get_db_session() as session:
+        task = get_or_404(
+            session,
+            ProjectTask,
+            ProjectTask.project_task_id,
+            parsed_task_id,
+            "Project task not found",
+        )
+        if str(task.created_by_user_id) != str(current_user.user_id):
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project task not found")
+        run_id = parse_uuid(request.run_id, "run_id") if request.run_id else None
+        ensure_related_records(session, project_id=task.project_id, run_id=run_id)
+        node_id = _resolve_execution_reference(
+            session,
+            task=task,
+            run_id=run_id,
+            node_id=request.node_id,
+        )
+        row = create_task_evidence_bundle(
+            session,
+            task=task,
+            actor_user_id=get_current_user_uuid(current_user),
+            payload={
+                **request.model_dump(by_alias=False),
+                "run_id": run_id,
+                "node_id": node_id,
+            },
+        )
+        append_audit_event(
+            session,
+            action="project-task.evidence-bundle.created",
+            resource_type="project_task_evidence_bundle",
+            resource_id=row.evidence_bundle_id,
+            project_id=task.project_id,
+            run_id=row.run_id,
+            current_user=current_user,
+            payload={"status": row.status},
+        )
+        return TaskEvidenceBundleReadModel(
+            id=str(row.evidence_bundle_id),
+            task_id=str(row.project_task_id),
+            run_id=str(row.run_id) if row.run_id else None,
+            node_id=str(row.node_id) if row.node_id else None,
+            summary=row.summary,
+            status=row.status,
+            bundle=row.bundle or {},
+            created_at=row.created_at,
+            updated_at=row.updated_at,
+        )
+
+
+@project_tasks_router.get(
+    "/{project_task_id}/review-issues", response_model=list[TaskReviewIssueReadModel]
+)
+async def list_project_task_review_issues(
+    project_task_id: str,
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    parsed_task_id = parse_uuid(project_task_id, "project_task_id")
+    with get_db_session() as session:
+        task = get_or_404(
+            session,
+            ProjectTask,
+            ProjectTask.project_task_id,
+            parsed_task_id,
+            "Project task not found",
+        )
+        if str(task.created_by_user_id) != str(current_user.user_id):
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project task not found")
+        rows = (
+            session.query(ProjectTaskReviewIssue)
+            .filter(ProjectTaskReviewIssue.project_task_id == task.project_task_id)
+            .order_by(ProjectTaskReviewIssue.created_at.desc())
+            .all()
+        )
+        return [
+            TaskReviewIssueReadModel(
+                id=str(row.review_issue_id),
+                task_id=str(row.project_task_id),
+                change_bundle_id=str(row.change_bundle_id) if row.change_bundle_id else None,
+                evidence_bundle_id=str(row.evidence_bundle_id) if row.evidence_bundle_id else None,
+                handoff_id=str(row.handoff_id) if row.handoff_id else None,
+                issue_key=row.issue_key,
+                severity=row.severity,
+                category=row.category,
+                acceptance_ref=row.acceptance_ref,
+                summary=row.summary,
+                suggestion=row.suggestion,
+                status=row.status,
+                resolved_at=row.resolved_at,
+                created_at=row.created_at,
+                updated_at=row.updated_at,
+            )
+            for row in rows
+        ]
+
+
+@project_tasks_router.post(
+    "/{project_task_id}/review-issues",
+    response_model=TaskReviewIssueReadModel,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_project_task_review_issue(
+    project_task_id: str,
+    request: TaskReviewIssueCreateRequest,
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    parsed_task_id = parse_uuid(project_task_id, "project_task_id")
+    with get_db_session() as session:
+        task = get_or_404(
+            session,
+            ProjectTask,
+            ProjectTask.project_task_id,
+            parsed_task_id,
+            "Project task not found",
+        )
+        if str(task.created_by_user_id) != str(current_user.user_id):
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project task not found")
+        change_bundle_id = parse_uuid(request.change_bundle_id, "change_bundle_id") if request.change_bundle_id else None
+        evidence_bundle_id = parse_uuid(request.evidence_bundle_id, "evidence_bundle_id") if request.evidence_bundle_id else None
+        handoff_id = parse_uuid(request.handoff_id, "handoff_id") if request.handoff_id else None
+        if change_bundle_id is not None:
+            change_bundle = get_or_404(
+                session,
+                ProjectTaskChangeBundle,
+                ProjectTaskChangeBundle.change_bundle_id,
+                change_bundle_id,
+                "Change bundle not found",
+            )
+            if change_bundle.project_task_id != task.project_task_id:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Change bundle not found")
+        if evidence_bundle_id is not None:
+            evidence_bundle = get_or_404(
+                session,
+                ProjectTaskEvidenceBundle,
+                ProjectTaskEvidenceBundle.evidence_bundle_id,
+                evidence_bundle_id,
+                "Evidence bundle not found",
+            )
+            if evidence_bundle.project_task_id != task.project_task_id:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Evidence bundle not found")
+        if handoff_id is not None:
+            handoff = get_or_404(
+                session,
+                ProjectTaskHandoff,
+                ProjectTaskHandoff.handoff_id,
+                handoff_id,
+                "Handoff not found",
+            )
+            if handoff.project_task_id != task.project_task_id:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Handoff not found")
+        row = create_task_review_issue(
+            session,
+            task=task,
+            actor_user_id=get_current_user_uuid(current_user),
+            payload={
+                **request.model_dump(by_alias=False),
+                "change_bundle_id": change_bundle_id,
+                "evidence_bundle_id": evidence_bundle_id,
+                "handoff_id": handoff_id,
+            },
+        )
+        append_audit_event(
+            session,
+            action="project-task.review-issue.created",
+            resource_type="project_task_review_issue",
+            resource_id=row.review_issue_id,
+            project_id=task.project_id,
+            run_id=task.run_id,
+            current_user=current_user,
+            payload={"severity": row.severity, "category": row.category, "status": row.status},
+        )
+        return TaskReviewIssueReadModel(
+            id=str(row.review_issue_id),
+            task_id=str(row.project_task_id),
+            change_bundle_id=str(row.change_bundle_id) if row.change_bundle_id else None,
+            evidence_bundle_id=str(row.evidence_bundle_id) if row.evidence_bundle_id else None,
+            handoff_id=str(row.handoff_id) if row.handoff_id else None,
+            issue_key=row.issue_key,
+            severity=row.severity,
+            category=row.category,
+            acceptance_ref=row.acceptance_ref,
+            summary=row.summary,
+            suggestion=row.suggestion,
+            status=row.status,
+            resolved_at=row.resolved_at,
+            created_at=row.created_at,
+            updated_at=row.updated_at,
+        )
+
+
+@project_tasks_router.patch(
+    "/{project_task_id}/review-issues/{review_issue_id}", response_model=TaskReviewIssueReadModel
+)
+async def update_project_task_review_issue(
+    project_task_id: str,
+    review_issue_id: str,
+    request: TaskReviewIssueUpdateRequest,
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    parsed_task_id = parse_uuid(project_task_id, "project_task_id")
+    parsed_issue_id = parse_uuid(review_issue_id, "review_issue_id")
+    with get_db_session() as session:
+        task = get_or_404(
+            session,
+            ProjectTask,
+            ProjectTask.project_task_id,
+            parsed_task_id,
+            "Project task not found",
+        )
+        if str(task.created_by_user_id) != str(current_user.user_id):
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project task not found")
+        row = get_or_404(
+            session,
+            ProjectTaskReviewIssue,
+            ProjectTaskReviewIssue.review_issue_id,
+            parsed_issue_id,
+            "Review issue not found",
+        )
+        if row.project_task_id != task.project_task_id:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Review issue not found")
+        update_task_review_issue(session, issue=row, payload=request.model_dump(by_alias=False, exclude_none=True))
+        append_audit_event(
+            session,
+            action="project-task.review-issue.updated",
+            resource_type="project_task_review_issue",
+            resource_id=row.review_issue_id,
+            project_id=task.project_id,
+            run_id=task.run_id,
+            current_user=current_user,
+            payload=request.model_dump(by_alias=False, exclude_none=True),
+        )
+        return TaskReviewIssueReadModel(
+            id=str(row.review_issue_id),
+            task_id=str(row.project_task_id),
+            change_bundle_id=str(row.change_bundle_id) if row.change_bundle_id else None,
+            evidence_bundle_id=str(row.evidence_bundle_id) if row.evidence_bundle_id else None,
+            handoff_id=str(row.handoff_id) if row.handoff_id else None,
+            issue_key=row.issue_key,
+            severity=row.severity,
+            category=row.category,
+            acceptance_ref=row.acceptance_ref,
+            summary=row.summary,
+            suggestion=row.suggestion,
+            status=row.status,
+            resolved_at=row.resolved_at,
+            created_at=row.created_at,
+            updated_at=row.updated_at,
+        )
 
 
 @project_tasks_router.patch("/{project_task_id}", response_model=ProjectTaskResponse)
@@ -943,6 +1898,16 @@ async def update_project_task(
             ],
         )
         flush_and_refresh(session, task)
+        if (
+            request.title is not None
+            or request.description is not None
+            or get_latest_task_contract(session, project_task_id=task.project_task_id) is None
+        ):
+            ensure_task_contract(
+                session,
+                task=task,
+                actor_user_id=get_current_user_uuid(current_user),
+            )
         append_audit_event(
             session,
             action="project-task.updated",
@@ -1212,6 +2177,228 @@ async def get_run(run_id: str, _: CurrentUser = Depends(get_current_user)):
         return ProjectRunResponse.model_validate(run)
 
 
+@runs_router.get("/{run_id}/detail", response_model=RunDetailReadModel)
+async def get_run_detail(run_id: str, current_user: CurrentUser = Depends(get_current_user)):
+    parsed_run_id = parse_uuid(run_id, "run_id")
+    with get_db_session() as session:
+        run = _load_owned_run_or_404(session, run_id=parsed_run_id, current_user=current_user)
+        return build_run_detail_read_model(session, run=run)
+
+
+@runs_router.get("/{run_id}/nodes", response_model=list[ExecutionAttemptNodeReadModel])
+async def list_run_nodes(run_id: str, current_user: CurrentUser = Depends(get_current_user)):
+    parsed_run_id = parse_uuid(run_id, "run_id")
+    with get_db_session() as session:
+        run = _load_owned_run_or_404(session, run_id=parsed_run_id, current_user=current_user)
+        return build_run_node_read_models(session, run=run)
+
+
+@runs_router.get(
+    "/{run_id}/runtime-sessions", response_model=list[RuntimeSessionReadModel]
+)
+async def list_run_runtime_sessions(
+    run_id: str,
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    parsed_run_id = parse_uuid(run_id, "run_id")
+    with get_db_session() as session:
+        run = _load_owned_run_or_404(session, run_id=parsed_run_id, current_user=current_user)
+        return build_run_runtime_session_read_models(session, run=run)
+
+
+@attempts_router.post("", response_model=ProjectRunResponse, status_code=status.HTTP_201_CREATED)
+async def create_attempt(
+    request: ProjectRunCreate,
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    return await create_run(request, current_user)
+
+
+@attempts_router.get("", response_model=list[ProjectRunResponse])
+async def list_attempts(
+    project_id: Optional[UUID] = None,
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    return await list_runs(project_id, current_user)
+
+
+@attempts_router.get("/{attempt_id}", response_model=RunDetailReadModel)
+async def get_attempt_detail(
+    attempt_id: str,
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    return await get_run_detail(attempt_id, current_user)
+
+
+@attempts_router.post("/{attempt_id}/start", response_model=ProjectRunResponse)
+async def start_attempt(
+    attempt_id: str,
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    return await start_run(attempt_id, current_user)
+
+
+@attempts_router.post("/{attempt_id}/complete", response_model=ProjectRunResponse)
+async def complete_attempt(
+    attempt_id: str,
+    request: RunTransitionRequest,
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    return await complete_run(attempt_id, request, current_user)
+
+
+@attempts_router.post("/{attempt_id}/cancel", response_model=ProjectRunResponse)
+async def cancel_attempt(
+    attempt_id: str,
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    return await cancel_run(attempt_id, current_user)
+
+
+@attempts_router.get("/{attempt_id}/nodes", response_model=list[ExecutionAttemptNodeReadModel])
+async def list_attempt_nodes(
+    attempt_id: str,
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    return await list_run_nodes(attempt_id, current_user)
+
+
+@attempts_router.get("/{attempt_id}/nodes/{node_id}", response_model=ExecutionAttemptNodeReadModel)
+async def get_attempt_node(
+    attempt_id: str,
+    node_id: str,
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    parsed_run_id = parse_uuid(attempt_id, "attempt_id")
+    parsed_node_id = parse_uuid(node_id, "node_id")
+    with get_db_session() as session:
+        run = _load_owned_run_or_404(session, run_id=parsed_run_id, current_user=current_user)
+        node = get_or_404(
+            session,
+            ExecutionNode,
+            ExecutionNode.node_id,
+            parsed_node_id,
+            "Execution node not found",
+        )
+        if node.run_id != run.run_id:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Execution node not found")
+        return _execution_node_to_read_model(node)
+
+
+@attempts_router.post(
+    "/{attempt_id}/nodes",
+    response_model=ExecutionAttemptNodeReadModel,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_attempt_node(
+    attempt_id: str,
+    request: ExecutionAttemptNodeCreateRequest,
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    parsed_run_id = parse_uuid(attempt_id, "attempt_id")
+    with get_db_session() as session:
+        run = _load_owned_run_or_404(session, run_id=parsed_run_id, current_user=current_user)
+        ensure_related_records(
+            session,
+            project_id=run.project_id,
+            task_id=request.project_task_id,
+        )
+        node = _create_execution_step_pair(
+            session,
+            run=run,
+            project_task_id=request.project_task_id,
+            name=request.name,
+            node_type=request.node_type,
+            status_value=request.status,
+            sequence_number=request.sequence_number,
+            payload=request.node_payload,
+        )
+        append_audit_event(
+            session,
+            action="execution-node.created",
+            resource_type="execution_node",
+            resource_id=node.node_id,
+            project_id=run.project_id,
+            run_id=run.run_id,
+            current_user=current_user,
+            payload=request.model_dump(),
+        )
+        return _execution_node_to_read_model(node)
+
+
+@attempts_router.patch(
+    "/{attempt_id}/nodes/{node_id}", response_model=ExecutionAttemptNodeReadModel
+)
+async def update_attempt_node(
+    attempt_id: str,
+    node_id: str,
+    request: ExecutionAttemptNodeUpdateRequest,
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    parsed_run_id = parse_uuid(attempt_id, "attempt_id")
+    parsed_node_id = parse_uuid(node_id, "node_id")
+    with get_db_session() as session:
+        run = _load_owned_run_or_404(session, run_id=parsed_run_id, current_user=current_user)
+        node = get_or_404(session, ExecutionNode, ExecutionNode.node_id, parsed_node_id, "Execution node not found")
+        if node.run_id != run.run_id:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Execution node not found")
+        ensure_related_records(session, project_id=run.project_id, task_id=request.project_task_id)
+        node = _update_execution_node_and_sync_step(session, node=node, request=request)
+        append_audit_event(
+            session,
+            action="execution-node.updated",
+            resource_type="execution_node",
+            resource_id=node.node_id,
+            project_id=run.project_id,
+            run_id=run.run_id,
+            current_user=current_user,
+            payload=request.model_dump(exclude_none=True),
+        )
+        reconcile_run_state(session, run=run)
+        return _execution_node_to_read_model(node)
+
+
+@attempts_router.post(
+    "/{attempt_id}/nodes/{node_id}/complete", response_model=ExecutionAttemptNodeReadModel
+)
+async def complete_attempt_node(
+    attempt_id: str,
+    node_id: str,
+    request: ExecutionAttemptNodeStatusRequest,
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    parsed_run_id = parse_uuid(attempt_id, "attempt_id")
+    parsed_node_id = parse_uuid(node_id, "node_id")
+    with get_db_session() as session:
+        run = _load_owned_run_or_404(session, run_id=parsed_run_id, current_user=current_user)
+        node = get_or_404(session, ExecutionNode, ExecutionNode.node_id, parsed_node_id, "Execution node not found")
+        if node.run_id != run.run_id:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Execution node not found")
+        node = _complete_execution_node_and_sync_step(session, node=node, request=request)
+        append_audit_event(
+            session,
+            action="execution-node.completed",
+            resource_type="execution_node",
+            resource_id=node.node_id,
+            project_id=run.project_id,
+            run_id=run.run_id,
+            current_user=current_user,
+            payload=request.model_dump(),
+        )
+        reconcile_run_state(session, run=run)
+        return _execution_node_to_read_model(node)
+
+
+@attempts_router.get(
+    "/{attempt_id}/runtime-sessions", response_model=list[RuntimeSessionReadModel]
+)
+async def list_attempt_runtime_sessions(
+    attempt_id: str,
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    return await list_run_runtime_sessions(attempt_id, current_user)
+
+
 @runs_router.patch("/{run_id}", response_model=ProjectRunResponse)
 async def update_run(
     run_id: str,
@@ -1251,6 +2438,20 @@ async def schedule_run(
         run = get_or_404(session, ProjectRun, ProjectRun.run_id, parsed_run_id, "Run not found")
         if str(run.requested_by_user_id) != str(current_user.user_id):
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Run not found")
+        tasks = (
+            session.query(ProjectTask)
+            .filter(ProjectTask.run_id == parsed_run_id)
+            .order_by(ProjectTask.updated_at.desc())
+            .all()
+        )
+        for task in tasks:
+            readiness = compute_task_readiness(session, project_task_id=task.project_task_id)
+            if not readiness["ready"]:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail=summarize_task_blockers(readiness)
+                    or "Task dependencies are not satisfied",
+                )
     scheduling_result = await schedule_run_after_launch(
         run_id=parsed_run_id, current_user=current_user
     )
@@ -1270,6 +2471,20 @@ async def start_run(run_id: str, current_user: CurrentUser = Depends(get_current
     parsed_run_id = parse_uuid(run_id, "run_id")
     with get_db_session() as session:
         run = get_or_404(session, ProjectRun, ProjectRun.run_id, parsed_run_id, "Run not found")
+        tasks = (
+            session.query(ProjectTask)
+            .filter(ProjectTask.run_id == parsed_run_id)
+            .order_by(ProjectTask.updated_at.desc())
+            .all()
+        )
+        for task in tasks:
+            readiness = compute_task_readiness(session, project_task_id=task.project_task_id)
+            if not readiness["ready"]:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail=summarize_task_blockers(readiness)
+                    or "Task dependencies are not satisfied",
+                )
         run.status = "running"
         run.error_message = None
         run.completed_at = None
@@ -1354,183 +2569,6 @@ async def delete_run(run_id: str, current_user: CurrentUser = Depends(get_curren
             current_user=current_user,
         )
         session.delete(run)
-        return Response(status_code=status.HTTP_204_NO_CONTENT)
-
-
-@run_steps_router.post(
-    "", response_model=ProjectRunStepResponse, status_code=status.HTTP_201_CREATED
-)
-async def create_run_step(
-    request: ProjectRunStepCreate,
-    current_user: CurrentUser = Depends(get_current_user),
-):
-    with get_db_session() as session:
-        ensure_related_records(
-            session,
-            run_id=request.run_id,
-            task_id=request.project_task_id,
-        )
-        step = ProjectRunStep(
-            run_id=request.run_id,
-            project_task_id=request.project_task_id,
-            name=request.name,
-            step_type=request.step_type,
-            status=request.status,
-            sequence_number=request.sequence_number,
-            input_payload=request.input_payload,
-        )
-        session.add(step)
-        flush_and_refresh(session, step)
-        run = get_or_404(session, ProjectRun, ProjectRun.run_id, step.run_id, "Run not found")
-        append_audit_event(
-            session,
-            action="run-step.created",
-            resource_type="project_run_step",
-            resource_id=step.run_step_id,
-            project_id=run.project_id,
-            run_id=step.run_id,
-            current_user=current_user,
-        )
-        return step
-
-
-@run_steps_router.get("", response_model=list[ProjectRunStepResponse])
-async def list_run_steps(run_id: Optional[UUID] = None, _: CurrentUser = Depends(get_current_user)):
-    with get_db_session() as session:
-        query = session.query(ProjectRunStep)
-        if run_id:
-            query = query.filter(ProjectRunStep.run_id == run_id)
-        return query.order_by(ProjectRunStep.sequence_number.asc()).all()
-
-
-@run_steps_router.get("/{run_step_id}", response_model=ProjectRunStepResponse)
-async def get_run_step(run_step_id: str, _: CurrentUser = Depends(get_current_user)):
-    parsed_step_id = parse_uuid(run_step_id, "run_step_id")
-    with get_db_session() as session:
-        return get_or_404(
-            session,
-            ProjectRunStep,
-            ProjectRunStep.run_step_id,
-            parsed_step_id,
-            "Run step not found",
-        )
-
-
-@run_steps_router.patch("/{run_step_id}", response_model=ProjectRunStepResponse)
-async def update_run_step(
-    run_step_id: str,
-    request: ProjectRunStepUpdate,
-    current_user: CurrentUser = Depends(get_current_user),
-):
-    parsed_step_id = parse_uuid(run_step_id, "run_step_id")
-    with get_db_session() as session:
-        step = get_or_404(
-            session,
-            ProjectRunStep,
-            ProjectRunStep.run_step_id,
-            parsed_step_id,
-            "Run step not found",
-        )
-        ensure_related_records(
-            session,
-            run_id=step.run_id,
-            task_id=request.project_task_id,
-        )
-        apply_updates(
-            step,
-            request,
-            [
-                "project_task_id",
-                "name",
-                "step_type",
-                "status",
-                "sequence_number",
-                "input_payload",
-                "output_payload",
-                "error_message",
-            ],
-        )
-        flush_and_refresh(session, step)
-        run = get_or_404(session, ProjectRun, ProjectRun.run_id, step.run_id, "Run not found")
-        append_audit_event(
-            session,
-            action="run-step.updated",
-            resource_type="project_run_step",
-            resource_id=step.run_step_id,
-            project_id=run.project_id,
-            run_id=step.run_id,
-            current_user=current_user,
-            payload=request.model_dump(exclude_none=True),
-        )
-        reconcile_run_state(session, run_id=step.run_id)
-        return step
-
-
-@run_steps_router.post("/{run_step_id}/complete", response_model=ProjectRunStepResponse)
-async def complete_run_step(
-    run_step_id: str,
-    request: RunStepStatusRequest,
-    current_user: CurrentUser = Depends(get_current_user),
-):
-    parsed_step_id = parse_uuid(run_step_id, "run_step_id")
-    with get_db_session() as session:
-        step = get_or_404(
-            session,
-            ProjectRunStep,
-            ProjectRunStep.run_step_id,
-            parsed_step_id,
-            "Run step not found",
-        )
-        if step.started_at is None:
-            step.started_at = _utc_now()
-        step.completed_at = _utc_now()
-        step.status = request.status
-        step.output_payload = request.output_payload
-        step.error_message = request.error_message
-        flush_and_refresh(session, step)
-        run = get_or_404(session, ProjectRun, ProjectRun.run_id, step.run_id, "Run not found")
-        append_audit_event(
-            session,
-            action="run-step.completed",
-            resource_type="project_run_step",
-            resource_id=step.run_step_id,
-            project_id=run.project_id,
-            run_id=step.run_id,
-            current_user=current_user,
-            payload=request.model_dump(),
-        )
-        reconcile_run_state(session, run_id=step.run_id)
-        return step
-
-
-@run_steps_router.delete("/{run_step_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_run_step(
-    run_step_id: str,
-    current_user: CurrentUser = Depends(get_current_user),
-):
-    parsed_step_id = parse_uuid(run_step_id, "run_step_id")
-    with get_db_session() as session:
-        step = get_or_404(
-            session,
-            ProjectRunStep,
-            ProjectRunStep.run_step_id,
-            parsed_step_id,
-            "Run step not found",
-        )
-        run = get_or_404(session, ProjectRun, ProjectRun.run_id, step.run_id, "Run not found")
-        append_audit_event(
-            session,
-            action="run-step.deleted",
-            resource_type="project_run_step",
-            resource_id=step.run_step_id,
-            project_id=run.project_id,
-            run_id=step.run_id,
-            current_user=current_user,
-        )
-        run_id = step.run_id
-        session.delete(step)
-        session.flush()
-        reconcile_run_state(session, run_id=run_id)
         return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 

@@ -198,7 +198,7 @@ class ExternalAgentDispatchResponse(ORMModel):
     binding_id: UUID
     project_id: Optional[UUID]
     run_id: Optional[UUID]
-    run_step_id: Optional[UUID]
+    node_id: Optional[UUID]
     source_type: str
     source_id: str
     runtime_type: str
