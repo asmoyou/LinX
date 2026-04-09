@@ -8,9 +8,15 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 from uuid import UUID
 
+from agent_framework.agent_conversation_runner import generate_conversation_title
 from agent_framework.persistent_conversations import is_default_conversation_title
 from database.connection import get_db_session
-from database.models import AgentConversation, AgentConversationMessage, AgentConversationSnapshot
+from database.models import (
+    Agent,
+    AgentConversation,
+    AgentConversationMessage,
+    AgentConversationSnapshot,
+)
 from object_storage.minio_client import get_minio_client
 
 
@@ -161,12 +167,32 @@ def persist_external_conversation_workspace_snapshot(
     return snapshot
 
 
-def persist_external_conversation_completion(
+def _derive_title_seed(payload: dict[str, Any]) -> str:
+    current_message = payload.get("current_message")
+    if isinstance(current_message, dict):
+        content = current_message.get("content")
+        if isinstance(content, str) and content.strip():
+            return content.strip()
+        if isinstance(content, list):
+            text_parts = []
+            for item in content:
+                if isinstance(item, dict) and str(item.get("type") or "").strip().lower() == "text":
+                    text_value = str(item.get("text") or "").strip()
+                    if text_value:
+                        text_parts.append(text_value)
+            if text_parts:
+                return "\n".join(text_parts).strip()
+    return ""
+
+
+async def persist_external_conversation_completion(
     *,
     conversation_id: UUID,
+    request_payload: Optional[dict[str, Any]] = None,
     result_payload: Optional[dict[str, Any]] = None,
-) -> AgentConversationMessage | None:
+) -> tuple[AgentConversationMessage | None, str | None]:
     payload = dict(result_payload or {})
+    request_map = dict(request_payload or {})
     assistant_text = str(
         payload.get("assistant_message")
         or payload.get("final_output")
@@ -174,7 +200,7 @@ def persist_external_conversation_completion(
         or ""
     ).strip()
     if not assistant_text:
-        return None
+        return None, None
 
     content_json: dict[str, Any] = {}
     if isinstance(payload.get("usage"), dict) and payload["usage"]:
@@ -191,7 +217,7 @@ def persist_external_conversation_completion(
             .first()
         )
         if conversation is None:
-            return None
+            return None, None
 
         message = AgentConversationMessage(
             conversation_id=conversation_id,
@@ -205,9 +231,28 @@ def persist_external_conversation_completion(
         now = datetime.now(timezone.utc)
         conversation.last_message_at = now
         conversation.updated_at = now
-        title = str(payload.get("conversation_title") or "").strip()
-        if title and is_default_conversation_title(str(conversation.title or "")):
-            conversation.title = title[:255]
+        generated_title: str | None = None
+        if is_default_conversation_title(str(conversation.title or "")):
+            title = str(payload.get("conversation_title") or "").strip()
+            if not title:
+                agent = (
+                    session.query(Agent)
+                    .filter(Agent.agent_id == conversation.agent_id)
+                    .first()
+                )
+                title_seed = _derive_title_seed(request_map) or "[Attached files]"
+                if agent is not None and assistant_text:
+                    try:
+                        title = await generate_conversation_title(
+                            agent_info=agent,
+                            user_message=title_seed,
+                            assistant_message=assistant_text,
+                        )
+                    except Exception:
+                        title = ""
+            if title:
+                generated_title = title[:255]
+                conversation.title = generated_title
         session.commit()
         session.refresh(message)
-        return message
+        return message, generated_title

@@ -719,10 +719,21 @@ async def complete_external_dispatch(
             raw_conversation_id = str((dispatch.request_payload or {}).get("conversation_id") or "").strip()
             if raw_conversation_id:
                 with contextlib.suppress(ValueError):
-                    persist_external_conversation_completion(
+                    _message_row, generated_title = await persist_external_conversation_completion(
                         conversation_id=UUID(raw_conversation_id),
+                        request_payload=dict(dispatch.request_payload or {}),
                         result_payload=dispatch.result_payload,
                     )
+                    if generated_title:
+                        service.append_dispatch_event(
+                            dispatch=dispatch,
+                            event_type="conversation_title",
+                            payload={
+                                "type": "conversation_title",
+                                "conversation_id": raw_conversation_id,
+                                "title": generated_title,
+                            },
+                        )
         return ExternalAgentDispatchResponse.model_validate(dispatch)
 
 
