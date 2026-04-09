@@ -20,6 +20,7 @@ from database.project_execution_models import (
     ProjectRunStep,
     ProjectTask,
 )
+from project_execution.execution_nodes import create_or_update_execution_node_from_step
 from project_execution.service import flush_and_refresh, reconcile_run_state, retire_ephemeral_run_agents
 from shared.secret_crypto import sha256_text
 
@@ -96,6 +97,27 @@ class ExternalRuntimeService:
         return datetime.now(timezone.utc)
 
     @staticmethod
+    def _parse_version(value: Optional[str]) -> tuple[int, ...]:
+        raw = str(value or "").strip()
+        if not raw:
+            return ()
+        parts: list[int] = []
+        for chunk in raw.split("."):
+            try:
+                parts.append(int(chunk))
+            except ValueError:
+                break
+        return tuple(parts)
+
+    @classmethod
+    def _is_version_less(cls, value: Optional[str], baseline: str) -> bool:
+        parsed_value = cls._parse_version(value)
+        parsed_baseline = cls._parse_version(baseline)
+        if not parsed_value:
+            return True
+        return parsed_value < parsed_baseline
+
+    @staticmethod
     def is_external_runtime_type(runtime_type: Optional[str]) -> bool:
         return str(runtime_type or "").strip() in EXTERNAL_RUNTIME_TYPES
 
@@ -119,6 +141,9 @@ class ExternalRuntimeService:
             .first()
         )
         if profile is not None:
+            if self._is_version_less(profile.desired_version, CURRENT_EXTERNAL_RUNTIME_VERSION):
+                profile.desired_version = CURRENT_EXTERNAL_RUNTIME_VERSION
+                return flush_and_refresh(self.session, profile)
             return profile
         profile = ExternalAgentProfile(agent_id=agent_id, desired_version=CURRENT_EXTERNAL_RUNTIME_VERSION)
         self.session.add(profile)
@@ -167,6 +192,14 @@ class ExternalRuntimeService:
             self.session.query(ExternalAgentBinding)
             .filter(ExternalAgentBinding.agent_id == agent_id)
             .filter(ExternalAgentBinding.revoked_at.is_(None))
+            .order_by(ExternalAgentBinding.bound_at.desc())
+            .first()
+        )
+
+    def get_latest_binding(self, *, agent_id: UUID) -> Optional[ExternalAgentBinding]:
+        return (
+            self.session.query(ExternalAgentBinding)
+            .filter(ExternalAgentBinding.agent_id == agent_id)
             .order_by(ExternalAgentBinding.bound_at.desc())
             .first()
         )
@@ -233,7 +266,10 @@ class ExternalRuntimeService:
         last_error_message = binding.last_error_message
         if effective_status == "upgrade_required":
             last_error_message = last_error_message or compatibility_message
-        update_available = bool(binding.current_version and desired_version and binding.current_version != desired_version)
+        update_available = (
+            bool(binding.current_version and desired_version)
+            and self._is_version_less(binding.current_version, desired_version)
+        )
         local_status_url = None
         local_status_port = None
         binding_metadata = dict(binding.binding_metadata or {})
@@ -376,21 +412,23 @@ class ExternalRuntimeService:
             raise ExternalRuntimeConflictError("external_agent_already_bound")
         self.consume_install_token(agent_id=agent_id, raw_token=install_code)
         raw_machine_token = f"lxem_{secrets.token_urlsafe(32)}"
-        binding = ExternalAgentBinding(
-            agent_id=agent_id,
-            host_name=str(host_name or "").strip() or None,
-            host_os=str(host_os or "").strip().lower() or None,
-            host_arch=str(host_arch or "").strip() or None,
-            host_fingerprint=str(host_fingerprint or "").strip() or None,
-            machine_token_hash=sha256_text(raw_machine_token),
-            machine_token_prefix=raw_machine_token[:16],
-            status="offline",
-            current_version=current_version or CURRENT_EXTERNAL_RUNTIME_VERSION,
-            last_seen_at=None,
-            bound_at=self.utc_now(),
-            binding_metadata=metadata or {},
-        )
-        self.session.add(binding)
+        binding = self.get_latest_binding(agent_id=agent_id)
+        if binding is None:
+            binding = ExternalAgentBinding(agent_id=agent_id)
+            self.session.add(binding)
+        binding.host_name = str(host_name or "").strip() or None
+        binding.host_os = str(host_os or "").strip().lower() or None
+        binding.host_arch = str(host_arch or "").strip() or None
+        binding.host_fingerprint = str(host_fingerprint or "").strip() or None
+        binding.machine_token_hash = sha256_text(raw_machine_token)
+        binding.machine_token_prefix = raw_machine_token[:16]
+        binding.status = "offline"
+        binding.current_version = current_version or CURRENT_EXTERNAL_RUNTIME_VERSION
+        binding.last_seen_at = None
+        binding.bound_at = self.utc_now()
+        binding.revoked_at = None
+        binding.last_error_message = None
+        binding.binding_metadata = metadata or {}
         binding = flush_and_refresh(self.session, binding)
         profile = self.get_or_create_profile(agent_id=agent_id)
         return binding, raw_machine_token, profile
@@ -593,6 +631,8 @@ class ExternalRuntimeService:
             step.status = "assigned"
             step.output_payload = {**(step.output_payload or {}), **(result_payload or {})}
             flush_and_refresh(self.session, step)
+            if run is not None:
+                create_or_update_execution_node_from_step(self.session, run=run, step=step)
         if task is not None:
             task.status = "assigned"
             task.error_message = None
@@ -619,6 +659,8 @@ class ExternalRuntimeService:
             if step.started_at is None:
                 step.started_at = self.utc_now()
             flush_and_refresh(self.session, step)
+            if run is not None:
+                create_or_update_execution_node_from_step(self.session, run=run, step=step)
         if task is not None:
             task.status = normalized_status
             task.error_message = error_message
@@ -645,6 +687,8 @@ class ExternalRuntimeService:
                 step.started_at = dispatch.started_at
             step.output_payload = {**(step.output_payload or {}), **(result_payload or {})}
             flush_and_refresh(self.session, step)
+            if run is not None:
+                create_or_update_execution_node_from_step(self.session, run=run, step=step)
         if task is not None:
             task.output_payload = {**(task.output_payload or {}), **(result_payload or {})}
             flush_and_refresh(self.session, task)
@@ -667,6 +711,8 @@ class ExternalRuntimeService:
             step.error_message = dispatch.error_message
             step.output_payload = {**(step.output_payload or {}), **(result_payload or {})}
             flush_and_refresh(self.session, step)
+            if run is not None:
+                create_or_update_execution_node_from_step(self.session, run=run, step=step)
         if task is not None:
             task.status = "failed"
             task.error_message = dispatch.error_message

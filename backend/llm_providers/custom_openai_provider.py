@@ -284,10 +284,42 @@ class CustomOpenAIChat(BaseChatModel):
             if isinstance(msg, HumanMessage):
                 result.append({"role": "user", "content": msg.content})
             elif isinstance(msg, AIMessage):
-                payload: Dict[str, Any] = {"role": "assistant", "content": msg.content}
                 tool_calls = getattr(msg, "tool_calls", None) or []
+                content_value = msg.content
+                if tool_calls and (content_value == "" or content_value is None):
+                    content_value = None
+                payload: Dict[str, Any] = {"role": "assistant", "content": content_value}
                 if tool_calls:
-                    payload["tool_calls"] = tool_calls
+                    normalized_tool_calls: List[Dict[str, Any]] = []
+                    for tool_call in tool_calls:
+                        if not isinstance(tool_call, dict):
+                            continue
+                        tool_name = str(
+                            tool_call.get("name")
+                            or ((tool_call.get("function") or {}).get("name"))
+                            or ""
+                        ).strip()
+                        raw_args = (
+                            tool_call.get("args")
+                            or tool_call.get("arguments")
+                            or ((tool_call.get("function") or {}).get("arguments"))
+                            or {}
+                        )
+                        if isinstance(raw_args, str):
+                            arguments = raw_args
+                        else:
+                            arguments = json.dumps(raw_args, ensure_ascii=False)
+                        normalized_tool_calls.append(
+                            {
+                                "id": str(tool_call.get("id") or ""),
+                                "type": "function",
+                                "function": {
+                                    "name": tool_name,
+                                    "arguments": arguments,
+                                },
+                            }
+                        )
+                    payload["tool_calls"] = normalized_tool_calls
                 result.append(payload)
             elif isinstance(msg, SystemMessage):
                 result.append({"role": "system", "content": msg.content})

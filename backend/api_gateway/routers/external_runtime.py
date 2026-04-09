@@ -320,10 +320,10 @@ async def unbind_external_runtime(
     agent_id: str,
     current_user: CurrentUser = Depends(get_current_user),
 ):
-    with get_db_session() as session:
-        agent = _assert_external_agent_for_user(session=session, agent_id=agent_id, current_user=current_user)
-        ExternalRuntimeService(session).unbind_agent(agent_id=agent.agent_id)
-        return {"success": True, "agent_id": str(agent.agent_id)}
+    raise HTTPException(
+        status_code=status.HTTP_410_GONE,
+        detail="Use Runtime Host uninstall instead of direct unbind.",
+    )
 
 
 @host_router.post("/external-runtime/self-unregister", status_code=status.HTTP_200_OK)
@@ -456,7 +456,7 @@ async def proxy_external_runtime_llm_chat(
             max_tokens=payload.max_tokens,
         )
         runnable = (
-            llm.bind_tools(payload.tools, tool_choice="any")
+            llm.bind_tools(payload.tools)
             if payload.tools
             else llm
         )

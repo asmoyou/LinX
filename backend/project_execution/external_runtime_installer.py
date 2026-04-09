@@ -289,6 +289,7 @@ def render_install_sh(*, agent_id: str, base_url: str, target: str, code: str) -
             "heartbeat_interval_seconds": bootstrap.get("heartbeat_interval_seconds", 20),
             "dispatch_poll_interval_seconds": bootstrap.get("dispatch_poll_interval_seconds", 25),
             "python_executable": python_executable,
+            "auto_update_enabled": True,
         }}
         path = Path(config_path)
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -693,6 +694,7 @@ def render_install_ps1(*, agent_id: str, base_url: str, target: str, code: str) 
           desired_version = $Bootstrap.desired_version
           heartbeat_interval_seconds = $Bootstrap.heartbeat_interval_seconds
           dispatch_poll_interval_seconds = $Bootstrap.dispatch_poll_interval_seconds
+          auto_update_enabled = $true
         }} | ConvertTo-Json -Depth 6
         Set-Content -Path $ConfigPath -Value $Config -Encoding UTF8
 

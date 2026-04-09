@@ -141,7 +141,6 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
   const [maintenanceCommand, setMaintenanceCommand] = useState("");
   const [maintenanceCommandLabel, setMaintenanceCommandLabel] = useState("");
   const [isGeneratingInstallCommand, setIsGeneratingInstallCommand] = useState(false);
-  const [isGeneratingUpdateCommand, setIsGeneratingUpdateCommand] = useState(false);
   const [isGeneratingUninstallCommand, setIsGeneratingUninstallCommand] = useState(false);
   const [isRequestingRuntimeUpdate, setIsRequestingRuntimeUpdate] = useState(false);
   const [isRequestingRuntimeUninstall, setIsRequestingRuntimeUninstall] = useState(false);
@@ -738,22 +737,6 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
     }
   };
 
-  const copyUpdateCommand = async () => {
-    if (!agent?.id) return;
-    setIsGeneratingUpdateCommand(true);
-    try {
-      const response = await agentsApi.createExternalRuntimeUpdateCommand(agent.id, externalRuntimeTarget);
-      setMaintenanceCommand(response.command);
-      setMaintenanceCommandLabel(
-        t("agent.externalMaintenanceCommandLabelUpdate", "Update command"),
-      );
-      await navigator.clipboard.writeText(response.command);
-      toast.success(t("agent.externalUpdateCommandCopied", "Update command copied"));
-    } finally {
-      setIsGeneratingUpdateCommand(false);
-    }
-  };
-
   const copyUninstallCommand = async () => {
     if (!agent?.id) return;
     setIsGeneratingUninstallCommand(true);
@@ -823,13 +806,6 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
     } finally {
       setIsRequestingRuntimeUninstall(false);
     }
-  };
-
-  const handleUnbindExternalRuntime = async () => {
-    if (!agent?.id) return;
-    await agentsApi.unbindExternalRuntime(agent.id);
-    toast.success(t("agent.externalRuntimeUnbound", "Host unbound"));
-    await loadExternalRuntimeOverview();
   };
 
   const handleSaveExternalRuntimeProfile = async () => {
@@ -1379,18 +1355,10 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
                               ? t("agent.loading", "Loading...")
                               : t("agent.requestRuntimeUninstall", "Uninstall Now")}
                           </button>
-                          <button type="button" onClick={() => void copyUpdateCommand()} disabled={!externalRuntimeOverview?.state.bound || isGeneratingUpdateCommand} className="rounded-full border border-zinc-300 px-4 py-2 text-sm font-semibold text-zinc-700 transition hover:bg-zinc-100 disabled:opacity-50 dark:border-zinc-700 dark:text-zinc-200 dark:hover:bg-zinc-800">
-                            {isGeneratingUpdateCommand
-                              ? t("agent.loading", "Loading...")
-                              : t("agent.copyUpdateCommand", "Copy Update Command")}
-                          </button>
                           <button type="button" onClick={() => void copyUninstallCommand()} disabled={!externalRuntimeOverview?.state.bound || isGeneratingUninstallCommand} className="rounded-full border border-amber-300 px-4 py-2 text-sm font-semibold text-amber-700 transition hover:bg-amber-50 disabled:opacity-50 dark:border-amber-900/40 dark:text-amber-300 dark:hover:bg-amber-950/30">
                             {isGeneratingUninstallCommand
                               ? t("agent.loading", "Loading...")
                               : t("agent.copyUninstallCommand", "Copy Uninstall Command")}
-                          </button>
-                          <button type="button" onClick={() => void handleUnbindExternalRuntime()} disabled={!externalRuntimeOverview?.state.bound} className="rounded-full border border-rose-300 px-4 py-2 text-sm font-semibold text-rose-600 transition hover:bg-rose-50 disabled:opacity-50 dark:border-rose-900/40 dark:text-rose-300 dark:hover:bg-rose-950/30">
-                            {t("agent.unbindExternalRuntime", "Unbind Host")}
                           </button>
                         </div>
                       </div>
@@ -1412,6 +1380,12 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
                           })}
                         </p>
                       </div>
+                      <p className="mt-3 text-xs text-zinc-500 dark:text-zinc-400">
+                        {t(
+                          "agent.externalRuntimeAutoUpdateHint",
+                          "Runtime Hosts now update automatically to the desired version. Use Update Now only when you want to trigger it immediately.",
+                        )}
+                      </p>
                       {(externalRuntimeOverview?.state.lastDispatchAction || externalRuntimeOverview?.state.lastDispatchStatus) ? (
                         <div className="mt-4 rounded-xl border border-zinc-200 bg-zinc-50/80 p-4 dark:border-zinc-800 dark:bg-zinc-950/50">
                           <p className="text-xs font-semibold uppercase tracking-[0.14em] text-zinc-500 dark:text-zinc-400">

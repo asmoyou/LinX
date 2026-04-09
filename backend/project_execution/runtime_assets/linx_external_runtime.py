@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import argparse
 import base64
+import ctypes
+import ctypes.util
 import hashlib
 import html
 import io
@@ -10,6 +12,7 @@ import json
 import os
 import platform
 import shutil
+import shlex
 import socket
 import subprocess
 import sys
@@ -35,6 +38,89 @@ class FatalRuntimeStop(RuntimeError):
     pass
 
 
+def log_runtime(message: str) -> None:
+    timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
+    print(f"[{timestamp}] [linx-external-runtime] {message}", file=sys.stderr, flush=True)
+
+
+def configure_process_identity(agent_id: str | None = None) -> None:
+    desired_name = "linx-external-runtime"
+    if agent_id:
+        desired_name = f"linx-agent-{str(agent_id)[:8]}"
+    try:
+        libc_path = ctypes.util.find_library("c")
+        if not libc_path:
+            return
+        libc = ctypes.CDLL(libc_path)
+        if normalize_os_name() == "darwin" and hasattr(libc, "setprogname"):
+            libc.setprogname(ctypes.c_char_p(desired_name.encode("utf-8")))
+            return
+        if normalize_os_name() == "linux" and hasattr(libc, "prctl"):
+            PR_SET_NAME = 15
+            libc.prctl(PR_SET_NAME, ctypes.c_char_p(desired_name[:15].encode("utf-8")), 0, 0, 0)
+    except Exception:
+        return
+
+
+def schedule_self_uninstall_cleanup(config: dict[str, Any]) -> None:
+    host_os = normalize_os_name(str(config.get("host_os") or ""))
+    agent_id = str(config.get("agent_id") or "").strip()
+    runtime_home = Path(str(config.get("runtime_home") or "")).expanduser().resolve()
+    if not agent_id or not str(runtime_home):
+        return
+
+    current_pid = os.getpid()
+    if host_os in {"darwin", "linux"}:
+        if host_os == "darwin":
+            label = f"com.linx.external-runtime.{agent_id}"
+            plist_path = Path.home() / "Library" / "LaunchAgents" / f"{label}.plist"
+            cleanup_script = f"""
+pid={current_pid}
+while kill -0 "$pid" 2>/dev/null; do sleep 1; done
+launchctl bootout "gui/{os.getuid()}/{label}" 2>/dev/null || launchctl unload {shlex.quote(str(plist_path))} 2>/dev/null || true
+rm -f {shlex.quote(str(plist_path))}
+rm -rf {shlex.quote(str(runtime_home))}
+"""
+        else:
+            service_name = f"linx-external-runtime-{agent_id}.service"
+            service_path = Path.home() / ".config" / "systemd" / "user" / service_name
+            cleanup_script = f"""
+pid={current_pid}
+while kill -0 "$pid" 2>/dev/null; do sleep 1; done
+systemctl --user disable --now {shlex.quote(service_name)} 2>/dev/null || true
+rm -f {shlex.quote(str(service_path))}
+systemctl --user daemon-reload 2>/dev/null || true
+rm -rf {shlex.quote(str(runtime_home))}
+"""
+        subprocess.Popen(
+            ["/bin/sh", "-c", cleanup_script],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        return
+
+    if host_os == "windows":
+        task_name = f"LinXExternalRuntime-{agent_id}"
+        powershell_script = (
+            f"$PidToWait={current_pid};"
+            f"while (Get-Process -Id $PidToWait -ErrorAction SilentlyContinue) {{ Start-Sleep -Seconds 1 }};"
+            f"Unregister-ScheduledTask -TaskName '{task_name}' -Confirm:$false -ErrorAction SilentlyContinue | Out-Null;"
+            f"if (Test-Path '{str(runtime_home)}') {{ Remove-Item -Recurse -Force '{str(runtime_home)}' }}"
+        )
+        creationflags = int(getattr(subprocess, "DETACHED_PROCESS", 0)) | int(
+            getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+        )
+        subprocess.Popen(
+            ["powershell", "-NoProfile", "-Command", powershell_script],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL,
+            creationflags=creationflags,
+        )
+
+
 def build_runtime_status_payload(config_path: Path, config: dict[str, Any]) -> dict[str, Any]:
     state_path = state_path_for(config_path)
     state = {}
@@ -47,6 +133,7 @@ def build_runtime_status_payload(config_path: Path, config: dict[str, Any]) -> d
         "agent_id": config.get("agent_id"),
         "runtime_version": config.get("runtime_version"),
         "desired_version": config.get("desired_version"),
+        "auto_update_enabled": bool(config.get("auto_update_enabled", True)),
         "host_name": config.get("host_name"),
         "host_os": config.get("host_os"),
         "host_arch": config.get("host_arch"),
@@ -679,6 +766,7 @@ def run_native_agent_loop(
 ) -> tuple[bool, dict[str, Any], str | None, None]:
     dispatch_id = str(dispatch.get("dispatch_id") or "dispatch")
     workspace_root.mkdir(parents=True, exist_ok=True)
+    log_runtime(f"starting native agent loop for dispatch {dispatch_id} in {workspace_root}")
     messages = build_runtime_messages(
         system_prompt=system_prompt,
         history=history,
@@ -699,13 +787,25 @@ def run_native_agent_loop(
             event_type="thinking",
             payload={"type": "thinking", "content": f"Runtime Host reasoning round {iteration}."},
         )
-        llm_result = call_llm_proxy(
-            config=config,
-            messages=messages,
-            tools=tools,
-            temperature=temperature,
-            max_tokens=max_tokens,
-        )
+        try:
+            llm_result = call_llm_proxy(
+                config=config,
+                messages=messages,
+                tools=tools,
+                temperature=temperature,
+                max_tokens=max_tokens,
+            )
+        except Exception as exc:
+            return (
+                False,
+                {
+                    "assistant_message": "",
+                    "rounds": rounds,
+                    "workspace_root": str(workspace_root),
+                },
+                f"Control-plane LLM proxy failed: {exc}",
+                None,
+            )
         content = str(llm_result.get("content") or "")
         tool_calls = list(llm_result.get("tool_calls") or [])
         usage = dict(llm_result.get("usage") or {})
@@ -815,6 +915,7 @@ def execute_dispatch(
     Literal["reexec", "unregister_and_shutdown"] | None,
 ]:
     request_payload = dispatch.get("request_payload") or {}
+    dispatch_id = str(dispatch.get("dispatch_id") or "dispatch")
     control_action = str(request_payload.get("control_action") or "").strip().lower()
     if control_action == "update_runtime":
         ok, result_payload, error_message = perform_self_update(
@@ -828,13 +929,13 @@ def execute_dispatch(
             {
                 "mode": "uninstall_runtime",
                 "restart_required": False,
-                "cleanup_required": True,
+                "cleanup_required": False,
+                "cleanup_mode": "automatic",
             },
             None,
             "unregister_and_shutdown",
         )
     source_type = str(dispatch.get("source_type") or "").strip().lower()
-    dispatch_id = str(dispatch.get("dispatch_id") or "dispatch")
     if source_type == "conversation_turn":
         conversation_id = str(request_payload.get("conversation_id") or "").strip() or dispatch_id
         workspace_root = (
@@ -1178,6 +1279,7 @@ def update_check(config: dict[str, Any]) -> dict[str, Any] | None:
     url = f"{config['control_plane']}/api/v1/external-runtime/update-check"
     _status, data = request_json(
         url=url,
+        method="POST",
         request_headers=headers(str(config["machine_token"])),
         timeout=30,
     )
@@ -1217,8 +1319,12 @@ def run() -> int:
     args = parse_args()
     config_path = Path(args.config).expanduser().resolve()
     config = load_config(config_path)
+    configure_process_identity(str(config.get("agent_id") or ""))
     if not config.get("python_executable"):
         config["python_executable"] = sys.executable
+    if "auto_update_enabled" not in config:
+        config["auto_update_enabled"] = True
+    log_runtime(f"starting runtime for agent {config.get('agent_id')}")
     server, local_status_url, local_status_port = start_local_status_server(config_path, config)
     save_json(config_path, config)
     write_state(
@@ -1253,6 +1359,35 @@ def run() -> int:
                     "local_status_port": local_status_port,
                 },
             )
+            if (
+                bool((heartbeat_response or {}).get("update_available"))
+                and bool(config.get("auto_update_enabled", True))
+            ):
+                log_runtime("automatic runtime update triggered from heartbeat response")
+                ok, result_payload, error_message = perform_self_update(
+                    config=config,
+                    config_path=config_path,
+                )
+                if ok:
+                    merge_state(
+                        config_path,
+                        {
+                            "status": "updating",
+                            "last_dispatch_action": "auto_update_runtime",
+                            "last_dispatch_status": "completed",
+                            "last_dispatch_error_message": None,
+                        },
+                    )
+                    os.execv(
+                        str(config.get("python_executable") or sys.executable),
+                        [
+                            str(config.get("python_executable") or sys.executable),
+                            str(Path(sys.argv[0]).resolve()),
+                            "--config",
+                            str(config_path),
+                        ],
+                    )
+                log_runtime(f"automatic runtime update failed: {error_message}")
             if time.time() - last_update_check >= update_check_interval:
                 last_update_check = time.time()
                 update_response = update_check(config) or {}
@@ -1267,11 +1402,41 @@ def run() -> int:
                         "local_status_port": local_status_port,
                     },
                 )
+                if (
+                    bool(update_response.get("update_available"))
+                    and bool(config.get("auto_update_enabled", True))
+                ):
+                    log_runtime("automatic runtime update triggered from scheduled update check")
+                    ok, result_payload, error_message = perform_self_update(
+                        config=config,
+                        config_path=config_path,
+                    )
+                    if ok:
+                        merge_state(
+                            config_path,
+                            {
+                                "status": "updating",
+                                "last_dispatch_action": "auto_update_runtime",
+                                "last_dispatch_status": "completed",
+                                "last_dispatch_error_message": None,
+                            },
+                        )
+                        os.execv(
+                            str(config.get("python_executable") or sys.executable),
+                            [
+                                str(config.get("python_executable") or sys.executable),
+                                str(Path(sys.argv[0]).resolve()),
+                                "--config",
+                                str(config_path),
+                            ],
+                        )
+                    log_runtime(f"automatic runtime update failed: {error_message}")
             dispatch = next_dispatch(config)
             if dispatch is None:
                 time.sleep(int(config.get("dispatch_poll_interval_seconds") or 25))
                 continue
             dispatch_id = str(dispatch.get("dispatch_id"))
+            log_runtime(f"received dispatch {dispatch_id} ({dispatch.get('source_type')})")
             request_payload = dispatch.get("request_payload") or {}
             merge_state(
                 config_path,
@@ -1321,6 +1486,7 @@ def run() -> int:
                 config_path=config_path,
             )
             if ok:
+                log_runtime(f"dispatch {dispatch_id} completed successfully")
                 post_dispatch_progress(
                     config=config,
                     dispatch_id=dispatch_id,
@@ -1338,6 +1504,7 @@ def run() -> int:
                 config["last_dispatch_status"] = "completed"
                 config["last_dispatch_error_message"] = None
                 if followup_action == "reexec":
+                    log_runtime("runtime update requested; re-execing process")
                     os.execv(
                         str(config.get("python_executable") or sys.executable),
                         [
@@ -1348,6 +1515,13 @@ def run() -> int:
                         ],
                     )
                 if followup_action == "unregister_and_shutdown":
+                    log_runtime(
+                        "runtime uninstall requested; unregistering, scheduling cleanup, and shutting down"
+                    )
+                    try:
+                        schedule_self_uninstall_cleanup(config)
+                    except Exception as exc:
+                        log_runtime(f"failed to schedule automatic cleanup: {exc}")
                     unregister_binding(config)
                     config["machine_token"] = ""
                     save_json(config_path, config)
@@ -1363,6 +1537,7 @@ def run() -> int:
                     server.shutdown()
                     return 0
             else:
+                log_runtime(f"dispatch {dispatch_id} failed: {error_message}")
                 post_dispatch_progress(
                     config=config,
                     dispatch_id=dispatch_id,
@@ -1384,6 +1559,7 @@ def run() -> int:
                 config["last_dispatch_status"] = "failed"
                 config["last_dispatch_error_message"] = error_message
         except FatalRuntimeStop as exc:
+            log_runtime(f"fatal stop: {exc}")
             merge_state(
                 config_path,
                 {
@@ -1397,6 +1573,7 @@ def run() -> int:
             server.shutdown()
             return 0
         except Exception as exc:  # pragma: no cover - defensive runtime loop
+            log_runtime(f"runtime loop error: {exc}")
             merge_state(
                 config_path,
                 {
