@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 from typing import Any
+from urllib.parse import urlparse
 from uuid import UUID
 
 from fastapi import HTTPException, Request
@@ -12,6 +13,8 @@ from fastapi import HTTPException, Request
 from database.models import AgentChannelPublication
 from shared.config import get_config
 from shared.secret_crypto import decrypt_text
+
+_LOOPBACK_HOSTS = {"localhost", "127.0.0.1", "0.0.0.0", "::1"}
 
 
 def load_publication_or_raise(session, publication_id: str) -> AgentChannelPublication:
@@ -111,14 +114,40 @@ def extract_feishu_message_from_long_connection_event(event: Any) -> dict[str, A
 
 
 def resolve_public_web_base_url(request: Request | None = None) -> str | None:
-    if request is not None:
-        return str(request.base_url).rstrip("/")
-
     env_base_url = str(
         os.getenv("LINX_PUBLIC_BASE_URL") or os.getenv("PUBLIC_BASE_URL") or ""
     ).strip()
     if env_base_url:
         return env_base_url.rstrip("/")
+
+    if request is not None:
+        request_base = str(request.base_url).rstrip("/")
+        try:
+            parsed_base = urlparse(request_base)
+            request_host = (parsed_base.hostname or "").strip().lower()
+            request_port = parsed_base.port
+        except Exception:
+            parsed_base = None
+            request_host = ""
+            request_port = None
+
+        if request_host in _LOOPBACK_HOSTS:
+            for header_name in ("origin", "referer"):
+                raw_header = str(request.headers.get(header_name) or "").strip()
+                if not raw_header:
+                    continue
+                parsed_header = urlparse(raw_header)
+                header_host = (parsed_header.hostname or "").strip()
+                if not header_host or header_host.lower() in _LOOPBACK_HOSTS:
+                    continue
+                scheme = parsed_base.scheme if parsed_base and parsed_base.scheme else (
+                    parsed_header.scheme or "http"
+                )
+                if request_port:
+                    return f"{scheme}://{header_host}:{request_port}"
+                return f"{scheme}://{header_host}"
+
+        return request_base
 
     origins = get_config().get("api.cors.origins", default=[]) or []
     if isinstance(origins, str):

@@ -102,12 +102,31 @@ vi.mock('@/api/skills', () => ({
 }));
 
 describe('AgentConfigModal external runtime wizard', () => {
+  const originalNavigatorPlatform = window.navigator.platform;
+  const originalNavigatorUserAgent = window.navigator.userAgent;
+
   beforeEach(() => {
     vi.clearAllMocks();
+    Object.defineProperty(window.navigator, 'platform', {
+      configurable: true,
+      value: 'Win32',
+    });
+    Object.defineProperty(window.navigator, 'userAgent', {
+      configurable: true,
+      value: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
+    });
   });
 
   afterEach(() => {
     cleanup();
+    Object.defineProperty(window.navigator, 'platform', {
+      configurable: true,
+      value: originalNavigatorPlatform,
+    });
+    Object.defineProperty(window.navigator, 'userAgent', {
+      configurable: true,
+      value: originalNavigatorUserAgent,
+    });
   });
 
   it('opens directly on the runtime guide for external agents', async () => {
@@ -147,6 +166,16 @@ describe('AgentConfigModal external runtime wizard', () => {
     expect(screen.getByText('Host Binding Status')).toBeInTheDocument();
     expect(
       screen.getByText('Optional Runtime Host access settings'),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText('Detected from this browser: Windows'),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: 'Windows' }),
+    ).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getByText('How to use this command')).toBeInTheDocument();
+    expect(
+      screen.getByText('Open PowerShell on the target host.'),
     ).toBeInTheDocument();
     expect(screen.getByText('Open Projects')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Update Now' })).toBeInTheDocument();

@@ -633,13 +633,21 @@ def render_install_ps1(*, agent_id: str, base_url: str, target: str, code: str) 
         }}
 
         function Get-PythonExecutable {{
-          $py = Get-Command py -ErrorAction SilentlyContinue
-          if ($py) {{
-            return @{{ Path = $py.Source; Arguments = "-3" }}
-          }}
           $python = Get-Command python -ErrorAction SilentlyContinue
           if ($python) {{
+            $pythonw = Join-Path (Split-Path $python.Source) "pythonw.exe"
+            if (Test-Path $pythonw) {{
+              return @{{ Path = $pythonw; Arguments = "" }}
+            }}
             return @{{ Path = $python.Source; Arguments = "" }}
+          }}
+          $py = Get-Command py -ErrorAction SilentlyContinue
+          if ($py) {{
+            $pyw = Join-Path (Split-Path $py.Source) "pyw.exe"
+            if (Test-Path $pyw) {{
+              return @{{ Path = $pyw; Arguments = "-3" }}
+            }}
+            return @{{ Path = $py.Source; Arguments = "-3" }}
           }}
           throw "Python 3 is required to install LinX external runtime."
         }}
@@ -696,7 +704,11 @@ def render_install_ps1(*, agent_id: str, base_url: str, target: str, code: str) 
           dispatch_poll_interval_seconds = $Bootstrap.dispatch_poll_interval_seconds
           auto_update_enabled = $true
         }} | ConvertTo-Json -Depth 6
-        Set-Content -Path $ConfigPath -Value $Config -Encoding UTF8
+        [System.IO.File]::WriteAllText(
+          $ConfigPath,
+          $Config,
+          [System.Text.UTF8Encoding]::new($false)
+        )
 
         $Python = Get-PythonExecutable
         $TaskName = "LinXExternalRuntime-$AgentId"
@@ -762,7 +774,11 @@ def render_update_ps1(*, agent_id: str, base_url: str, target: str) -> str:
         $Config = Get-Content $ConfigPath -Raw | ConvertFrom-Json
         $Config.runtime_version = $Manifest.version
         $Config.runtime_home = $RuntimeHome
-        $Config | ConvertTo-Json -Depth 6 | Set-Content -Path $ConfigPath -Encoding UTF8
+        [System.IO.File]::WriteAllText(
+          $ConfigPath,
+          ($Config | ConvertTo-Json -Depth 6),
+          [System.Text.UTF8Encoding]::new($false)
+        )
 
         $TaskName = "LinXExternalRuntime-$AgentId"
         Start-ScheduledTask -TaskName $TaskName

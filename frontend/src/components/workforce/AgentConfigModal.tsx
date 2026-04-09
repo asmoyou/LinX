@@ -31,6 +31,41 @@ import { ImageCropModal } from "@/components/common/ImageCropModal";
 import { LayoutModal } from "@/components/LayoutModal";
 import { getAgentKind } from "@/utils/agentPresentation";
 
+type ExternalRuntimeTarget = "linux" | "darwin" | "windows";
+
+const detectBrowserExternalRuntimeTarget = (): ExternalRuntimeTarget => {
+  if (typeof navigator === "undefined") {
+    return "linux";
+  }
+  const userAgentDataPlatform = (
+    navigator as Navigator & {
+      userAgentData?: {
+        platform?: string;
+      };
+    }
+  ).userAgentData?.platform;
+  const runtimeHint = [
+    userAgentDataPlatform,
+    navigator.platform,
+    navigator.userAgent,
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+  if (runtimeHint.includes("win")) {
+    return "windows";
+  }
+  if (
+    runtimeHint.includes("mac") ||
+    runtimeHint.includes("darwin") ||
+    runtimeHint.includes("iphone") ||
+    runtimeHint.includes("ipad")
+  ) {
+    return "darwin";
+  }
+  return "linux";
+};
+
 const resolveDefaultBindingMode = (
   skill: AgentSkillSummary,
 ): AgentSkillBindingMode => {
@@ -134,7 +169,11 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
   const [feishuError, setFeishuError] = useState<string | null>(null);
   const [externalRuntimeOverview, setExternalRuntimeOverview] = useState<ExternalRuntimeOverview | null>(null);
   const [isLoadingExternalRuntime, setIsLoadingExternalRuntime] = useState(false);
-  const [externalRuntimeTarget, setExternalRuntimeTarget] = useState<"linux" | "darwin" | "windows">("linux");
+  const [externalRuntimeTarget, setExternalRuntimeTarget] = useState<ExternalRuntimeTarget>(() =>
+    detectBrowserExternalRuntimeTarget(),
+  );
+  const [browserDetectedRuntimeTarget, setBrowserDetectedRuntimeTarget] =
+    useState<ExternalRuntimeTarget>(() => detectBrowserExternalRuntimeTarget());
   const [externalPathAllowlist, setExternalPathAllowlist] = useState("");
   const [installCommand, setInstallCommand] = useState("");
   const [installCommandExpiresAt, setInstallCommandExpiresAt] = useState<string | null>(null);
@@ -224,6 +263,15 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
       void loadExternalRuntimeOverview();
     }
   }, [isOpen, agent?.id, agentKind]);
+
+  useEffect(() => {
+    if (!isOpen || agentKind !== "external") {
+      return;
+    }
+    const detectedTarget = detectBrowserExternalRuntimeTarget();
+    setBrowserDetectedRuntimeTarget(detectedTarget);
+    setExternalRuntimeTarget(detectedTarget);
+  }, [agent?.id, agentKind, isOpen]);
 
   useEffect(() => {
     if (
@@ -885,6 +933,22 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
     }
   };
 
+  const getExternalRuntimeTargetLabel = (target: ExternalRuntimeTarget) => {
+    switch (target) {
+      case "windows":
+        return t("agent.externalRuntimeTargetWindows", "Windows");
+      case "darwin":
+        return t("agent.externalRuntimeTargetDarwin", "macOS");
+      default:
+        return t("agent.externalRuntimeTargetLinux", "Linux");
+    }
+  };
+
+  const getExternalRuntimeShellLabel = (target: ExternalRuntimeTarget) =>
+    target === "windows"
+      ? t("agent.externalRuntimeShellWindows", "PowerShell")
+      : t("agent.externalRuntimeShellUnix", "Terminal");
+
   const formatFeishuTimestamp = (value?: string | null) => {
     if (!value) {
       return "—";
@@ -1274,15 +1338,28 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
                       <p className="mt-1 text-sm text-zinc-600 dark:text-zinc-400">
                         {t("agent.externalRuntimeInstallDescription", "Pick the target OS, then copy and run the installer on the host machine.")}
                       </p>
+                      <div className="mt-3 inline-flex rounded-full border border-indigo-200 bg-indigo-50 px-3 py-1 text-xs font-semibold text-indigo-700 dark:border-indigo-900/50 dark:bg-indigo-950/40 dark:text-indigo-200">
+                        {t("agent.externalRuntimeAutoDetectedTarget", {
+                          target: getExternalRuntimeTargetLabel(browserDetectedRuntimeTarget),
+                          defaultValue: `Detected from this browser: ${getExternalRuntimeTargetLabel(browserDetectedRuntimeTarget)}`,
+                        })}
+                      </div>
+                      <p className="mt-2 text-xs text-zinc-500 dark:text-zinc-400">
+                        {t("agent.externalRuntimeTargetOverrideHint", {
+                          shell: getExternalRuntimeShellLabel(externalRuntimeTarget),
+                          defaultValue: `If the target host is not this machine, switch the OS first. ${getExternalRuntimeShellLabel(externalRuntimeTarget)} is the correct shell for the selected command.`,
+                        })}
+                      </p>
                       <div className="mt-4 flex items-center gap-2">
                         {(["linux", "darwin", "windows"] as const).map((target) => (
                           <button
                             key={target}
                             type="button"
                             onClick={() => setExternalRuntimeTarget(target)}
+                            aria-pressed={externalRuntimeTarget === target}
                             className={`rounded-full px-3 py-1 text-xs font-semibold transition ${externalRuntimeTarget === target ? "bg-indigo-600 text-white" : "bg-zinc-100 text-zinc-700 dark:bg-zinc-900 dark:text-zinc-200"}`}
                           >
-                            {target}
+                            {getExternalRuntimeTargetLabel(target)}
                           </button>
                         ))}
                       </div>
@@ -1314,6 +1391,49 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
                           className="mt-4 w-full rounded-xl border border-zinc-200 bg-zinc-50 px-4 py-3 text-sm text-zinc-900 outline-none dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100"
                         />
                       ) : null}
+                      <div className="mt-4 rounded-xl border border-zinc-200/80 bg-zinc-50/80 p-4 dark:border-zinc-800 dark:bg-zinc-950/50">
+                        <p className="text-xs font-semibold uppercase tracking-[0.14em] text-zinc-500 dark:text-zinc-400">
+                          {t("agent.externalRuntimeInstallGuideTitle", "How to use this command")}
+                        </p>
+                        <ol className="mt-3 list-decimal space-y-2 pl-5 text-sm text-zinc-700 dark:text-zinc-300">
+                          <li>
+                            {t("agent.externalRuntimeInstallGuideStepSelectOs", {
+                              target: getExternalRuntimeTargetLabel(externalRuntimeTarget),
+                              defaultValue: `Confirm the target host is ${getExternalRuntimeTargetLabel(externalRuntimeTarget)}. If not, switch the OS above first.`,
+                            })}
+                          </li>
+                          <li>
+                            {t(
+                              "agent.externalRuntimeInstallGuideStepCopy",
+                              "Click Copy Install Command.",
+                            )}
+                          </li>
+                          <li>
+                            {t("agent.externalRuntimeInstallGuideStepOpenShell", {
+                              shell: getExternalRuntimeShellLabel(externalRuntimeTarget),
+                              defaultValue: `Open ${getExternalRuntimeShellLabel(externalRuntimeTarget)} on the target host.`,
+                            })}
+                          </li>
+                          <li>
+                            {t(
+                              "agent.externalRuntimeInstallGuideStepPaste",
+                              "Paste the copied command exactly as shown, then press Enter.",
+                            )}
+                          </li>
+                          <li>
+                            {t(
+                              "agent.externalRuntimeInstallGuideStepWait",
+                              'Wait until you see a success message like "LinX external runtime installed...".',
+                            )}
+                          </li>
+                          <li>
+                            {t(
+                              "agent.externalRuntimeInstallGuideStepRefresh",
+                              "Come back here and click Refresh Status. When the host turns online, the external agent is ready.",
+                            )}
+                          </li>
+                        </ol>
+                      </div>
                     </div>
 
                     <div className="rounded-xl border border-zinc-200/80 bg-white/70 p-4 dark:border-zinc-800 dark:bg-zinc-950/40">

@@ -42,7 +42,11 @@ class FatalRuntimeStop(RuntimeError):
 def log_runtime(message: str) -> None:
     timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
     line = f"[{timestamp}] [linx-external-runtime] {message}"
-    print(line, file=sys.stderr, flush=True)
+    try:
+        if sys.stderr is not None:
+            print(line, file=sys.stderr, flush=True)
+    except Exception:
+        pass
     global _LOG_FILE_PATH
     if _LOG_FILE_PATH is not None:
         try:
@@ -250,7 +254,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def load_config(path: Path) -> dict[str, Any]:
-    return json.loads(path.read_text(encoding="utf-8"))
+    return json.loads(path.read_text(encoding="utf-8-sig"))
 
 
 def save_json(path: Path, payload: dict[str, Any]) -> None:
@@ -1328,10 +1332,10 @@ def merge_state(config_path: Path, patch: dict[str, Any]) -> None:
 def run() -> int:
     args = parse_args()
     config_path = Path(args.config).expanduser().resolve()
-    config = load_config(config_path)
     global _LOG_FILE_PATH
-    runtime_home = Path(str(config.get("runtime_home") or config_path.parent.parent)).expanduser()
+    runtime_home = config_path.parent.parent
     _LOG_FILE_PATH = runtime_home / "runtime.stderr.log"
+    config = load_config(config_path)
     configure_process_identity(str(config.get("agent_id") or ""))
     if not config.get("python_executable"):
         config["python_executable"] = sys.executable
