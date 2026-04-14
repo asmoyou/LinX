@@ -180,6 +180,8 @@ describe('AgentConfigModal external runtime wizard', () => {
     expect(screen.getByText('Open Projects')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Update Now' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Uninstall Now' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Copy Uninstall Command' })).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: 'Copy Uninstall Command' }),
+    ).toBeEnabled();
   });
 });

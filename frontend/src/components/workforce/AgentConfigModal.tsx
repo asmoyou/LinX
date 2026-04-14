@@ -177,6 +177,8 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
   const [externalPathAllowlist, setExternalPathAllowlist] = useState("");
   const [installCommand, setInstallCommand] = useState("");
   const [installCommandExpiresAt, setInstallCommandExpiresAt] = useState<string | null>(null);
+  const [isWatchingForRuntimeInstall, setIsWatchingForRuntimeInstall] =
+    useState(false);
   const [maintenanceCommand, setMaintenanceCommand] = useState("");
   const [maintenanceCommandLabel, setMaintenanceCommandLabel] = useState("");
   const [isGeneratingInstallCommand, setIsGeneratingInstallCommand] = useState(false);
@@ -248,6 +250,7 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
       setActiveTab(initialTab);
       setInstallCommand("");
       setInstallCommandExpiresAt(null);
+      setIsWatchingForRuntimeInstall(false);
       setMaintenanceCommand("");
       setMaintenanceCommandLabel("");
     }
@@ -260,9 +263,15 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
       fetchAvailableSkills();
       fetchKnowledgeBases();
       void fetchFeishuPublication();
-      void loadExternalRuntimeOverview();
     }
   }, [isOpen, agent?.id, agentKind]);
+
+  useEffect(() => {
+    if (!isOpen || activeTab !== "runtime" || agentKind !== "external" || !agent?.id) {
+      return;
+    }
+    void loadExternalRuntimeOverview();
+  }, [activeTab, agent?.id, agentKind, isOpen]);
 
   useEffect(() => {
     if (!isOpen || agentKind !== "external") {
@@ -546,7 +555,22 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
   };
 
   useEffect(() => {
-    if (!isOpen || activeTab !== "runtime" || agentKind !== "external" || !agent?.id) {
+    const runtimeStatus =
+      externalRuntimeOverview?.state.status || agent?.externalRuntime?.status;
+    const shouldPoll =
+      isWatchingForRuntimeInstall ||
+      externalRuntimeOverview?.state.bound ||
+      runtimeStatus === "offline" ||
+      runtimeStatus === "error" ||
+      runtimeStatus === "upgrade_required";
+
+    if (
+      !isOpen ||
+      activeTab !== "runtime" ||
+      agentKind !== "external" ||
+      !agent?.id ||
+      !shouldPoll
+    ) {
       return;
     }
 
@@ -557,7 +581,16 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
     return () => {
       window.clearInterval(timer);
     };
-  }, [activeTab, agent?.id, agentKind, isOpen]);
+  }, [
+    activeTab,
+    agent?.externalRuntime?.status,
+    agent?.id,
+    agentKind,
+    externalRuntimeOverview?.state.bound,
+    externalRuntimeOverview?.state.status,
+    isOpen,
+    isWatchingForRuntimeInstall,
+  ]);
 
   if (!isOpen || !agent) return null;
 
@@ -757,6 +790,7 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
   const loadExternalRuntimeOverview = async () => {
     if (!agent?.id || agentKind !== "external") {
       setExternalRuntimeOverview(null);
+      setIsWatchingForRuntimeInstall(false);
       return;
     }
     try {
@@ -764,6 +798,9 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
       const overview = await agentsApi.getExternalRuntime(agent.id);
       setExternalRuntimeOverview(overview);
       setExternalPathAllowlist((overview.profile.path_allowlist || []).join("\n"));
+      if (overview.state.status !== "uninstalled") {
+        setIsWatchingForRuntimeInstall(false);
+      }
     } catch (error) {
       console.error("Failed to load external runtime overview:", error);
     } finally {
@@ -778,6 +815,7 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
       const response = await agentsApi.createExternalRuntimeInstallCommand(agent.id, externalRuntimeTarget);
       setInstallCommand(response.command);
       setInstallCommandExpiresAt(response.expires_at);
+      setIsWatchingForRuntimeInstall(true);
       await navigator.clipboard.writeText(response.command);
       toast.success(t("agent.externalInstallCommandCopied", "Install command copied"));
     } finally {
@@ -836,6 +874,7 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
     setIsRequestingRuntimeUninstall(true);
     try {
       await agentsApi.requestExternalRuntimeUninstall(agent.id);
+      setIsWatchingForRuntimeInstall(false);
       toast.success(
         t(
           "agent.externalRuntimeUninstallQueued",
@@ -1475,7 +1514,7 @@ export const AgentConfigModal: React.FC<AgentConfigModalProps> = ({
                               ? t("agent.loading", "Loading...")
                               : t("agent.requestRuntimeUninstall", "Uninstall Now")}
                           </button>
-                          <button type="button" onClick={() => void copyUninstallCommand()} disabled={!externalRuntimeOverview?.state.bound || isGeneratingUninstallCommand} className="rounded-full border border-amber-300 px-4 py-2 text-sm font-semibold text-amber-700 transition hover:bg-amber-50 disabled:opacity-50 dark:border-amber-900/40 dark:text-amber-300 dark:hover:bg-amber-950/30">
+                          <button type="button" onClick={() => void copyUninstallCommand()} disabled={isGeneratingUninstallCommand} className="rounded-full border border-amber-300 px-4 py-2 text-sm font-semibold text-amber-700 transition hover:bg-amber-50 disabled:opacity-50 dark:border-amber-900/40 dark:text-amber-300 dark:hover:bg-amber-950/30">
                             {isGeneratingUninstallCommand
                               ? t("agent.loading", "Loading...")
                               : t("agent.copyUninstallCommand", "Copy Uninstall Command")}
